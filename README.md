@@ -8,8 +8,7 @@ watershed-scale hydrological signatures) — without installing the full AI-Hydr
 MCP hydrology stack.
 
 Part of the [AI-Hydro](https://github.com/AI-Hydro) ecosystem. Carved out of
-`aihydro-tools` so delineation has a clean, focused install (see ADR-002 and
-`MCP/docs/ECOSYSTEM_ROADMAP.md`).
+`aihydro-tools` in Wave A of the [ecosystem roadmap](../docs/ECOSYSTEM_ROADMAP.md).
 
 ## Install
 
@@ -24,31 +23,77 @@ pip install "aihydro-watershed[analysis]"
 pip install "aihydro-watershed[all]"
 ```
 
-On Python 3.13 the `analysis` extra omits `xrspatial` (no wheel); use
+On Python 3.13, the `analysis` extra omits `xrspatial` (no wheel); use
 `analysis-legacy` on Python 3.10–3.12 if you need TWI via xarray-spatial.
 
-The accurate MERIT-Basins hybrid tier additionally needs `upstream-delineator`
-from GitHub — see install notes (Wave A5).
+## Quick start
+
+```python
+from aihydro_watershed.delineation.router import delineate_from_point
+
+# CONUS pour point — uses NLDI automatically
+result = delineate_from_point(40.7128, -74.0060, method="auto")
+print(result.data["area_km2"])          # 1234.5
+print(result.data["method_used"])       # "nldi_comid"
+
+# Global pour point (Rhine at Cologne) — falls back to fast DEM tier
+result = delineate_from_point(50.932, 6.970, method="auto")
+print(result.data["area_km2"])
+
+# Expected drainage area known? Pass it to improve COMID selection
+result = delineate_from_point(39.27, -77.54, expected_area_km2=25_000)
+```
+
+Results are typed `HydroResult` (from `aihydro-core`) — provenance-stamped with
+tool path, version, parameters, and data sources.
 
 ## What's inside
 
 | Subpackage | Capability |
 |---|---|
-| `delineation` | Global pour-point / gauge delineation. NLDI (CONUS) + MERIT-Hydro/pyflwdir (global) + MERIT-Basins hybrid; auto-routing. |
-| `merit` | MERIT-Hydro data management (regional cache, map layers, region presets). |
-| `characterize` | Geomorphic parameters, watershed attributes, topographic wetness index. |
-| `terrain` | Curve number, event runoff, erosion. |
-| `signatures` | Baseflow index, flow-duration curve, flood frequency, drought indices (consumes streamflow from `aihydro-data`). |
+| `delineation` | Global pour-point / gauge delineation. Three tiers: NLDI (CONUS NHD-indexed), MERIT-Hydro/pyflwdir (local flowdir cache), MERIT-Basins hybrid (vector topology + raster refinement). Auto-routing chooses the best available tier. |
+| `merit` | MERIT-Hydro data management: regional basin cache, flowdir rasters, map layers, region presets. |
+| `characterize` | Geomorphic parameters (28 indices), watershed attributes, topographic wetness index. |
+| `terrain` | Curve number, event runoff (SCS-CN), RUSLE erosion. |
+| `signatures` | Baseflow index (Lyne-Hollick), flow-duration curve, flood frequency (Gumbel/GEV), drought indices (SPI, SPEI, Palmer). |
 
-The flood-inundation suite is **not** part of this package (different subsystem).
+The flood-inundation suite is **not** part of this package.
+
+## Delineation tiers
+
+```
+1. nldi        — USGS NLDI NHD-indexed basin (CONUS only, < 1 s)
+2. merit_gee   — MERIT-Hydro flowdir from Google Earth Engine (global, cloud)
+3. local_merit — MERIT-Hydro flowdir from local cache (global, offline after download)
+4. fast        — pysheds on cloud-fetched DEM tile (global, no MERIT cache needed)
+auto           — tries tiers in order of accuracy; degrades gracefully on failures
+```
 
 ## Layering
 
-Depends only **downward**: `aihydro-core` (the `HydroResult` contract) and
-`aihydro-data` (data acquisition). It never imports the `ai_hydro` tools pack —
-enforced by `tests/test_layering.py` and `import-linter`.
+Depends only **downward**:
 
-## Status
+```
+aihydro-core  ←  contract (HydroResult / HydroMeta / ToolError)
+aihydro-data  ←  data acquisition (streamflow, DEM, land cover, soil)
+     ↑
+aihydro-watershed   (this package)
+```
 
-Alpha — extraction in progress (Wave A of the ecosystem roadmap). Public API
-lands in Wave A2.
+The layering contract is enforced offline by `tests/test_layering.py` (AST walk,
+zero deps) and by `import-linter` for anyone who installs the `dev` extra.
+
+## Running tests
+
+```bash
+# Offline only (layering guard)
+pytest tests/ -m "not live"
+
+# Full suite including live API calls
+pytest tests/ -v
+```
+
+## Migration from `aihydro-tools`
+
+If you previously imported from `ai_hydro.analysis.*` or `ai_hydro.data.*`,
+see [MIGRATION.md](MIGRATION.md) for the one-line import changes.

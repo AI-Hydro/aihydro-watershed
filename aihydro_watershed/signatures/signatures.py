@@ -67,6 +67,48 @@ _SOURCES_GRIDMET = [
         ),
     )
 ]
+_SOURCES_PRECIP_GLOBAL = [
+    DataSource(
+        name="aihydro-data precipitation router (GridMET / CHIRPS / ERA5-Land / CHIRPS_IRI)",
+        url="https://github.com/AI-Hydro/aihydro-data",
+        citation=(
+            "@misc{AIHydroData2024,\n"
+            "  title={aihydro-data: global hydrology dataverse},\n"
+            "  author={{AI-Hydro Contributors}},\n"
+            "  year={2024},\n"
+            "  url={https://github.com/AI-Hydro/aihydro-data}\n"
+            "}"
+        ),
+    )
+]
+_SOURCES_GEOGLOWS = [
+    DataSource(
+        name="GEOGLOWS v2 (ECMWF)",
+        url="https://geoglows.ecmwf.int",
+        citation=(
+            "@misc{GEOGLOWS2024,\n"
+            "  title={GEOGLOWS ECMWF Streamflow Services},\n"
+            "  author={{ECMWF GEOGLOWS Team}},\n"
+            "  year={2024},\n"
+            "  url={https://geoglows.ecmwf.int}\n"
+            "}"
+        ),
+    )
+]
+_SOURCES_OPENMETEO_FLOOD = [
+    DataSource(
+        name="Open-Meteo GloFAS v4",
+        url="https://open-meteo.com/en/docs/flood-api",
+        citation=(
+            "@misc{OpenMeteoFlood2024,\n"
+            "  title={Open-Meteo Flood API (GloFAS v4)},\n"
+            "  author={{Open-Meteo Contributors}},\n"
+            "  year={2024},\n"
+            "  url={https://open-meteo.com/en/docs/flood-api}\n"
+            "}"
+        ),
+    )
+]
 
 _TOOL_PATH_SIGNATURES = "aihydro_watershed.signatures.signatures.extract_hydrological_signatures"
 
@@ -109,8 +151,10 @@ def extract_hydrological_signatures(
     Parameters
     ----------
     gauge_id : str or None
-        USGS gauge identifier (8-digit code). Pass None for globally-delineated
-        watersheds — in that case ``q_cms_series`` must be provided instead.
+        USGS gauge identifier (8-digit code). When ``None`` and no
+        ``q_cms_series`` is supplied, streamflow is auto-fetched from
+        GEOGLOWS v2 (anonymous AWS S3 Zarr, 1940→present) with
+        Open-Meteo GloFAS v4 as the fallback — both require no auth.
     watershed_geojson : dict
         Watershed boundary as GeoJSON polygon dict (from delineate_watershed)
     area_km2 : float
@@ -161,18 +205,20 @@ def extract_hydrological_signatures(
         ) from e
 
     try:
-        # Streamflow source: pre-loaded array (global / non-USGS path) takes
-        # priority over a live USGS NWIS fetch, which requires gauge_id.
+        # Streamflow source precedence:
+        #  1. pre-loaded array (q_cms_series) — highest priority, skips all fetching
+        #  2. USGS NWIS — when a gauge_id is supplied
+        #  3. GEOGLOWS v2 → Open-Meteo GloFAS fallback — globally, no auth needed
+        _global_product: str | None = None
         if q_cms_series is not None:
             streamflow_result = {"q_cms": list(q_cms_series)}
         elif gauge_id:
             streamflow_result = _fetch_streamflow_internal(gauge_id, start_date, end_date)
         else:
-            log.warning(
-                "extract_hydrological_signatures: no gauge_id and no q_cms_series — "
-                "returning default (zero) signatures."
-            )
-            streamflow_result = None
+            # Auto-route: try GEOGLOWS v2 (anonymous S3 Zarr, 1940→present),
+            # fall back to Open-Meteo GloFAS v4 (no auth, ~1984→present).
+            streamflow_result = _fetch_global_streamflow(watershed_geom, start_date, end_date)
+            _global_product = (streamflow_result or {}).get("_product")
 
         _uncertainty: dict = {}
         if streamflow_result is None or len(streamflow_result.get("q_cms", [])) < 365:
@@ -234,7 +280,13 @@ def extract_hydrological_signatures(
         if _uncertainty:
             clean["_uncertainty"] = _uncertainty
 
-        _sources = _SOURCES_GRIDMET + (_SOURCES_NWIS if gauge_id else [])
+        if _global_product == "GEOGLOWS_RETRO":
+            _global_sources = _SOURCES_GEOGLOWS
+        elif _global_product == "OPENMETEO_FLOOD":
+            _global_sources = _SOURCES_OPENMETEO_FLOOD
+        else:
+            _global_sources = []
+        _sources = _SOURCES_PRECIP_GLOBAL + (_SOURCES_NWIS if gauge_id else _global_sources)
         return HydroResult(
             data=clean,
             meta=HydroMeta(
@@ -488,44 +540,116 @@ def compute_slope_fdc_camels(q_mm_day: pd.Series) -> Dict[str, float]:
 # Private helpers
 # ---------------------------------------------------------------------------
 
+def _fetch_global_streamflow(
+    watershed_geom,
+    start_date: str,
+    end_date: str,
+) -> Optional[dict]:
+    """Auto-fetch global streamflow via GEOGLOWS v2 → Open-Meteo GloFAS fallback.
+
+    Both backends are anonymous (no auth, no queue). Returns a dict with keys
+    ``q_cms`` (pd.Series[float] with DatetimeIndex, m³/s) and ``_product``
+    (the product ID that succeeded), or ``None`` if all backends fail.
+
+    Install:  pip install aihydro-data[geoglows]   (GEOGLOWS backend)
+              pip install aihydro-data              (Open-Meteo needs only requests)
+    """
+    try:
+        import aihydro_data
+        import geopandas as gpd
+    except ImportError:
+        log.warning("aihydro_data not installed — global streamflow auto-fetch unavailable.")
+        return None
+
+    gdf = gpd.GeoDataFrame(geometry=[watershed_geom], crs="EPSG:4326")
+
+    for product in ("GEOGLOWS_RETRO", "OPENMETEO_FLOOD"):
+        try:
+            log.info("Global streamflow: trying product=%s (%s → %s)", product, start_date, end_date)
+            fetch_result = aihydro_data.fetch(
+                variable="streamflow",
+                geometry=gdf,
+                start=start_date,
+                end=end_date,
+                mode="manual",
+                product=product,
+            )
+            df = fetch_result.data
+            if not isinstance(df, pd.DataFrame) or df.empty:
+                log.warning("Global streamflow: empty result from %s", product)
+                continue
+            if "streamflow" not in df.columns:
+                log.warning("Global streamflow: 'streamflow' column missing in %s result", product)
+                continue
+            idx = pd.to_datetime(df["date"] if "date" in df.columns else df.index)
+            q_series = pd.Series(df["streamflow"].values, index=idx, dtype=float)
+            q_series.name = "q_cms"
+            log.info("Global streamflow fetched via %s: %d days", product, len(q_series))
+            return {"q_cms": q_series, "_product": product}
+        except Exception as e:
+            log.warning("Global streamflow fetch failed (product=%s): %s", product, e)
+
+    log.warning("All global streamflow backends exhausted — hydrological signatures will be NaN.")
+    return None
+
+
 def _fetch_precipitation_data_bygeom(
     watershed_geom,
     start_date: str,
     end_date: str,
 ) -> Optional[pd.Series]:
-    """Fetch GridMET precipitation for water balance calculations."""
+    """Fetch daily precipitation (basin-mean) for water balance calculations.
 
+    Routes through ``aihydro_data.fetch("precipitation")`` — globally capable.
+    The auto-routing policy selects the best available product per region:
+
+    * CONUS: GridMET → Daymet → CHIRPS (GEE) → ERA5-Land (GEE) → CHIRPS_IRI
+    * Europe: ERA5-Land (GEE) → CHIRPS (GEE) → CHIRPS_IRI
+    * global: CHIRPS (GEE) → IMERG (GEE) → ERA5-Land (GEE) → CHIRPS_IRI
+
+    **CHIRPS_IRI** (IRI OPeNDAP, auth-free, 1981→present, 0.05°) is always the
+    last fallback — it requires only ``pip install aihydro-data[opendap]``
+    (xarray + netCDF4) and no API key.
+    """
     try:
-        import pygridmet as gridmet
+        import aihydro_data
+        import geopandas as gpd
     except ImportError:
-        log.warning("pygridmet not installed, skipping precipitation data")
+        log.warning("aihydro_data not installed — precipitation fetch unavailable.")
         return None
 
+    gdf = gpd.GeoDataFrame(geometry=[watershed_geom], crs="EPSG:4326")
+
     try:
-        log.info("Fetching GridMET precipitation data")
-        ds = gridmet.get_bygeom(
-            geometry=watershed_geom,
-            dates=(start_date, end_date),
-            variables=["pr"],
-            crs="EPSG:4326",
+        log.info("Fetching precipitation via aihydro_data auto-routing (global)")
+        result = aihydro_data.fetch(
+            variable="precipitation",
+            geometry=gdf,
+            start=start_date,
+            end=end_date,
+            # aggregation="basin_mean" is the default — spatial mean over the watershed
         )
-
-        if "pr" not in ds.data_vars:
-            log.warning("Precipitation variable not found in GridMET response")
+        df = result.data
+        if not isinstance(df, pd.DataFrame) or df.empty:
+            log.warning("Precipitation fetch returned empty result")
             return None
-
-        pr_daily = ds["pr"].mean(dim=["lat", "lon"])
-        s = pr_daily.to_series().dropna()
-        s.index = pd.to_datetime(s.index).tz_localize(None)
+        # Both GEE and CHIRPS_IRI backends return DataFrame[date, precipitation]
+        p_col = "precipitation" if "precipitation" in df.columns else None
+        if p_col is None:
+            p_col = next((c for c in df.columns if c != "date"), None)
+        if p_col is None:
+            log.warning("Precipitation DataFrame has no usable column")
+            return None
+        idx = pd.to_datetime(df["date"] if "date" in df.columns else df.index)
+        s = pd.Series(df[p_col].values, index=idx, dtype=float).dropna()
+        s.index = s.index.tz_localize(None) if s.index.tzinfo is not None else s.index
         s.name = "precip_mm"
-
-        log.info(f"Retrieved {len(s)} days of precipitation data")
+        log.info(
+            "Retrieved %d days of precipitation (product=%s)",
+            len(s), getattr(result, "product", "unknown"),
+        )
         return s
-
     except Exception as e:
-        # Common causes: pandas 2.x DateOffset/Timedelta incompatibility inside
-        # pygridmet, network timeouts, or missing spatial data for the watershed.
-        # Returning None causes water-balance signatures to be NaN, which is safe.
         log.warning("Precipitation fetch skipped (runoff_ratio/stream_elas will be NaN): %s", e)
         return None
 

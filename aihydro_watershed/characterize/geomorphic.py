@@ -26,15 +26,34 @@ try:
     from shapely.geometry import Point, LineString
     from pyproj import Geod
     import py3dep
-    import xrspatial
     _DEPS_AVAILABLE = True
-    # Geodesic calculator for accurate area/perimeter on WGS84
     geod = Geod(ellps="WGS84")
 except ImportError:
     _DEPS_AVAILABLE = False
     geod = None
 
+# xrspatial is optional — _compute_relief_metrics has a pure-numpy fallback
+try:
+    import xrspatial as _xrspatial
+except ImportError:
+    _xrspatial = None
+
 log = logging.getLogger(__name__)
+
+
+def _metric_crs_for_geom(geom) -> str:
+    """Return an appropriate metric CRS for the geometry's centroid location.
+
+    Uses EPSG:5070 (Albers Equal Area) inside CONUS; otherwise picks the
+    WGS-84 UTM zone so distance/area calculations are accurate globally.
+    """
+    c = geom.centroid
+    lat, lon = c.y, c.x
+    if -126 <= lon <= -65 and 23 <= lat <= 50.5:
+        return "EPSG:5070"
+    zone = int((lon + 180) // 6) + 1
+    return f"EPSG:{32600 + zone if lat >= 0 else 32700 + zone}"
+
 
 # Auto-trigger chunked slope computation when DEM exceeds this cell count.
 # 10 M cells ≈ 80 MB at float64 — single-pass xrspatial.slope is fine below
@@ -301,22 +320,22 @@ def extract_geomorphic_parameters(
 
 
 def _compute_drainage_area(geom) -> float:
-    """Compute drainage area in km² using geodesic calculation"""
+    """Compute drainage area in km² using geodesic calculation (Polygon or MultiPolygon)."""
     try:
-        lon, lat = geom.exterior.coords.xy
-        area_m2, _ = geod.polygon_area_perimeter(lon, lat)
-        return abs(area_m2) / 1e6  # m² to km²
-    except:
+        area_m2, _ = geod.geometry_area_perimeter(geom)
+        return abs(area_m2) / 1e6
+    except Exception as e:
+        log.warning("DA computation failed: %s", e)
         return np.nan
 
 
 def _compute_perimeter(geom) -> float:
-    """Compute perimeter in km using geodesic calculation"""
+    """Compute perimeter in km using geodesic calculation (Polygon or MultiPolygon)."""
     try:
-        lon, lat = geom.exterior.coords.xy
-        _, perimeter_m = geod.polygon_area_perimeter(lon, lat)
-        return perimeter_m / 1000.0  # m to km
-    except:
+        _, perimeter_m = geod.geometry_area_perimeter(geom)
+        return perimeter_m / 1000.0
+    except Exception as e:
+        log.warning("Perimeter computation failed: %s", e)
         return np.nan
 
 
@@ -332,15 +351,15 @@ def _compute_basin_length(geom, outlet_lat: float, outlet_lon: float) -> Tuple[f
         Outlet point in projected CRS for further calculations
     """
     try:
-        # Project to equal-area CRS for distance calculations
+        metric_crs = _metric_crs_for_geom(geom)
         watershed_proj = gpd.GeoDataFrame(
             [1], geometry=[geom], crs="EPSG:4326"
-        ).to_crs("EPSG:5070")  # Albers Equal Area
-        
+        ).to_crs(metric_crs)
+
         geom_proj = watershed_proj.geometry.iloc[0]
         outlet_proj = gpd.GeoSeries(
             [Point(outlet_lon, outlet_lat)], crs="EPSG:4326"
-        ).to_crs("EPSG:5070").iloc[0]
+        ).to_crs(metric_crs).iloc[0]
         
         # Get boundary coordinates
         boundary = geom_proj.boundary
@@ -368,14 +387,15 @@ def _compute_basin_length(geom, outlet_lat: float, outlet_lon: float) -> Tuple[f
 def _compute_centroid_length(geom, outlet_lat: float, outlet_lon: float) -> float:
     """Compute straight-line distance from outlet to centroid"""
     try:
+        metric_crs = _metric_crs_for_geom(geom)
         watershed_proj = gpd.GeoDataFrame(
             [1], geometry=[geom], crs="EPSG:4326"
-        ).to_crs("EPSG:5070")
-        
+        ).to_crs(metric_crs)
+
         centroid = watershed_proj.centroid.iloc[0]
         outlet_proj = gpd.GeoSeries(
             [Point(outlet_lon, outlet_lat)], crs="EPSG:4326"
-        ).to_crs("EPSG:5070").iloc[0]
+        ).to_crs(metric_crs).iloc[0]
         
         dist_m = np.hypot(
             centroid.x - outlet_proj.x,
@@ -531,32 +551,39 @@ def _compute_relief_metrics(
                     )
                 except Exception as _ce:
                     log.warning(
-                        "Chunked slope failed (%s); falling back to xrspatial", _ce
+                        "Chunked slope failed (%s); falling back to numpy kernel", _ce
                     )
-                    slope_deg = xrspatial.slope(dem_proj)
+                    _slope_fn = lambda arr, msk: _slope_horn_kernel(arr, msk, _cell_m)
+                    import xarray as xr
+                    slope_arr = _slope_fn(dem_proj.values, np.ones(dem_proj.shape, dtype=bool))
+                    slope_deg = xr.DataArray(slope_arr, dims=dem_proj.dims, coords=dem_proj.coords)
             else:
-                slope_deg = xrspatial.slope(dem_proj)
-        else:
-            # Small DEM — single-pass xrspatial (fast, no overhead).
-            try:
-                slope_deg = xrspatial.slope(dem_proj)
-            except Exception:
-                # xrspatial unavailable (e.g., Python 3.13) — fall back to
-                # the numpy kernel unconditionally.
                 _slope_fn = lambda arr, msk: _slope_horn_kernel(arr, msk, _cell_m)
                 import xarray as xr
                 slope_arr = _slope_fn(dem_proj.values, np.ones(dem_proj.shape, dtype=bool))
-                slope_deg = xr.DataArray(
-                    slope_arr, dims=dem_proj.dims, coords=dem_proj.coords
-                )
+                slope_deg = xr.DataArray(slope_arr, dims=dem_proj.dims, coords=dem_proj.coords)
+        else:
+            # Small DEM — prefer xrspatial for accuracy; fall back to numpy kernel.
+            if _xrspatial is not None:
+                try:
+                    slope_deg = _xrspatial.slope(dem_proj)
+                except Exception:
+                    _slope_fn = lambda arr, msk: _slope_horn_kernel(arr, msk, _cell_m)
+                    import xarray as xr
+                    slope_arr = _slope_fn(dem_proj.values, np.ones(dem_proj.shape, dtype=bool))
+                    slope_deg = xr.DataArray(slope_arr, dims=dem_proj.dims, coords=dem_proj.coords)
+            else:
+                _slope_fn = lambda arr, msk: _slope_horn_kernel(arr, msk, _cell_m)
+                import xarray as xr
+                slope_arr = _slope_fn(dem_proj.values, np.ones(dem_proj.shape, dtype=bool))
+                slope_deg = xr.DataArray(slope_arr, dims=dem_proj.dims, coords=dem_proj.coords)
         slope_pct = np.tan(np.deg2rad(slope_deg)) * 100.0
         mean_slope_pct = float(np.nanmean(slope_pct.values))
         
-        # Get basin length and perimeter for ratios
-        from shapely.geometry import shape as shapely_shape
+        # Project geometry to same metric CRS as the DEM for Rh/Rp/Lb
         geom_proj = gpd.GeoDataFrame(
             [1], geometry=[geom], crs="EPSG:4326"
-        ).to_crs("EPSG:5070").geometry.iloc[0]
+        ).to_crs(dem_proj.rio.crs).geometry.iloc[0]
         
         # Basin length approximation
         bounds = geom_proj.bounds

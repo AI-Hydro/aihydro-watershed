@@ -185,7 +185,20 @@ def fetch_lulc_data(
         "fetch_lulc_data: routing through aihydro_data.fetch(landcover, "
         "year=%s, product=%s)", year, product or "auto",
     )
-    result = aihydro_data.fetch(**fetch_kwargs)
+    try:
+        result = aihydro_data.fetch(**fetch_kwargs)
+    except Exception as _primary_exc:
+        if product is not None:
+            # Product was explicitly pinned — don't silently swallow the failure.
+            raise
+        log.warning(
+            "fetch_lulc_data: primary land-cover fetch failed (%s); "
+            "retrying with ESA WorldCover STAC (Planetary Computer, auth-free).",
+            _primary_exc,
+        )
+        stac_kwargs = dict(**fetch_kwargs)
+        stac_kwargs.update(mode="manual", product="ESA_WORLDCOVER_STAC")
+        result = aihydro_data.fetch(**stac_kwargs)
 
     ds = _adapt_landcover_result(result, year=year)
 

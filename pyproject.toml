@@ -1,0 +1,159 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# aihydro-watershed — watershed delineation + characterization
+#
+# Standalone package carved out of aihydro-tools so a hydrologist can
+# `pip install aihydro-watershed` for delineation + watershed-scale analysis
+# WITHOUT the full MCP hydrology pack. See ADR-002 (watershed extraction) and
+# MCP/docs/ECOSYSTEM_ROADMAP.md (Wave A).
+#
+# Scope: global pour-point / gauge delineation (NLDI + MERIT-Hydro/pyflwdir),
+# watershed characterization (geomorphics, TWI), terrain/runoff intelligence
+# (curve number, event runoff, erosion), and watershed-scale hydrological
+# signatures. The flood-inundation suite is deliberately OUT of scope.
+#
+# Layering: depends DOWN on aihydro-core (contract) and aihydro-data (streamflow
+# / DEM acquisition). Never imports the ai_hydro tools package.
+# ─────────────────────────────────────────────────────────────────────────────
+
+[project]
+name = "aihydro-watershed"
+version = "0.1.0"
+description = "Watershed delineation + characterization — global pour-point delineation (NLDI + MERIT-Hydro), geomorphics, TWI, and watershed-scale hydrological signatures"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+authors = [
+    {name = "Mohammad Galib", email = "mgalib@purdue.edu"}
+]
+readme = "README.md"
+keywords = [
+    "hydrology", "watershed", "delineation", "MERIT-Hydro", "NLDI",
+    "geomorphology", "signatures", "TWI", "CAMELS", "agentic",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Hydrology",
+    "Topic :: Scientific/Engineering :: GIS",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+
+# ── Core deps (always installed) ───────────────────────────────────────────
+# Kept lean; heavy geo/delineation stacks live behind extras so a user who only
+# needs the data structures / characterization on a supplied DEM stays light.
+dependencies = [
+    "aihydro-core[contracts]>=0.2.0,<0.3",   # HydroResult contract
+    "aihydro-data>=0.2.0,<0.3",              # streamflow / DEM acquisition
+    "numpy>=1.24.0",
+    "pandas>=2.0.0",
+    "geopandas>=0.13.0",
+    "shapely>=2.0.0",
+    "pyproj>=3.6.0",
+]
+
+[project.optional-dependencies]
+
+# Global pour-point delineation (fast tier: cloud DEM + pysheds + MERIT/pyflwdir)
+delineation = [
+    "rioxarray>=0.15.0",
+    "xarray>=2023.0.0",
+    "rasterio>=1.3.0",
+    "pysheds>=0.3.0",
+    "pyflwdir>=0.5.11",
+    "scipy>=1.11.0",
+    "pynhd>=0.16.0",
+    "py3dep>=0.15.0",
+    "planetary-computer>=1.0.0",
+    "pystac-client>=0.7.0",
+    "odc-stac>=0.3.0",
+    "earthengine-api>=0.1.390",
+]
+
+# Accurate MERIT-Basins hybrid tier (adds upstream-delineator)
+delineation-full = [
+    "aihydro-watershed[delineation]",
+    # upstream-delineator is installed from GitHub; see README install notes.
+]
+
+# Watershed characterization + signatures (geomorphics, TWI, baseflow, FDC)
+analysis = [
+    "rioxarray>=0.15.0",
+    "xarray>=2023.0.0",
+    "rasterio>=1.3.0",
+    "py3dep>=0.15.0",
+    "scipy>=1.11.0",
+]
+
+# TWI via xarray-spatial (no wheel on py3.13 — use on 3.10–3.12)
+analysis-legacy = [
+    "aihydro-watershed[analysis]",
+    "xrspatial>=0.3.0",
+]
+
+# Full install (no GitHub-only deps)
+all = [
+    "aihydro-watershed[delineation,analysis]",
+]
+
+# Development
+dev = [
+    "pytest>=7.4.0",
+    "pytest-cov>=4.1.0",
+    "import-linter>=2.0",
+    "ruff>=0.1.0",
+]
+
+[project.urls]
+Homepage      = "https://github.com/AI-Hydro/aihydro-watershed"
+Documentation = "https://github.com/AI-Hydro/AI-Hydro/wiki"
+Repository    = "https://github.com/AI-Hydro/aihydro-watershed"
+Issues        = "https://github.com/AI-Hydro/aihydro-watershed/issues"
+
+# ── Plug-in entry point — auto-register watershed_* MCP tools when both this
+# package and aihydro-tools are installed (wired in Wave A3). ────────────────
+# [project.entry-points."aihydro.tools"]
+# watershed = "aihydro_watershed.mcp:register_tools"
+
+# ── Package discovery ──────────────────────────────────────────────────────
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["aihydro_watershed*"]
+
+[tool.setuptools.package-data]
+"aihydro_watershed.merit" = ["*.yaml"]
+
+# ── Pytest ─────────────────────────────────────────────────────────────────
+[tool.pytest.ini_options]
+markers = [
+    "live: tests requiring internet (NLDI, GEE, STAC, 3DEP). Deselect with -m 'not live'.",
+]
+
+# ── Layering contract ────────────────────────────────────────────────────────
+# aihydro-watershed sits ABOVE core + data, BESIDE the ai_hydro tools package.
+# It may depend DOWN on aihydro_core and aihydro_data, but must NEVER import the
+# ai_hydro domain pack (an upward/sideways edge). Enforced offline by
+# tests/test_layering.py and by `lint-imports`.
+[tool.importlinter]
+root_package = "aihydro_watershed"
+include_external_packages = true
+
+[[tool.importlinter.contracts]]
+name = "aihydro_watershed must not import the ai_hydro tools package"
+type = "forbidden"
+source_modules = ["aihydro_watershed"]
+forbidden_modules = ["ai_hydro"]
+
+# ── Ruff ───────────────────────────────────────────────────────────────────
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+ignore = ["E501"]

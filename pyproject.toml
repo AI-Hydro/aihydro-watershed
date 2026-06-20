@@ -68,6 +68,7 @@ delineation = [
     "pyflwdir>=0.5.11",
     "scipy>=1.11.0",
     "pynhd>=0.16.0",
+    "pygeohydro>=0.16.0",
     "py3dep>=0.15.0",
     "planetary-computer>=1.0.0",
     "pystac-client>=0.7.0",

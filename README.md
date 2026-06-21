@@ -86,12 +86,22 @@ zero deps) and by `import-linter` for anyone who installs the `dev` extra.
 ## Running tests
 
 ```bash
-# Offline only (layering guard)
-pytest tests/ -m "not live"
+# Offline (layering guard — always passes, no network needed)
+pytest tests/ -m "not live" -q
 
-# Full suite including live API calls
+# Full suite including live API calls (requires network)
 pytest tests/ -v
+
+# Parity checks only (Wave A4 gate)
+pytest tests/test_parity.py -m live -v
 ```
+
+## Status
+
+v0.1.0. Wave A extraction complete (2026-06-21). All five subpackages
+(`delineation`, `merit`, `characterize`, `terrain`, `signatures`) are live.
+Compatibility shims remain in `ai_hydro/analysis/` and `ai_hydro/data/` of
+`aihydro-tools` for one release cycle; see `MIGRATION.md`.
 
 ## Migration from `aihydro-tools`
 

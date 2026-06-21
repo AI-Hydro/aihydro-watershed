@@ -8,32 +8,38 @@ MERIT-Hydro/pyflwdir) + geomorphics, TWI, terrain/runoff, and watershed-scale
 signatures.
 
 ## Status
-Alpha — **Wave A extraction in progress.** Last updated: 2026-06-19.
+**v0.1.0 — Wave A extraction complete (2026-06-21).**
 
 ## Where to read next
 | Goal | Go to |
 |---|---|
+| Architecture diagram | `ARCHITECTURE.md` |
+| Migration from aihydro-tools | `MIGRATION.md` |
 | The extraction plan | `../aihydro-tools/local-docs/WATERSHED_EXTRACTION_PLAN.md` |
 | The decision record | `../aihydro-tools/local-docs/ADR-002-watershed-extraction.md` |
 | The ecosystem roadmap | `../docs/ECOSYSTEM_ROADMAP.md` |
 | The result contract | `aihydro_core.contracts` (HydroResult) |
 
-## Current state
-- **A0 ✅** Contract promoted to aihydro-core (this package depends on `aihydro-core[contracts]`).
-- **A1 ⏳** Package scaffolded: pyproject, subpackage tree, layering guard.
-- **A2** Move 5 module units (delineation / merit / characterize / terrain / signatures).
-- **A3** Rewire aihydro-tools to consume this package.
-- **A4** Tests + delineation parity (CONUS gauge + global pour point).
-- **A5** Docs + migration guide.
-- **Next step:** Wave A2 — migrate the delineation engine first.
+## Wave A — complete
+
+- **A0 ✅** `HydroResult` contract promoted to `aihydro-core`; re-export shim in tools.
+- **A1 ✅** Package scaffolded: `pyproject.toml`, five-subpackage tree, layering guard.
+- **A2 ✅** 5 module units moved: delineation / merit / characterize / terrain / signatures.
+  27 compatibility shims left in `ai_hydro/analysis/` and `ai_hydro/data/` for one release.
+- **A3 ✅** `aihydro-tools` wired to consume this package; 929 offline tests pass; `TOOL_TIERS`
+  updated to include `lsh_dynamic_attributes` + `lsh_events`.
+- **A4 ✅** Parity tests: NLDI delineation (Potomac 01638500) within 30 % of published area;
+  fast DEM delineation (Rhine/Cologne) returns non-empty polygon. AST layering guard green.
+- **A5 ✅** Docs: README, ARCHITECTURE, MIGRATION, PROJECT updated.
 
 ## Non-goals
 - The flood-inundation suite (separate subsystem; not here).
-- No upward import of the `ai_hydro` tools package (layering guard enforces).
+- No upward import of the `ai_hydro` tools package (layering guard enforces this).
 
 ## How to test
 ```bash
 pip install -e ".[dev]"
-pytest -q                 # layering guard + (post-A2) science tests
-lint-imports              # layering contract
+pytest -m "not live" -q    # offline: layering guard (always green)
+pytest -m live -v          # live: NLDI + fast-DEM parity (requires network)
+lint-imports               # layering contract (import-linter)
 ```

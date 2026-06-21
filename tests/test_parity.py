@@ -60,10 +60,25 @@ _GLOBAL_LON = 6.970
 
 @pytest.mark.live
 def test_fast_global_parity():
-    """Fast DEM delineation for Rhine at Cologne returns a non-empty polygon."""
+    """Fast DEM delineation for Rhine at Cologne returns a non-empty polygon.
+
+    Skipped (not failed) when all DEM STAC providers are transiently
+    unavailable — infrastructure outages should not break CI.
+    """
     from aihydro_watershed.delineation.router import delineate_from_point
 
-    result = delineate_from_point(_GLOBAL_LAT, _GLOBAL_LON, method="fast")
+    try:
+        result = delineate_from_point(_GLOBAL_LAT, _GLOBAL_LON, method="fast")
+    except Exception as exc:
+        # DELINEATION_FAILED after all providers exhausted → skip, not fail.
+        # Any other exception (e.g. programming error) still propagates.
+        code = getattr(exc, "code", "") or ""
+        if "DELINEATION_FAILED" in str(code):
+            pytest.skip(
+                f"All DEM STAC providers unavailable (transient): {exc}"
+            )
+        raise
+
     area = result.data["area_km2"]
     assert area > 0, "Fast delineation returned zero area"
 

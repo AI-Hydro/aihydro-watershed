@@ -18,6 +18,7 @@ signatures.
 | The extraction plan | `../aihydro-tools/local-docs/WATERSHED_EXTRACTION_PLAN.md` |
 | The decision record | `../aihydro-tools/local-docs/ADR-002-watershed-extraction.md` |
 | The ecosystem roadmap | `../docs/ECOSYSTEM_ROADMAP.md` |
+| The ecosystem architecture | `../docs/ECOSYSTEM_ARCHITECTURE.md` |
 | The result contract | `aihydro_core.contracts` (HydroResult) |
 
 ## Wave A — complete

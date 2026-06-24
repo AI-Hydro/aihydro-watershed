@@ -94,7 +94,7 @@ zero deps) and by `import-linter` for anyone who installs the `dev` extra.
 ## Running tests
 
 ```bash
-# Offline (layering guard — always passes, no network needed)
+# Offline (layering, geometry/router envelopes, and pure signature kernels)
 pytest tests/ -m "not live" -q
 
 # Full suite including live API calls (requires network)
@@ -103,6 +103,10 @@ pytest tests/ -v
 # Parity checks only (Wave A4 gate)
 pytest tests/test_parity.py -m live -v
 ```
+
+The offline suite covers import layering, delineation failure/escalation
+envelopes, geometry validity/GeoJSON conversion, and pure hydrologic signature
+kernels. Live tests are reserved for NLDI/GEE/STAC/3DEP/API parity checks.
 
 ## Status
 

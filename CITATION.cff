@@ -1,0 +1,35 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "aihydro-watershed: Global Watershed Delineation and Characterization"
+version: "0.1.0"
+date-released: "2026-06-24"
+license: Apache-2.0
+repository-code: "https://github.com/AI-Hydro/aihydro-watershed"
+abstract: >
+  aihydro-watershed provides watershed delineation and characterization tools,
+  including NLDI and MERIT-Hydro routing, geomorphic analysis, terrain/runoff
+  metrics, and watershed-scale hydrological signatures for AI-Hydro workflows.
+authors:
+  - family-names: Galib
+    given-names: Mohammad
+    affiliation: "Purdue University"
+    email: mgalib@purdue.edu
+keywords:
+  - hydrology
+  - watershed-delineation
+  - MERIT-Hydro
+  - NLDI
+  - geomorphology
+  - hydrological-signatures
+preferred-citation:
+  type: software
+  title: "aihydro-watershed: Global Watershed Delineation and Characterization"
+  authors:
+    - family-names: Galib
+      given-names: Mohammad
+      affiliation: "Purdue University"
+      email: mgalib@purdue.edu
+  version: "0.1.0"
+  date-released: "2026-06-24"
+  license: Apache-2.0
+  repository-code: "https://github.com/AI-Hydro/aihydro-watershed"

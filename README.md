@@ -1,5 +1,13 @@
 # aihydro-watershed
 
+<p align="center">
+  <a href="https://pypi.org/project/aihydro-watershed/"><img src="https://img.shields.io/pypi/v/aihydro-watershed?color=3775a9&label=PyPI" alt="PyPI" /></a>
+  &nbsp;
+  <a href="https://doi.org/10.5281/zenodo.20823440"><img src="https://zenodo.org/badge/DOI/10.5281/zenodo.20823440.svg" alt="DOI" /></a>
+  &nbsp;
+  <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-green" alt="License" /></a>
+</p>
+
 **Watershed delineation + characterization for any point on Earth — as a standalone package.**
 
 Delineate a watershed from a USGS gauge or any global lat/lon pour point, then
@@ -107,3 +115,18 @@ Compatibility shims remain in `ai_hydro/analysis/` and `ai_hydro/data/` of
 
 If you previously imported from `ai_hydro.analysis.*` or `ai_hydro.data.*`,
 see [MIGRATION.md](MIGRATION.md) for the one-line import changes.
+
+## Citation
+
+If you use `aihydro-watershed` in your research, please cite:
+
+```bibtex
+@software{aihydro_watershed_2026,
+  title   = {aihydro-watershed: Global Watershed Delineation and Characterization},
+  author  = {Galib, Mohammad and Merwade, Venkatesh},
+  year    = {2026},
+  version = {0.1.0},
+  doi     = {10.5281/zenodo.20823440},
+  url     = {https://doi.org/10.5281/zenodo.20823440}
+}
+```

@@ -1,13 +1,9 @@
 """
 Shared DEM-fetch helpers for analysis modules.
 
-Provides a single global DEM-fetching path that:
-
-1.  Inside CONUS, prefers ``py3dep`` (USGS 3DEP, 10–30 m, no auth) because it
-    is faster and higher resolution than any global alternative.
-2.  Anywhere else on Earth, falls back to ``aihydro_data.fetch("dem", …)`` —
-    which currently serves Copernicus GLO-30 (global, 30 m, via GEE) and
-    will gain MERIT-Hydro fallbacks over time.
+Provides a single global DEM-fetching path through ``aihydro_data.fetch("dem", …)``.
+``aihydro-data`` owns source choice, fallback ordering, provenance, and product
+metadata (for example GLO-30 primary with 3DEP/MERIT fallbacks where appropriate).
 
 The function returns a ``rioxarray``-compatible ``xr.DataArray`` so callers
 (``twi.py``, ``geomorphic.py``) can keep using rioxarray-style operations
@@ -92,9 +88,9 @@ def fetch_dem(
         Target resolution in metres. py3dep honours this faithfully; the
         global path returns Copernicus GLO-30 at ~30 m regardless.
     prefer : {"auto", "py3dep", "aihydro_data"}
-        ``auto`` picks py3dep inside CONUS, aihydro-data elsewhere.
-        ``py3dep`` and ``aihydro_data`` force a backend (used by callers
-        that need to retry after one path fails).
+        Kept for backward compatibility. ``auto`` and ``aihydro_data`` route
+        through ``aihydro-data``. ``py3dep`` pins the ``DEM3DEP_10M`` product
+        through ``aihydro-data`` rather than importing py3dep directly.
 
     Returns
     -------
@@ -109,25 +105,16 @@ def fetch_dem(
     """
     errors: list[str] = []
 
-    use_py3dep = prefer == "py3dep" or (prefer == "auto" and _geom_in_conus(geometry))
-
-    if use_py3dep:
-        try:
-            import py3dep
-            # py3dep accepts shapely or GeoDataFrame directly
-            geom_arg = _to_shapely(geometry)
-            dem = py3dep.get_dem(geom_arg, resolution=resolution)
-            log.info("DEM fetched via py3dep (USGS 3DEP, %d m)", resolution)
-            return dem, "3DEP", "hyriver"
-        except Exception as exc:
-            errors.append(f"py3dep: {exc}")
-            log.warning("py3dep DEM fetch failed (%s); falling back to aihydro-data", exc)
-
-    # Global path — aihydro-data
+    # aihydro-data owns DEM source policy. It currently prefers GLO-30 for
+    # reliability, keeps 3DEP as a CONUS fallback, and exposes MERIT/global
+    # fallbacks with product metadata and citations.
     try:
         from aihydro_data import fetch as _adata_fetch
         geom_arg = _to_shapely(geometry)
-        result = _adata_fetch("dem", geom_arg, "", "")
+        kwargs = {}
+        if prefer == "py3dep":
+            kwargs.update({"mode": "manual", "product": "DEM3DEP_10M"})
+        result = _adata_fetch("dem", geom_arg, "", "", **kwargs)
         dem = result.data  # xr.DataArray from gee/stac backend
         dem = _normalize_dem(dem)
         log.info(

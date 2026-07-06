@@ -8,3 +8,5 @@ dist/
 *.gpkg
 *.tif
 cache/
+.DS_Store
+.aihydro/

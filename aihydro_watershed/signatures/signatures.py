@@ -112,6 +112,24 @@ _SOURCES_OPENMETEO_FLOOD = [
 
 _TOOL_PATH_SIGNATURES = "aihydro_watershed.signatures.signatures.extract_hydrological_signatures"
 
+# Baseflow separation method used for every baseflow_index this module
+# computes (compute_flow_stats_camels -> _lyne_hollick_baseflow). Different
+# methods (Lyne-Hollick vs Eckhardt vs UKIH) and different alpha/pass
+# parameters shift BFI by up to ~0.1-0.2 for the same catchment — the method
+# is part of the result's identity, not an implementation detail, so it is
+# surfaced in HydroMeta.params (see extract_hydrological_signatures) and in
+# aihydro-lsh's AttrProvenance.quality_flags (see recipes/hydrology.py).
+# A SINGLE source of truth here means both call sites report the params the
+# filter was actually run with, not a second hardcoded copy that can drift.
+BASEFLOW_SEPARATION_METHOD = "lyne_hollick"
+BASEFLOW_SEPARATION_PARAMS = {"alpha": 0.925, "passes": 3}
+BASEFLOW_SEPARATION_REFERENCE = "Nathan & McMahon (1990); Ladson et al. (2013)"
+BASEFLOW_METHOD_QUALITY_FLAG = (
+    f"baseflow_method={BASEFLOW_SEPARATION_METHOD}"
+    f"_alpha{BASEFLOW_SEPARATION_PARAMS['alpha']}"
+    f"_passes{BASEFLOW_SEPARATION_PARAMS['passes']}"
+)
+
 log = logging.getLogger(__name__)
 warnings.filterwarnings('ignore')
 
@@ -122,6 +140,10 @@ __all__ = [
     'compute_event_stats_camels',
     'compute_timing_stats_camels',
     'compute_slope_fdc_camels',
+    'BASEFLOW_SEPARATION_METHOD',
+    'BASEFLOW_SEPARATION_PARAMS',
+    'BASEFLOW_SEPARATION_REFERENCE',
+    'BASEFLOW_METHOD_QUALITY_FLAG',
 ]
 
 
@@ -299,6 +321,9 @@ def extract_hydrological_signatures(
                     "area_km2": area_km2,
                     "start_date": start_date,
                     "end_date": end_date,
+                    "baseflow_method": BASEFLOW_SEPARATION_METHOD,
+                    "baseflow_params": dict(BASEFLOW_SEPARATION_PARAMS),
+                    "baseflow_reference": BASEFLOW_SEPARATION_REFERENCE,
                 },
             ),
         )

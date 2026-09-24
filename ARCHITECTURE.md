@@ -35,10 +35,18 @@ Pour point (lat, lon)
   delineation/router.py
   delineate_from_point(lat, lon)
        │
-       ├─── Tier 1: NLDI (CONUS streamstats)
-       │      nldi_point.py: streamstats.waterservices.usgs.gov/nss/...
-       │      Returns NHD catchment polygon — fast, authoritative for CONUS
-       │      ↓ fail (non-CONUS, network error, small catchment)
+       ├─── Tier 0: small_catchment (CONUS, < ~5 km2, e.g. road culverts)
+       │      small_catchment.py: USGS 3DEP 10 m via py3dep → EPSG:5070
+       │        notch the road embankment (cells within 30 m → min within 60 m)
+       │        pyflwdir.from_dem → snap to max upstream area within 40 m
+       │        grow window 2.5 → 5 → 10 km until basin clears the edge
+       │      Runs first in auto when expected_area_km2 < 5; also the CONUS
+       │      fallback when NLDI returns < 1 km2 or fails.
+       │
+       ├─── Tier 1: NLDI (CONUS, NHDPlus-indexed)
+       │      nldi_point.py: USGS NLDI via pynhd (labs.waterdata.usgs.gov/api/nldi)
+       │      Returns NHDPlus COMID basin polygons (not StreamStats)
+       │      ↓ fail (non-CONUS, network error, basin < 1 km2)
        │
        ├─── Tier 2: MERIT-Hydro DEM (global, preferred outside CONUS)
        │      merit_flowdir_pipeline.py:
@@ -65,7 +73,8 @@ aihydro_watershed/
 │
 ├── delineation/             WATERSHED BOUNDARY
 │   ├── router.py            delineate_from_point() — tier orchestrator
-│   ├── nldi_point.py        NLDI CONUS streamstats delineation
+│   ├── nldi_point.py        NLDI (NHDPlus COMID) CONUS delineation via pynhd
+│   ├── small_catchment.py   3DEP 10 m + embankment notch, culvert-scale catchments
 │   ├── merit_flowdir_pipeline.py  MERIT global flow-direction pipeline
 │   ├── merit_snap.py        Pour-point snapping to nearest MERIT channel
 │   ├── pysheds_pipeline.py  pysheds DEM-based fallback delineation
@@ -89,11 +98,12 @@ aihydro_watershed/
 │   └── _dem.py              Internal DEM preparation helpers
 │
 ├── terrain/                 TERRAIN & LAND-SURFACE PROCESSES
-│   ├── curve_number.py      SCS CN computation (soil + NLCD/ESA land cover)
+│   ├── curve_number.py      SCS CN computation (TR-55; soil + NLCD/ESA land cover)
 │   ├── event_runoff.py      SCS CN-II rainfall-runoff model
 │   ├── erosion.py           RUSLE soil erosion estimation
 │   ├── _landcover.py        Land cover fetch (aihydro-data first; ESA STAC fallback)
-│   └── _soil.py             Soil data fetch (POLARIS CONUS; SoilGrids global)
+│   ├── _soil.py             Soil router: SSURGO in CONUS, POLARIS fallback, SoilGrids global
+│   └── ssurgo.py            SSURGO: gNATSGO mukey raster + Soil Data Access (hydgrp, Kw)
 │
 └── signatures/              HYDROLOGICAL SIGNATURES
     ├── signatures.py        extract_hydrological_signatures() — orchestrator
@@ -118,7 +128,7 @@ aihydro_watershed/
 delineate_from_point(lat=39.27, lon=-77.54)
           │
           ├─ Tier 1: NLDI
-          │    POST /streamstats/delineate?lat=39.27&lon=-77.54
+          │    pynhd.NLDI: comid_byloc → basin polygon for the COMID
           │    → GeoDataFrame (EPSG:4326 polygon)     ← typical CONUS return
           │    success → DelineationResult(data=gdf, method="nldi", area_km2=...)
           │

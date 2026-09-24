@@ -4,8 +4,18 @@ Curve Number (CN) Grid Generation — Analysis Layer
 Creates NRCS Curve Number grids for watersheds by combining NLCD land cover
 data with soil properties to characterize runoff potential.
 
-Data retrieval functions (fetch_lulc_data, fetch_soil_data_polaris) are in
-ai_hydro.data.landcover and ai_hydro.data.soil respectively.
+Data retrieval functions (fetch_lulc_data, fetch_soil_data) are in
+aihydro_watershed.terrain._landcover and aihydro_watershed.terrain._soil.
+
+Hydrologic soil group
+~~~~~~~~~~~~~~~~~~~~~
+In CONUS the soil route serves SSURGO (gNATSGO + Soil Data Access), which
+records the hydrologic group of each soil component; the grid uses it
+directly. Dual groups (A/D, B/D, C/D) take the drained letter by default
+(``dual_hsg="drained"``; most dual-group cropland in the Midwest is tile
+drained) and the CN for the other condition is reported alongside. Outside
+CONUS, or when a texture product is pinned, the group is inferred from
+sand/silt/clay thresholds (:func:`_classify_soil_hydrologic_group`).
 
 Large-basin performance
 ~~~~~~~~~~~~~~~~~~~~~~~
@@ -38,11 +48,12 @@ _CN_CHUNK_TRIGGER = 10_000_000
 try:
     import xarray as xr
     import geopandas as gpd
-    from aihydro_watershed.terrain._landcover import fetch_lulc_data
-    from aihydro_watershed.terrain._soil import fetch_soil_data_polaris
+    from aihydro_watershed.terrain._landcover import NLCD_LATEST_YEAR, fetch_lulc_data
+    from aihydro_watershed.terrain._soil import fetch_soil_data, fetch_soil_data_polaris
     _DEPS_AVAILABLE = True
 except ImportError:
     _DEPS_AVAILABLE = False
+    NLCD_LATEST_YEAR = 2021
 
 # Conditional imports for visualization
 try:
@@ -66,7 +77,7 @@ except ImportError:
 
 def create_curve_number_grid(
     gauge_id: str,
-    year: int = 2019,
+    year: int = NLCD_LATEST_YEAR,
     resolution: int = 30,
     save_outputs: bool = True,
     output_dir: Optional[str] = None,
@@ -75,6 +86,7 @@ def create_curve_number_grid(
     output_prefix: Optional[str] = None,
     product: Optional[str] = None,
     soil_product: Optional[str] = None,
+    dual_hsg: str = "drained",
 ) -> Dict[str, Any]:
     """
     Create comprehensive Curve Number grid for a USGS gauge watershed.
@@ -88,7 +100,8 @@ def create_curve_number_grid(
     gauge_id : str
         USGS gauge identifier (8-digit code, e.g., '03245500')
     year : int, optional
-        Year of NLCD data to use (default: 2019)
+        Year of NLCD data to use (default: 2021, the latest NLCD release
+        pygeohydro serves)
     resolution : int, optional
         Spatial resolution in meters (default: 30m NLCD native)
     save_outputs : bool, optional
@@ -101,6 +114,15 @@ def create_curve_number_grid(
         Whether to create PNG and HTML visualizations (default: True)
     output_prefix : str, optional
         Filename prefix for outputs (default: 'cn_grid')
+    product : str, optional
+        Pin the land-cover product; ``None`` routes by region.
+    soil_product : str, optional
+        Pin the soil product. ``None`` routes by region: SSURGO in CONUS
+        (recorded hydrologic group), POLARIS/SoilGrids otherwise (group
+        inferred from texture). ``"SSURGO"``, ``"POLARIS"``, ``"SOILGRIDS"``.
+    dual_hsg : {"drained", "undrained"}, optional
+        Which condition of a dual hydrologic group (A/D, B/D, C/D) to map.
+        Only used with SSURGO. Default ``"drained"``.
     
     Returns
     -------
@@ -258,11 +280,11 @@ def create_curve_number_grid(
     print(f"  Unique land-cover classes: {len(unique_classes)}")
     print()
 
-    # Step 3: Fetch soil data (region-routed: POLARIS in CONUS, SoilGrids
-    # elsewhere — both normalised to POLARIS-style texture variables).
-    print("Step 3: Fetch soil texture data")
+    # Step 3: Fetch soil data (region-routed: SSURGO in CONUS, with POLARIS
+    # as fallback; SoilGrids elsewhere).
+    print("Step 3: Fetch soil data")
     print("-" * 50)
-    soil_data = fetch_soil_data_polaris(watershed_gdf, product=soil_product)
+    soil_data = fetch_soil_data(watershed_gdf, product=soil_product)
     print(f"  Retrieved soil data variables: {list(soil_data.data_vars)} "
           f"(product={soil_data.attrs.get('_adata_product')})")
     print()
@@ -273,6 +295,7 @@ def create_curve_number_grid(
     cn_grid, soil_group_grid, soil_stats = _create_cn_grid_from_data(
         lulc_data, soil_data, year, resolution,
         watershed_geom=watershed_geom,
+        dual_hsg=dual_hsg,
     )
     print()
 
@@ -410,6 +433,9 @@ def create_curve_number_grid(
             'landcover_source': lulc_data.attrs.get('_adata_source'),
             'soil_product': soil_data.attrs.get('_adata_product'),
             'soil_source': soil_data.attrs.get('_adata_source'),
+            'soil_fallback_reason': soil_data.attrs.get('_soil_fallback_reason'),
+            'hsg_method': soil_stats.get('hsg_method'),
+            'lulc_year': year,
             'region': lulc_data.attrs.get('_adata_region'),
         },
         'file_paths': file_paths,
@@ -420,7 +446,7 @@ def create_curve_number_grid(
 
 def create_curve_number_grid_from_geometry(
     geometry,
-    year: int = 2019,
+    year: int = NLCD_LATEST_YEAR,
     resolution: int = 30,
     save_outputs: bool = True,
     output_dir: Optional[str] = None,
@@ -429,6 +455,7 @@ def create_curve_number_grid_from_geometry(
     output_prefix: Optional[str] = None,
     product: Optional[str] = None,
     soil_product: Optional[str] = None,
+    dual_hsg: str = "drained",
 ) -> Dict[str, Any]:
     """
     Create comprehensive Curve Number grid from custom watershed geometry.
@@ -447,7 +474,8 @@ def create_curve_number_grid_from_geometry(
         - shapely.Polygon: Watershed boundary polygon
         Must be in WGS84 (EPSG:4326) or will be reprojected
     year : int, optional
-        Year of NLCD data to use (default: 2019)
+        Year of NLCD data to use (default: 2021, the latest NLCD release
+        pygeohydro serves)
     resolution : int, optional
         Spatial resolution in meters (default: 30m)
     save_outputs : bool, optional
@@ -460,6 +488,15 @@ def create_curve_number_grid_from_geometry(
         Whether to create PNG and HTML visualizations (default: True)
     output_prefix : str, optional
         Filename prefix for outputs (default: 'cn_grid_custom')
+    product : str, optional
+        Pin the land-cover product; ``None`` routes by region.
+    soil_product : str, optional
+        Pin the soil product. ``None`` routes by region: SSURGO in CONUS
+        (recorded hydrologic group), POLARIS/SoilGrids otherwise (group
+        inferred from texture). ``"SSURGO"``, ``"POLARIS"``, ``"SOILGRIDS"``.
+    dual_hsg : {"drained", "undrained"}, optional
+        Which condition of a dual hydrologic group (A/D, B/D, C/D) to map.
+        Only used with SSURGO. Default ``"drained"``.
     
     Returns
     -------
@@ -625,11 +662,11 @@ def create_curve_number_grid_from_geometry(
     print(f"  Unique land-cover classes: {len(unique_classes)}")
     print()
 
-    # Step 3: Fetch soil data (region-routed: POLARIS in CONUS, SoilGrids
-    # elsewhere — both normalised to POLARIS-style texture variables).
-    print("Step 3: Fetch soil texture data")
+    # Step 3: Fetch soil data (region-routed: SSURGO in CONUS, with POLARIS
+    # as fallback; SoilGrids elsewhere).
+    print("Step 3: Fetch soil data")
     print("-" * 50)
-    soil_data = fetch_soil_data_polaris(watershed_gdf, product=soil_product)
+    soil_data = fetch_soil_data(watershed_gdf, product=soil_product)
     print(f"  Retrieved soil data variables: {list(soil_data.data_vars)} "
           f"(product={soil_data.attrs.get('_adata_product')})")
     print()
@@ -640,6 +677,7 @@ def create_curve_number_grid_from_geometry(
     cn_grid, soil_group_grid, soil_stats = _create_cn_grid_from_data(
         lulc_data, soil_data, year, resolution,
         watershed_geom=watershed_geom,
+        dual_hsg=dual_hsg,
     )
     print()
 
@@ -774,6 +812,9 @@ def create_curve_number_grid_from_geometry(
             'landcover_source': lulc_data.attrs.get('_adata_source'),
             'soil_product': soil_data.attrs.get('_adata_product'),
             'soil_source': soil_data.attrs.get('_adata_source'),
+            'soil_fallback_reason': soil_data.attrs.get('_soil_fallback_reason'),
+            'hsg_method': soil_stats.get('hsg_method'),
+            'lulc_year': year,
             'region': lulc_data.attrs.get('_adata_region'),
         },
         'file_paths': file_paths,
@@ -876,6 +917,7 @@ def _create_cn_grid_from_data(
     year: int,
     resolution: int,
     watershed_geom=None,
+    dual_hsg: str = "drained",
 ) -> Tuple[xr.DataArray, np.ndarray, Dict]:
     """Create CN grid from LULC and soil data.
 
@@ -894,6 +936,10 @@ def _create_cn_grid_from_data(
         Watershed polygon in the same CRS as the LULC raster.  Used only by
         the chunked path for chip pruning; ignored when the raster is small
         enough for single-pass execution.
+    dual_hsg : {"drained", "undrained"}
+        With SSURGO soil (``hsg_drained`` / ``hsg_undrained`` variables), which
+        condition of a dual hydrologic group to map. The CN mean for the
+        other condition is reported in ``soil_stats``.
     """
     # Extract land cover
     cover_var = f'cover_{year}'
@@ -901,6 +947,17 @@ def _create_cn_grid_from_data(
 
     # Extract soil properties
     soil_vars = list(soil_data.data_vars)
+
+    if 'hsg_drained' in soil_vars:
+        soil_groups, soil_stats, alt_groups = _soil_groups_from_ssurgo(
+            soil_data, lulc, dual_hsg,
+        )
+        return _finish_cn_grid(
+            lulc, soil_groups, soil_stats, year, resolution, watershed_geom,
+            source=f"NLCD land cover + {soil_data.attrs.get('_adata_product', 'SSURGO')} "
+                   "recorded hydrologic soil group",
+            alt_groups=alt_groups,
+        )
 
     # Map to correct variable names (Polaris naming can vary)
     if 'sand_0_5cm_mean' in soil_vars:
@@ -953,6 +1010,91 @@ def _create_cn_grid_from_data(
     # Classify soil hydrologic groups
     print("  Classifying soil hydrologic groups...")
     soil_groups, soil_stats = _classify_soil_hydrologic_group(sand, silt, clay, ksat)
+    soil_stats['hsg_method'] = 'texture_thresholds'
+
+    return _finish_cn_grid(
+        lulc, soil_groups, soil_stats, year, resolution, watershed_geom,
+        source=f"NLCD land cover + {soil_data.attrs.get('_adata_product', 'POLARIS')} "
+               "texture (hydrologic group inferred)",
+    )
+
+
+def _soil_groups_from_ssurgo(
+    soil_data: xr.Dataset,
+    lulc: xr.DataArray,
+    dual_hsg: str,
+) -> Tuple[np.ndarray, Dict, np.ndarray]:
+    """Recorded SSURGO hydrologic groups resampled (nearest) onto the LULC grid.
+
+    Returns (groups, stats, alternate_groups): ``groups`` uses the requested
+    dual-group condition, ``alternate_groups`` the other one. Cells without a
+    recorded group are 0, which the CN lookup maps to NaN.
+    """
+    if dual_hsg not in ("drained", "undrained"):
+        raise ValueError(f"dual_hsg must be 'drained' or 'undrained', got {dual_hsg!r}")
+    from rasterio.enums import Resampling
+
+    if lulc.rio.crs is None:
+        lulc = lulc.rio.write_crs("EPSG:4326")
+
+    def on_lulc_grid(name: str) -> np.ndarray:
+        da = soil_data[name]
+        if da.rio.crs is None and soil_data.rio.crs is not None:
+            da = da.rio.write_crs(soil_data.rio.crs)
+        return da.rio.reproject_match(lulc, resampling=Resampling.nearest).values
+
+    def as_group(v: np.ndarray) -> np.ndarray:
+        return np.where(np.isfinite(v) & (v >= 1) & (v <= 4), v, 0).astype(np.int32)
+
+    drained = as_group(on_lulc_grid('hsg_drained'))
+    undrained = as_group(on_lulc_grid('hsg_undrained'))
+    groups, alt = (drained, undrained) if dual_hsg == "drained" else (undrained, drained)
+
+    lulc_ok = np.isfinite(lulc.values) & (lulc.values > 0)
+    has_group = groups > 0
+    group_names = {1: 'A', 2: 'B', 3: 'C', 4: 'D'}
+    stats: Dict[str, Any] = {
+        'hsg_method': 'ssurgo_recorded',
+        'dual_hsg_condition': dual_hsg,
+        'soil_group_distribution': {},
+        'soil_group_percentages': {},
+    }
+    counted = groups[lulc_ok & has_group]
+    print(f"    Soil group distribution (SSURGO, dual groups -> {dual_hsg}):")
+    for g in (1, 2, 3, 4):
+        n = int((counted == g).sum())
+        if n:
+            stats['soil_group_distribution'][group_names[g]] = n
+            stats['soil_group_percentages'][group_names[g]] = 100.0 * n / counted.size
+            print(f"      Group {group_names[g]}: {100.0 * n / counted.size:.1f}%")
+    n_lulc = int(lulc_ok.sum())
+    stats['hsg_coverage'] = float((lulc_ok & has_group).sum() / n_lulc) if n_lulc else 0.0
+    if 'kw' in soil_data:
+        # Recorded surface-horizon erodibility over the catchment's LULC cells
+        # (US customary units; x 0.1317 for SI).
+        kw = on_lulc_grid('kw')[lulc_ok]
+        kw = kw[np.isfinite(kw)]
+        stats['kw_mean'] = float(kw.mean()) if kw.size else None
+    stats['pct_dual_hsg'] = (
+        float(100.0 * np.mean(drained[lulc_ok & has_group] != undrained[lulc_ok & has_group]))
+        if counted.size else 0.0
+    )
+    return groups, stats, alt
+
+
+def _finish_cn_grid(
+    lulc: xr.DataArray,
+    soil_groups: np.ndarray,
+    soil_stats: Dict,
+    year: int,
+    resolution: int,
+    watershed_geom,
+    *,
+    source: str,
+    alt_groups: Optional[np.ndarray] = None,
+) -> Tuple[xr.DataArray, np.ndarray, Dict]:
+    """Apply the CN lookup to co-registered LULC + soil-group arrays."""
+    lulc_values = lulc.values
 
     # Create CN lookup table + flat lookup array
     cn_table = _create_cn_lookup_table()
@@ -1033,11 +1175,21 @@ def _create_cn_grid_from_data(
             'long_name': 'NRCS Curve Number',
             'units': 'dimensionless',
             'description': 'SCS Curve Number for AMC-II conditions',
-            'source': 'NLCD land cover + Polaris soil data',
+            'source': source,
+            'hsg_method': soil_stats.get('hsg_method', ''),
             'year': year,
             'resolution_m': resolution,
         },
     )
+
+    # SSURGO: report the CN for the other dual-group condition, and the
+    # recorded erodibility, so neither needs a second fetch.
+    if alt_groups is not None:
+        alt_cn = _vectorised_cn_lookup(lulc_values, alt_groups, lookup)
+        alt_valid = alt_cn[np.isfinite(alt_cn)]
+        other = 'undrained' if soil_stats.get('dual_hsg_condition') == 'drained' else 'drained'
+        soil_stats[f'cn_mean_{other}'] = float(alt_valid.mean()) if alt_valid.size else None
+
 
     # Add CRS
     try:
@@ -1187,7 +1339,10 @@ def _create_cn_lookup_table() -> Dict[Tuple[int, int], int]:
         71: [49, 69, 79, 84],  # Grassland/Herbaceous
         
         # Agriculture
-        81: [67, 78, 85, 89],  # Pasture/Hay
+        # Pasture/Hay: TR-55 Table 2-2c "pasture, grassland, or range", good
+        # condition. Earlier versions gave class 81 the row-crop row below,
+        # which overstated CN on pasture by 9 (group D) to 28 (group A) points.
+        81: [39, 61, 74, 80],  # Pasture/Hay
         82: [67, 78, 85, 89],  # Cultivated Crops
         
         # Wetlands

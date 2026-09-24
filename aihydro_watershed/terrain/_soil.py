@@ -13,6 +13,11 @@ of which backend served the data.
 
 Provenance (which product/source actually served the data, and the detected
 region) is attached to ``Dataset.attrs`` under the ``_adata_*`` keys.
+
+:func:`fetch_soil_data` is the region-aware entry point. Inside CONUS it serves
+SSURGO (gNATSGO map units + Soil Data Access), which records hydrologic soil
+group and erodibility Kw directly; POLARIS and SoilGrids remain the fallback
+and the route outside CONUS. See :mod:`aihydro_watershed.terrain.ssurgo`.
 """
 from __future__ import annotations
 
@@ -41,6 +46,58 @@ def _to_single_geom(geometry):
     if hasattr(geometry, "unary_union"):
         return geometry.unary_union
     return geometry
+
+
+SSURGO_PRODUCT_ALIASES = frozenset({"SSURGO", "GNATSGO", "SSURGO_GNATSGO"})
+
+
+def _in_conus(geom) -> bool:
+    from aihydro_watershed.delineation.nldi_point import is_conus
+
+    c = geom.centroid
+    return is_conus(c.y, c.x)
+
+
+def fetch_soil_data(geometry, product: Optional[str] = None) -> "xr.Dataset":
+    """Fetch soil data for a geometry: SSURGO in CONUS, POLARIS/SoilGrids elsewhere.
+
+    Parameters
+    ----------
+    geometry : gpd.GeoSeries | gpd.GeoDataFrame | shapely geometry (WGS84)
+    product : str, optional
+        ``None`` (default) routes by region: SSURGO inside CONUS, falling back
+        to the POLARIS/SoilGrids route if SSURGO cannot be served (the reason
+        is kept in ``attrs['_soil_fallback_reason']``). ``"SSURGO"`` (or
+        ``"GNATSGO"``) pins SSURGO and raises on failure. Any other value is
+        passed to :func:`fetch_soil_data_polaris` (e.g. ``"POLARIS"``,
+        ``"SOILGRIDS"``).
+
+    Returns
+    -------
+    xr.Dataset
+        SSURGO: ``hsg_drained``, ``hsg_undrained``, ``kw``, ``kw_si``,
+        ``sand_surface``, ``silt_surface``, ``clay_surface``, ``mukey``.
+        POLARIS/SoilGrids: texture fractions (``sand_5`` ...).
+        Either way ``attrs['_adata_product']`` names the product served.
+    """
+    if not _DEPS_AVAILABLE:
+        raise ImportError("soil data requires: pip install aihydro-watershed[all]")
+    from aihydro_watershed.terrain.ssurgo import fetch_soil_data_ssurgo
+
+    key = product.strip().upper() if product else None
+    if key in SSURGO_PRODUCT_ALIASES:
+        return fetch_soil_data_ssurgo(geometry)
+    if key is None and _in_conus(_to_single_geom(geometry)):
+        try:
+            return fetch_soil_data_ssurgo(geometry)
+        except Exception as exc:
+            log.warning(
+                "fetch_soil_data: SSURGO unavailable (%s); falling back to POLARIS.", exc,
+            )
+            ds = fetch_soil_data_polaris(geometry)
+            ds.attrs["_soil_fallback_reason"] = f"SSURGO unavailable: {exc}"[:300]
+            return ds
+    return fetch_soil_data_polaris(geometry, product=product)
 
 
 def fetch_soil_data_polaris(

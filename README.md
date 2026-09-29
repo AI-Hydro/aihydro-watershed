@@ -50,6 +50,10 @@ print(result.data["area_km2"])
 
 # Expected drainage area known? Pass it to improve COMID selection
 result = delineate_from_point(39.27, -77.54, expected_area_km2=25_000)
+
+# Road culvert, catchment ~1 km2 (CONUS): USGS 3DEP 10 m + embankment notch
+result = delineate_from_point(40.2497, -86.3877, method="small_catchment")
+print(result.data["area_km2"], result.data["quality_flags"])
 ```
 
 Results are typed `HydroResult` (from `aihydro-core`) — provenance-stamped with
@@ -62,7 +66,7 @@ tool path, version, parameters, and data sources.
 | `delineation` | Global pour-point / gauge delineation. Three tiers: NLDI (CONUS NHD-indexed), MERIT-Hydro/pyflwdir (local flowdir cache), MERIT-Basins hybrid (vector topology + raster refinement). Auto-routing chooses the best available tier. |
 | `merit` | MERIT-Hydro data management: regional basin cache, flowdir rasters, map layers, region presets. |
 | `characterize` | Geomorphic parameters (28 indices), watershed attributes, topographic wetness index. |
-| `terrain` | Curve number, event runoff (SCS-CN), RUSLE erosion. |
+| `terrain` | Curve number (TR-55, AMC II), event runoff (SCS-CN), RUSLE erosion. SSURGO soil attributes in CONUS (recorded hydrologic group and erodibility Kw via gNATSGO + Soil Data Access), POLARIS/SoilGrids elsewhere. |
 | `signatures` | Baseflow index (Lyne-Hollick), flow-duration curve, flood frequency (Gumbel/GEV), drought indices (SPI, SPEI, Palmer). |
 
 The flood-inundation suite is **not** part of this package.
@@ -74,8 +78,27 @@ The flood-inundation suite is **not** part of this package.
 2. merit_gee   — MERIT-Hydro flowdir from Google Earth Engine (global, cloud)
 3. local_merit — MERIT-Hydro flowdir from local cache (global, offline after download)
 4. fast        — pysheds on cloud-fetched DEM tile (global, no MERIT cache needed)
+5. small_catchment (alias 3dep): CONUS catchments under ~5 km2 (road
+                 culverts). USGS 3DEP 10 m bare-earth DEM, a notch carved
+                 through the road embankment at the pour point, snap to the
+                 largest drainage within 40 m
 auto           — tries tiers in order of accuracy; degrades gracefully on failures
+                 (in CONUS, expected_area_km2 < 5 sends it to small_catchment first)
 ```
+
+Why a separate small-catchment tier: NLDI returns whole NHDPlus catchments
+(and the router rejects anything under 1 km2), MERIT-Hydro is 90 m, and the
+`fast` tier reads Copernicus GLO-30, a surface model that keeps canopy and
+buildings. A road embankment also acts as a dam on any DEM unless it is
+notched. On 67 Indiana culverts (INDOT SPR-4926) the small-catchment tier
+matched engineer-computed drainage areas within a factor of 2 at 76 % of
+sites (median ratio 1.01, Spearman 0.80). Results under 0.05 km2 were always
+roadside-ditch snaps and are flagged `LIKELY_DITCH_SNAP`.
+
+USGS StreamStats is not used as a tier: the old
+`streamstats.usgs.gov/streamstatsservices` API is retired (404), and the
+current `/ss-delineate/v1/delineate/sshydro/{STATE}?lat=&lon=` service does not
+snap points onto its stream grid for very small channels.
 
 ## Layering
 

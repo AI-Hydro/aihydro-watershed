@@ -112,6 +112,24 @@ _SOURCES_OPENMETEO_FLOOD = [
 
 _TOOL_PATH_SIGNATURES = "aihydro_watershed.signatures.signatures.extract_hydrological_signatures"
 
+# Baseflow separation method used for every baseflow_index this module
+# computes (compute_flow_stats_camels -> _lyne_hollick_baseflow). Different
+# methods (Lyne-Hollick vs Eckhardt vs UKIH) and different alpha/pass
+# parameters shift BFI by up to ~0.1-0.2 for the same catchment — the method
+# is part of the result's identity, not an implementation detail, so it is
+# surfaced in HydroMeta.params (see extract_hydrological_signatures) and in
+# aihydro-lsh's AttrProvenance.quality_flags (see recipes/hydrology.py).
+# A SINGLE source of truth here means both call sites report the params the
+# filter was actually run with, not a second hardcoded copy that can drift.
+BASEFLOW_SEPARATION_METHOD = "lyne_hollick"
+BASEFLOW_SEPARATION_PARAMS = {"alpha": 0.925, "passes": 3}
+BASEFLOW_SEPARATION_REFERENCE = "Nathan & McMahon (1990); Ladson et al. (2013)"
+BASEFLOW_METHOD_QUALITY_FLAG = (
+    f"baseflow_method={BASEFLOW_SEPARATION_METHOD}"
+    f"_alpha{BASEFLOW_SEPARATION_PARAMS['alpha']}"
+    f"_passes{BASEFLOW_SEPARATION_PARAMS['passes']}"
+)
+
 log = logging.getLogger(__name__)
 warnings.filterwarnings('ignore')
 
@@ -122,6 +140,10 @@ __all__ = [
     'compute_event_stats_camels',
     'compute_timing_stats_camels',
     'compute_slope_fdc_camels',
+    'BASEFLOW_SEPARATION_METHOD',
+    'BASEFLOW_SEPARATION_PARAMS',
+    'BASEFLOW_SEPARATION_REFERENCE',
+    'BASEFLOW_METHOD_QUALITY_FLAG',
 ]
 
 
@@ -210,20 +232,31 @@ def extract_hydrological_signatures(
         #  2. USGS NWIS — when a gauge_id is supplied
         #  3. GEOGLOWS v2 → Open-Meteo GloFAS fallback — globally, no auth needed
         _global_product: str | None = None
+        # Identity of the streamflow the signatures were computed from, read
+        # from what was served — never inferred from the request. Consumers
+        # (e.g. aihydro-lsh's HydrologyRecipe) record this as provenance.
+        #   observed        — USGS NWIS daily values for gauge_id
+        #   modelled        — reach-scale modelled discharge (GEOGLOWS / GloFAS)
+        #   caller_supplied — q_cms_series passed in; origin unknown here
+        #   none            — no usable streamflow; signatures are NaN
         if q_cms_series is not None:
             streamflow_result = {"q_cms": list(q_cms_series)}
+            _source = {"product": None, "observation": "caller_supplied"}
         elif gauge_id:
             streamflow_result = _fetch_streamflow_internal(gauge_id, start_date, end_date)
+            _source = {"product": "NWIS_STREAMFLOW", "observation": "observed"}
         else:
             # Auto-route: try GEOGLOWS v2 (anonymous S3 Zarr, 1940→present),
             # fall back to Open-Meteo GloFAS v4 (no auth, ~1984→present).
             streamflow_result = _fetch_global_streamflow(watershed_geom, start_date, end_date)
             _global_product = (streamflow_result or {}).get("_product")
+            _source = {"product": _global_product, "observation": "modelled"}
 
         _uncertainty: dict = {}
         if streamflow_result is None or len(streamflow_result.get("q_cms", [])) < 365:
             log.warning("Insufficient streamflow data for gauge %s", gauge_id)
             sigs = _get_default_hydrology()
+            _source = {"product": None, "observation": "none"}
         else:
             q_cms = streamflow_result["q_cms"]
             # _to_mm_per_day expects a pd.Series with a DatetimeIndex.
@@ -279,6 +312,7 @@ def extract_hydrological_signatures(
                  for k, v in sigs.items()}
         if _uncertainty:
             clean["_uncertainty"] = _uncertainty
+        clean["_streamflow_source"] = _source
 
         if _global_product == "GEOGLOWS_RETRO":
             _global_sources = _SOURCES_GEOGLOWS
@@ -299,6 +333,9 @@ def extract_hydrological_signatures(
                     "area_km2": area_km2,
                     "start_date": start_date,
                     "end_date": end_date,
+                    "baseflow_method": BASEFLOW_SEPARATION_METHOD,
+                    "baseflow_params": dict(BASEFLOW_SEPARATION_PARAMS),
+                    "baseflow_reference": BASEFLOW_SEPARATION_REFERENCE,
                 },
             ),
         )
@@ -315,12 +352,16 @@ def extract_hydrological_signatures(
     except Exception as e:
         log.error("Error extracting hydrological signatures: %s", e)
         return HydroResult(
-            data=_get_default_hydrology(),
+            data={
+                **_get_default_hydrology(),
+                "_streamflow_source": {"product": None, "observation": "none"},
+            },
             meta=HydroMeta(
                 tool=_TOOL_PATH_SIGNATURES,
                 version=_get_version(),
                 gauge_id=gauge_id,
-                sources=_SOURCES_NWIS,
+                # Cite NWIS only when a gauge was actually requested.
+                sources=_SOURCES_NWIS if gauge_id else [],
                 params={"gauge_id": gauge_id, "error": str(e)},
             ),
         )
@@ -549,7 +590,13 @@ def _fetch_global_streamflow(
 
     Both backends are anonymous (no auth, no queue). Returns a dict with keys
     ``q_cms`` (pd.Series[float] with DatetimeIndex, m³/s) and ``_product``
-    (the product ID that succeeded), or ``None`` if all backends fail.
+    (the product ID aihydro-data actually *served*), or ``None`` if all
+    backends fail.
+
+    Each candidate is fetched with ``fallback=[]``: this loop is the whole
+    fallback chain. Without it, a manual pin walks aihydro-data's routing
+    policy on failure, so a GEOGLOWS request could be served by another
+    product (in CONUS, observed NWIS) while being labelled GEOGLOWS.
 
     Install:  pip install aihydro-data[geoglows]   (GEOGLOWS backend)
               pip install aihydro-data              (Open-Meteo needs only requests)
@@ -573,6 +620,7 @@ def _fetch_global_streamflow(
                 end=end_date,
                 mode="manual",
                 product=product,
+                fallback=[],
             )
             df = fetch_result.data
             if not isinstance(df, pd.DataFrame) or df.empty:
@@ -584,8 +632,9 @@ def _fetch_global_streamflow(
             idx = pd.to_datetime(df["date"] if "date" in df.columns else df.index)
             q_series = pd.Series(df["streamflow"].values, index=idx, dtype=float)
             q_series.name = "q_cms"
-            log.info("Global streamflow fetched via %s: %d days", product, len(q_series))
-            return {"q_cms": q_series, "_product": product}
+            served = getattr(fetch_result, "product", None) or product
+            log.info("Global streamflow fetched via %s: %d days", served, len(q_series))
+            return {"q_cms": q_series, "_product": served}
         except Exception as e:
             log.warning("Global streamflow fetch failed (product=%s): %s", product, e)
 

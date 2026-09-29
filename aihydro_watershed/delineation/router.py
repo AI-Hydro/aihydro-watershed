@@ -25,6 +25,8 @@ Method = Literal[
     "merit_basins",
     "dem_raw_fallback",
     "fast",
+    "small_catchment",
+    "3dep",
 ]
 
 _TOOL_PATH = "aihydro_watershed.delineation.router.delineate_from_point"
@@ -33,6 +35,24 @@ _MIN_AREA_KM2 = 1.0
 _LARGE_SNAP_M = 5000.0
 _NLDI_QUICK_MIN_KM2 = 1.0
 _NLDI_QUICK_MAX_KM2 = 15_000.0
+# Culvert-scale tier (USGS 3DEP 10 m + embankment notch). In auto mode it runs
+# first in CONUS when the caller's expected area is below this, and as the
+# CONUS fallback when NLDI returns nothing usable. Its own acceptance floor is
+# ten 10 m cells; results under 0.05 km2 are flagged LIKELY_DITCH_SNAP.
+_SMALL_CATCHMENT_MAX_KM2 = 5.0
+_SMALL_CATCHMENT_MIN_KM2 = 0.001
+_SMALL_CATCHMENT_METHOD = "small_catchment_3dep"
+
+_SOURCES_3DEP = [
+    DataSource(
+        name="USGS 3D Elevation Program (3DEP) 1/3 arc-second DEM",
+        url="https://www.usgs.gov/3d-elevation-program",
+    ),
+    DataSource(
+        name="pyflwdir",
+        url="https://deltares.github.io/pyflwdir/",
+    ),
+]
 
 _SOURCES_FAST = [
     DataSource(
@@ -127,6 +147,34 @@ def _workflow_steps(
     expected_area_km2: float | None = None,
     escalation_reason: str | None = None,
 ) -> list[dict[str, Any]]:
+    if method_used == _SMALL_CATCHMENT_METHOD:
+        return [
+            {
+                "step": "fetch_3dep_dem",
+                "data": "USGS 3DEP 1/3 arc-second DEM, reprojected to EPSG:5070 at 10 m",
+                "purpose": "Bare-earth elevation around the pour point.",
+            },
+            {
+                "step": "embankment_notch",
+                "data": "DEM cells within 30 m of the pour point",
+                "purpose": "Lower them to the minimum within 60 m so a road embankment does not act as a dam.",
+            },
+            {
+                "step": "flow_routing",
+                "data": "pyflwdir.from_dem (depression fill + D8)",
+                "purpose": "Derive flow directions and upstream area.",
+            },
+            {
+                "step": "outlet_snap",
+                "data": "Upstream area within 40 m of the pour point",
+                "purpose": "Move the outlet to the largest-drainage cell nearby.",
+            },
+            {
+                "step": "window_expansion",
+                "data": "2.5 / 5 / 10 km half-width windows",
+                "purpose": "Enlarge the DEM window until the basin no longer touches its edge.",
+            },
+        ]
     if method_used == "nldi_comid":
         return [
             {
@@ -285,11 +333,18 @@ def delineate_from_point(
     lat, lon : float
         Outlet coordinates (EPSG:4326).
     expected_area_km2 : float, optional
-        Prior drainage area for validation / adaptive snapping.
+        Prior drainage area for validation / adaptive snapping. In CONUS, a
+        value below 5 km2 sends ``auto`` to the small-catchment tier first.
     method : str
         ``auto`` (NLDI in CONUS, MERIT GEE globally), ``nldi``, ``merit_gee``,
-        ``local_merit``, ``merit_basins``, or ``dem_raw_fallback``. ``fast`` is
-        accepted as a backward-compatible alias for ``dem_raw_fallback``.
+        ``local_merit``, ``merit_basins``, ``dem_raw_fallback``, or
+        ``small_catchment`` (CONUS culvert-scale catchments on USGS 3DEP 10 m
+        with an embankment notch; see
+        :mod:`aihydro_watershed.delineation.small_catchment`). ``fast`` is an
+        alias for ``dem_raw_fallback`` and ``3dep`` for ``small_catchment``.
+        Without an expected area, ``auto`` in CONUS trusts NLDI, which returns
+        whole NHDPlus catchments; for culverts pass ``expected_area_km2`` or
+        ``method="small_catchment"``.
     """
     if not (-90 <= lat <= 90 and -180 <= lon <= 180):
         raise ToolError(
@@ -300,6 +355,8 @@ def delineate_from_point(
 
     if method == "fast":
         method = "dem_raw_fallback"
+    if method == "3dep":
+        method = "small_catchment"
 
     method_used = method
     escalation_reason: str | None = None
@@ -346,7 +403,110 @@ def delineate_from_point(
     vector_data_source: str | None = None
     raster_data_source: str | None = None
 
-    run_nldi = method in ("auto", "nldi")
+    def _try_small_catchment(reason: str | None) -> bool:
+        """Run the 3DEP small-catchment tier; on success fill the result state."""
+        nonlocal gdf, area, method_used, routing_dataset, routing_resolution_m
+        nonlocal snap_distance_m, polygon_area_km2, area_validation
+        nonlocal window_expansion_iterations, final_window_bounds
+        nonlocal basin_touched_window_boundary, window_complete
+        nonlocal license_note, citation
+        try:
+            from aihydro_watershed.delineation.small_catchment import (
+                ROUTING_DATASET,
+                delineate_small_catchment,
+            )
+
+            sc = delineate_small_catchment(lat, lon)
+        except Exception as exc:
+            log.info("Small-catchment tier failed: %s", exc)
+            fallback_history.append(
+                {"method": _SMALL_CATCHMENT_METHOD, "outcome": "failed", "reason": str(exc)}
+            )
+            if method == "small_catchment":
+                raise ToolError(
+                    code="DELINEATION_FAILED",
+                    message=f"Small-catchment (3DEP) delineation failed: {exc}",
+                    tool=_TOOL_PATH,
+                    recovery="Check network access to USGS 3DEP, or nudge the pour point onto the channel.",
+                ) from exc
+            return False
+        if sc.area_km2 < _SMALL_CATCHMENT_MIN_KM2:
+            fallback_history.append(
+                {
+                    "method": _SMALL_CATCHMENT_METHOD,
+                    "outcome": "rejected",
+                    "reason": f"area {sc.area_km2:.4f} km2 below {_SMALL_CATCHMENT_MIN_KM2} km2",
+                }
+            )
+            return False
+        gdf = sc.gdf
+        area = sc.area_km2
+        polygon_area_km2 = sc.area_km2
+        method_used = _SMALL_CATCHMENT_METHOD
+        routing_dataset = ROUTING_DATASET
+        routing_resolution_m = sc.resolution_m
+        snap_distance_m = sc.snap_distance_m
+        window_expansion_iterations = sc.window_iterations
+        if sc.window_bounds_5070:
+            w = sc.window_bounds_5070
+            final_window_bounds = {
+                "crs": "EPSG:5070", "minx": w[0], "miny": w[1], "maxx": w[2], "maxy": w[3],
+            }
+        basin_touched_window_boundary = sc.status == "touches_max_window"
+        window_complete = not basin_touched_window_boundary
+        license_note = "USGS 3DEP elevation data: public domain"
+        citation = "U.S. Geological Survey, 3D Elevation Program 1/3 arc-second DEM"
+        for f in sc.quality_flags:
+            if f not in quality_flags:
+                quality_flags.append(f)
+        if expected_area_km2 and expected_area_km2 > 0:
+            ratio = sc.area_km2 / expected_area_km2
+            area_validation = {
+                "expected_area_km2": expected_area_km2,
+                "ratio_to_expected": round(ratio, 3),
+                "within_factor_2": 0.5 <= ratio <= 2.0,
+            }
+            if not area_validation["within_factor_2"]:
+                quality_flags.append("AREA_OUTSIDE_FACTOR_2_OF_EXPECTED")
+        fallback_history.append(
+            {
+                "method": _SMALL_CATCHMENT_METHOD,
+                "outcome": "succeeded",
+                "reason": reason or "requested",
+                "outlet_lat": sc.outlet_lat,
+                "outlet_lon": sc.outlet_lon,
+                "notch_elevation_m": sc.notch_elevation_m,
+            }
+        )
+        return True
+
+    if method == "small_catchment":
+        if not is_conus(lat, lon):
+            raise ToolError(
+                code="DELINEATION_FAILED",
+                message="The small-catchment tier uses USGS 3DEP and covers CONUS only.",
+                tool=_TOOL_PATH,
+                recovery="Outside CONUS use method='merit_gee' or method='auto'.",
+            )
+        _try_small_catchment("requested")
+        if gdf is None:
+            raise ToolError(
+                code="DELINEATION_FAILED",
+                message="Small-catchment (3DEP) delineation produced no usable basin.",
+                tool=_TOOL_PATH,
+                recovery="Nudge the pour point onto the channel at the culvert inlet or outlet.",
+            )
+    elif (
+        method == "auto"
+        and is_conus(lat, lon)
+        and expected_area_km2
+        and 0 < expected_area_km2 < _SMALL_CATCHMENT_MAX_KM2
+    ):
+        _try_small_catchment(
+            f"expected area {expected_area_km2:g} km2 below {_SMALL_CATCHMENT_MAX_KM2:g} km2"
+        )
+
+    run_nldi = method in ("auto", "nldi") and gdf is None
     run_merit_gee = method in ("auto", "merit_gee")
     run_local_merit = method == "local_merit"
     run_fast = method == "dem_raw_fallback"
@@ -415,6 +575,8 @@ def delineate_from_point(
                 f"{_NLDI_QUICK_MIN_KM2:.0f}–{_NLDI_QUICK_MAX_KM2:.0f} km²"
             )
             log.info("NLDI quick tier skipped: %s", escalation_reason)
+            if method == "auto" and nldi_area < _NLDI_QUICK_MIN_KM2:
+                _try_small_catchment(escalation_reason)
         except Exception as e:
             log.info("NLDI quick tier unavailable: %s", e)
             escalation_reason = str(e)
@@ -425,8 +587,10 @@ def delineate_from_point(
                     tool=_TOOL_PATH,
                     recovery="NLDI is CONUS-only and network-dependent; try method='merit_gee'.",
                 ) from e
+            if method == "auto":
+                _try_small_catchment(f"NLDI unavailable: {e}")
 
-    if method == "nldi":
+    if method == "nldi" and gdf is None:
         raise ToolError(
             code="DELINEATION_FAILED",
             message="NLDI could not return a valid watershed for this point.",
@@ -925,7 +1089,10 @@ def delineate_from_point(
                 recovery="Run merit_ensure_basin or nudge the outlet onto the main channel.",
             )
 
-    if gdf is None or gdf.empty or area < _MIN_AREA_KM2:
+    min_area_km2 = (
+        _SMALL_CATCHMENT_MIN_KM2 if method_used == _SMALL_CATCHMENT_METHOD else _MIN_AREA_KM2
+    )
+    if gdf is None or gdf.empty or area < min_area_km2:
         raise ToolError(
             code="DELINEATION_FAILED",
             message="No valid watershed polygon produced. Try moving the outlet slightly.",
@@ -939,7 +1106,7 @@ def delineate_from_point(
     # the popup caps at 6 and rolls the rest into "+N more properties". Skip
     # None/empty values so the popup stays clean.
     _feature_props = {
-        "area_km2": round(area, 1) if area is not None else None,
+        "area_km2": (round(area, 1) if area >= 10 else round(area, 3)) if area is not None else None,
         "method": method_used,
         "pfaf": pfaf_code,
         "routing": routing_dataset,
@@ -961,6 +1128,8 @@ def delineate_from_point(
         sources = _SOURCES_MERIT_GEE
     elif method_used in ("merit_basins", "merit_basins_hybrid"):
         sources = _SOURCES_MERIT
+    elif method_used == _SMALL_CATCHMENT_METHOD:
+        sources = _SOURCES_3DEP
     else:
         sources = _SOURCES_FAST
 

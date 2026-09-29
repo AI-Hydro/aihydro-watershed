@@ -51,3 +51,32 @@ def test_extract_signatures_rejects_invalid_area_before_fetching():
         assert getattr(exc, "code", None) == "INVALID_AREA"
     else:  # pragma: no cover - defensive failure path
         raise AssertionError("invalid area should raise INVALID_AREA")
+
+
+def test_extract_signatures_records_baseflow_method_in_params():
+    """HydroMeta.params must record which baseflow-separation method and
+    parameters produced baseflow_index — the method shifts BFI by ~0.1-0.2
+    for the same catchment, so it's part of the result's identity."""
+    from aihydro_watershed.signatures.signatures import (
+        BASEFLOW_SEPARATION_METHOD,
+        BASEFLOW_SEPARATION_PARAMS,
+    )
+
+    rng = np.random.default_rng(42)
+    q_series = (5.0 + 3.0 * np.sin(np.linspace(0, 8 * np.pi, 400)) + rng.random(400)).tolist()
+    square = {
+        "type": "Polygon",
+        "coordinates": [[[-77.5, 39.2], [-77.4, 39.2], [-77.4, 39.3], [-77.5, 39.3], [-77.5, 39.2]]],
+    }
+
+    result = extract_hydrological_signatures(
+        gauge_id=None,
+        watershed_geojson=square,
+        area_km2=250.0,
+        q_cms_series=q_series,
+    )
+
+    assert result.meta.params.get("baseflow_method") == BASEFLOW_SEPARATION_METHOD
+    assert result.meta.params.get("baseflow_params") == BASEFLOW_SEPARATION_PARAMS
+    assert "baseflow_reference" in result.meta.params
+    assert np.isfinite(result.data["baseflow_index"])

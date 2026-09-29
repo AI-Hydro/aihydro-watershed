@@ -3,10 +3,45 @@ from __future__ import annotations
 import math
 
 import numpy as np
+import pandas as pd
 
 from aihydro_watershed.signatures.baseflow import compute_bfi, lyne_hollick
 from aihydro_watershed.signatures.flow_duration import flow_duration_curve
-from aihydro_watershed.signatures.signatures import extract_hydrological_signatures
+from aihydro_watershed.signatures.signatures import (
+    compute_event_stats_camels,
+    extract_hydrological_signatures,
+)
+
+
+def test_missing_day_splits_high_flow_events():
+    days = pd.date_range("2010-01-01", periods=30, freq="D")
+    q = pd.Series(1.0, index=days)
+    q.loc["2010-01-21"] = 100.0
+    q.loc["2010-01-22"] = np.nan
+    q.loc["2010-01-23"] = 100.0
+    assert compute_event_stats_camels(q)["high_q_dur"] == 1.0
+
+
+def test_supplied_series_preserves_dates(monkeypatch):
+    from aihydro_watershed.signatures import signatures as sig
+
+    observed = {}
+    original = sig._to_mm_per_day
+    def capture(q, area):
+        observed["index"] = q.index.copy()
+        return original(q, area)
+    monkeypatch.setattr(sig, "_to_mm_per_day", capture)
+    days = pd.date_range("2010-01-01", periods=400, freq="2D")
+    q = pd.Series(2.0, index=days)
+    square = {"type": "Polygon", "coordinates": [[
+        [-77.5, 39.2], [-77.4, 39.2], [-77.4, 39.3],
+        [-77.5, 39.3], [-77.5, 39.2],
+    ]]}
+    sig.extract_hydrological_signatures(
+        gauge_id=None, watershed_geojson=square, area_km2=250.0,
+        q_cms_series=q,
+    )
+    assert observed["index"].equals(days)
 
 
 def test_flow_duration_curve_uses_hydrologic_exceedance_convention():

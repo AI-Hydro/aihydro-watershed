@@ -17,7 +17,7 @@ _TOOL_PATH = "aihydro_watershed.delineation.nldi_point.delineate_nldi_at_point"
 _SOURCES = [
     DataSource(
         name="USGS NLDI",
-        url="https://labs.waterdata.usgs.gov/api/nldi/",
+        url="https://api.water.usgs.gov/nldi/linked-data",
     ),
 ]
 

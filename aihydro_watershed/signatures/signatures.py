@@ -165,7 +165,7 @@ def extract_hydrological_signatures(
     area_km2: float,
     start_date: str = "1989-10-01",
     end_date: str = "2009-09-30",
-    q_cms_series: list | None = None,
+    q_cms_series: list | pd.Series | None = None,
 ) -> HydroResult:
     """
     Extract 17 CAMELS-style hydrological signatures for a watershed.
@@ -185,8 +185,9 @@ def extract_hydrological_signatures(
         Start date YYYY-MM-DD (default: "1989-10-01" — CAMELS period)
     end_date : str, optional
         End date YYYY-MM-DD (default: "2009-09-30" — CAMELS period)
-    q_cms_series : list[float] or None, optional
-        Pre-loaded daily streamflow array (m³/s). When supplied the USGS
+    q_cms_series : list[float] or pandas.Series or None, optional
+        Pre-loaded daily streamflow (m³/s). A Series retains its DatetimeIndex;
+        a list is assumed consecutive daily values from start_date. When supplied the USGS
         NWIS fetch is skipped — enables global / non-USGS workflows where
         streamflow was already fetched via ``data_fetch`` or another source.
 
@@ -240,7 +241,7 @@ def extract_hydrological_signatures(
         #   caller_supplied — q_cms_series passed in; origin unknown here
         #   none            — no usable streamflow; signatures are NaN
         if q_cms_series is not None:
-            streamflow_result = {"q_cms": list(q_cms_series)}
+            streamflow_result = {"q_cms": q_cms_series}
             _source = {"product": None, "observation": "caller_supplied"}
         elif gauge_id:
             streamflow_result = _fetch_streamflow_internal(gauge_id, start_date, end_date)
@@ -482,14 +483,24 @@ def compute_event_stats_camels(q_mm_day: pd.Series) -> Dict[str, float]:
             "zero_q_freq", "flow_variability"
         ]}
 
+    # Preserve calendar gaps: dropping NaNs before finding runs would merge
+    # two separate events on either side of a missing observation. Use the
+    # valid values for thresholds and denominators, but the full daily axis
+    # for contiguous-run lengths.
+    if isinstance(q_mm_day.index, pd.DatetimeIndex):
+        daily = q_mm_day.sort_index().resample("D").asfreq()
+        event_q = daily.to_numpy(dtype=float)
+    else:
+        event_q = q_mm_day.to_numpy(dtype=float)
+
     # High flow events (> 9x median)
-    high_mask = (q > 9.0 * med_q)
+    high_mask = np.isfinite(event_q) & (event_q > 9.0 * med_q)
     high_freq = float(np.sum(high_mask) / len(q) * 365.25)
     high_dur = _consecutive_event_lengths(high_mask)
     high_dur_mean = float(np.mean(high_dur)) if high_dur else np.nan
 
     # Low flow events (<= 0.2x mean)
-    low_mask = (q <= 0.2 * mean_q)
+    low_mask = np.isfinite(event_q) & (event_q <= 0.2 * mean_q)
     low_freq = float(np.sum(low_mask) / len(q) * 365.25)
     low_dur = _consecutive_event_lengths(low_mask)
     low_dur_mean = float(np.mean(low_dur)) if low_dur else np.nan

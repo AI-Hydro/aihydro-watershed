@@ -1,5 +1,12 @@
 # aihydro-watershed
 
+**Current state (2026-09-29):** Local pilot hardening preserves a supplied
+pandas streamflow date index and prevents missing days from merging high/low
+flow events. NLDI provenance points to the current USGS API base. 71 offline
+tests passed before this metadata-only URL correction, six live tests deselected. This is
+uncommitted and does not establish global signature validity; see the
+ecosystem [publication triage](../../papers/EVIDENCE_TRIAGE-2026-09-29.md).
+
 ## What it is
 Standalone watershed delineation + characterization package, carved out of
 `aihydro-tools` so hydrologists can `pip install aihydro-watershed` for just the

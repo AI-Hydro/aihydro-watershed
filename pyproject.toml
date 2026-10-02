@@ -48,7 +48,7 @@ classifiers = [
 # Kept lean; heavy geo/delineation stacks live behind extras so a user who only
 # needs the data structures / characterization on a supplied DEM stays light.
 dependencies = [
-    "aihydro-core[contracts]>=0.2.0,<0.3",   # HydroResult contract
+    "aihydro-core[contracts]>=0.2.3,<0.3",   # HydroResult contract
     "aihydro-data>=0.2.0,<0.3",              # streamflow / DEM acquisition
     "numpy>=1.24.0",
     "pandas>=2.0.0",

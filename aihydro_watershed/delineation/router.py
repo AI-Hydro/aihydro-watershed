@@ -294,6 +294,82 @@ def _workflow_steps(
     return []
 
 
+def _lonlat(res: Any) -> tuple[float, float] | None:
+    """(lon, lat) of a tier result's snapped outlet, if it reports one."""
+    try:
+        lo, la = float(res.outlet_lon), float(res.outlet_lat)
+        return (lo, la) if -180 <= lo <= 180 and -90 <= la <= 90 else None
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+
+def _mint_ref_dict(
+    *,
+    method_used: str | None,
+    geojson: dict[str, Any],
+    area_km2: float | None,
+    lat: float,
+    lon: float,
+    snapped_outlet: tuple[float, float] | None = None,
+    snap_distance_m: float | None = None,
+    comid: Any = None,
+    terminal_catchment_id: Any = None,
+    vector_dataset_version: str | None = None,
+    raster_dataset_version: str | None = None,
+    routing_dataset: str | None = None,
+    routing_resolution_m: float | None = None,
+) -> dict[str, Any] | None:
+    """Mint the canonical BasinRef dict for one delineation, or None on failure.
+
+    Minting never breaks delineation: on any failure the result carries
+    ``basin_ref=None`` and downstream claim promotion fails closed
+    (BASIN_REF_REQUIRED). No network I/O happens here.
+    """
+    try:
+        from aihydro_watershed import identity
+
+        if method_used == "nldi_comid" and comid is not None:
+            anchor, ok = identity.comid_anchor(comid)
+            extra: tuple[str, ...] = ()
+        elif method_used in ("merit_basins", "merit_basins_hybrid") and terminal_catchment_id not in (None, ""):
+            anchor, ok = identity.merit_basins_anchor(terminal_catchment_id, vector_dataset_version)
+            extra = ()
+        else:
+            # Grid-cell anchors: product by tier. Prefer the snapped cell the
+            # tier reports; else the requested outlet (flagged).
+            res = float(routing_resolution_m or 0) or None
+            if method_used == _SMALL_CATCHMENT_METHOD:
+                product, version, res, crs = "3dep-dem", None, res or 10.0, "EPSG:5070"
+            elif method_used in ("merit_gee_pyflwdir", "local_merit_pyflwdir", "merit_basins_hybrid"):
+                product, version, res, crs = "merit-hydro", raster_dataset_version, res or 90.0, "EPSG:4326"
+            elif method_used == "dem_raw_fallback":
+                product, version, res, crs = "raw-dem", None, res or 30.0, "EPSG:4326"
+            else:
+                return None
+            cl, cn = snapped_outlet if snapped_outlet else (lon, lat)
+            # snapped_outlet is (lon, lat)
+            anchor, ok = identity.grid_cell_anchor(product, version, res, cl, cn, crs=crs)
+            extra = () if snapped_outlet else (identity.FLAG_UNSNAPPED_GRID,)
+        out_lon, out_lat = snapped_outlet if snapped_outlet else (lon, lat)
+        ref = identity.mint_basin_ref(
+            anchor=anchor,
+            version_verified=ok,
+            method=str(method_used),
+            geometry_geojson=geojson,
+            outlet_lon=out_lon,
+            outlet_lat=out_lat,
+            snap_distance_m=snap_distance_m,
+            area_km2=area_km2,
+            comid=comid if method_used == "nldi_comid" else None,
+            merit_catchment=terminal_catchment_id if anchor.network == identity.MERIT_BASINS_NETWORK else None,
+            extra_flags=extra,
+        )
+        return ref.to_dict()
+    except Exception as exc:
+        log.warning("BasinRef minting failed (%s): %s", method_used, exc)
+        return None
+
+
 def _attach_workflow_steps(
     result: HydroResult,
     *,
@@ -313,6 +389,17 @@ def _attach_workflow_steps(
     )
     result.data.setdefault("routing_dataset", routing_dataset or result.data.get("source"))
     result.data.setdefault("quality_flags", [])
+    d = result.data
+    if "basin_ref" not in d:
+        # NLDI result: carry the COMID through (anchor + alias) and mint.
+        d["basin_ref"] = _mint_ref_dict(
+            method_used=d.get("method_used") or method_used,
+            geojson=d["geometry_geojson"],
+            area_km2=d.get("area_km2"),
+            lat=d["outlet_lat"],
+            lon=d["outlet_lon"],
+            comid=d.get("comid"),
+        )
     return result
 
 
@@ -393,6 +480,7 @@ def delineate_from_point(
     memory_telemetry: dict[str, float] | None = None
     fallback_history: list[dict[str, Any]] = []
     safe_envelope_version: str | None = None
+    snapped_outlet: tuple[float, float] | None = None  # (lon, lat) of the snapped cell, if the tier reports it
     terminal_catchment_id: str | int | None = None
     upstream_catchment_count: int | None = None
     terminal_refinement_used: bool | None = None
@@ -406,7 +494,7 @@ def delineate_from_point(
     def _try_small_catchment(reason: str | None) -> bool:
         """Run the 3DEP small-catchment tier; on success fill the result state."""
         nonlocal gdf, area, method_used, routing_dataset, routing_resolution_m
-        nonlocal snap_distance_m, polygon_area_km2, area_validation
+        nonlocal snap_distance_m, polygon_area_km2, area_validation, snapped_outlet
         nonlocal window_expansion_iterations, final_window_bounds
         nonlocal basin_touched_window_boundary, window_complete
         nonlocal license_note, citation
@@ -446,6 +534,7 @@ def delineate_from_point(
         routing_dataset = ROUTING_DATASET
         routing_resolution_m = sc.resolution_m
         snap_distance_m = sc.snap_distance_m
+        snapped_outlet = (sc.outlet_lon, sc.outlet_lat)
         window_expansion_iterations = sc.window_iterations
         if sc.window_bounds_5070:
             w = sc.window_bounds_5070
@@ -645,7 +734,7 @@ def delineate_from_point(
         nonlocal window_expansion_iterations, final_window_bounds, final_window_cell_count
         nonlocal basin_touched_window_boundary, window_complete, peak_memory_mb, runtime_seconds
         nonlocal memory_telemetry
-        nonlocal method_used
+        nonlocal method_used, snapped_outlet
         nonlocal safe_envelope_version, terminal_catchment_id, upstream_catchment_count
         nonlocal terminal_refinement_used, vector_assembly_area_km2, refined_polygon_area_km2
         nonlocal vector_dataset_version, raster_dataset_version
@@ -654,6 +743,7 @@ def delineate_from_point(
         gdf = local.gdf
         area = local.area_km2
         snap_distance_m = local.snap_distance_m
+        snapped_outlet = _lonlat(local)
         snap_quality = local.snap_quality
         snap_validation = local.snap_validation
         snapped_upa_km2 = local.snapped_upa_km2
@@ -812,6 +902,7 @@ def delineate_from_point(
             gdf = merit_gee.gdf
             area = merit_gee.area_km2
             snap_distance_m = merit_gee.snap_distance_m
+            snapped_outlet = _lonlat(merit_gee)
             snap_quality = merit_gee.snap_quality
             snap_validation = merit_gee.snap_validation
             snapped_upa_km2 = merit_gee.snapped_upa_km2
@@ -1029,6 +1120,7 @@ def delineate_from_point(
             )
             pfaf_code = fast.pfaf_code
             snap_distance_m = fast.merit_snap_distance_m
+            snapped_outlet = _lonlat(fast)
             escalation_reason = _should_escalate(
                 fast, expected_area_km2=expected_area_km2
             )
@@ -1135,6 +1227,21 @@ def delineate_from_point(
 
     import aihydro_watershed
 
+    basin_ref = _mint_ref_dict(
+        method_used=method_used,
+        geojson=geojson,
+        area_km2=round(area, 3),
+        lat=lat,
+        lon=lon,
+        snapped_outlet=snapped_outlet,
+        snap_distance_m=snap_distance_m,
+        terminal_catchment_id=terminal_catchment_id,
+        vector_dataset_version=vector_dataset_version,
+        raster_dataset_version=raster_dataset_version,
+        routing_dataset=routing_dataset,
+        routing_resolution_m=routing_resolution_m,
+    )
+
     meta = HydroMeta(
         tool=_TOOL_PATH,
         version=getattr(aihydro_watershed, "__version__", "unknown"),
@@ -1214,6 +1321,7 @@ def delineate_from_point(
             ),
             "escalation_reason": escalation_reason,
             "name": name or "watershed",
+            "basin_ref": basin_ref,
         },
         meta=meta,
     )

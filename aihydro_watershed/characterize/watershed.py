@@ -77,12 +77,24 @@ except ImportError:
 
 def _get_nldi_basin_for_gauge(nldi: NLDI, gauge_id: str) -> gpd.GeoDataFrame:
     """Fetch NLDI basin by NWIS site id, with COMID fallback when API shape fails."""
+    return _get_nldi_basin_for_gauge_ex(nldi, gauge_id)[0]
+
+
+def _get_nldi_basin_for_gauge_ex(nldi: NLDI, gauge_id: str):
+    """As :func:`_get_nldi_basin_for_gauge`, also reporting which path was used.
+
+    Returns ``(gdf, path, comid)``: ``path`` is ``"gauge_index"`` (NLDI
+    ``get_basins(<site>)``) or ``"comid_fallback"`` (basin fetched by the COMID
+    at the NWIS gauge coordinates, a different spatial support); ``comid`` is
+    set only for the fallback. Identity depends on this (ADR-003).
+    """
     from aihydro_watershed.delineation.nldi_point import _normalize_nldi_basins
 
     try:
         gdf = nldi.get_basins(gauge_id)
-        return _normalize_nldi_basins(gdf)
+        return _normalize_nldi_basins(gdf), "gauge_index", None
     except Exception as e:
+        first_error = e
         log.warning(
             "NLDI get_basins(%s) failed (%s); trying COMID at gauge coordinates",
             gauge_id,
@@ -96,13 +108,42 @@ def _get_nldi_basin_for_gauge(nldi: NLDI, gauge_id: str) -> gpd.GeoDataFrame:
             code="GAUGE_NOT_FOUND",
             message=f"Gauge {gauge_id} not found in NWIS.",
             tool=_TOOL_PATH,
-        ) from e
+        ) from first_error
     row = site_info.iloc[0]
     lat = float(row["dec_lat_va"])
     lon = float(row["dec_long_va"])
     comid = int(nldi.comid_byloc((lon, lat)).comid.iloc[0])
     gdf = nldi.get_basins(comid, fsource="comid")
-    return _normalize_nldi_basins(gdf)
+    return _normalize_nldi_basins(gdf), "comid_fallback", comid
+
+
+def _mint_gauge_ref(gauge_id, path, comid, geometry_geojson, area_km2, lon, lat):
+    """BasinRef dict for a gauge delineation, or None if minting fails.
+
+    ``gauge_index`` anchors to ``usgs:<site>``; the COMID fallback anchors to
+    the COMID (a different support) with the usgs alias ``fallback_of`` and
+    flag ``gauge_basin_comid_fallback``. Minting never breaks delineation; a
+    ``None`` ref makes claim promotion fail closed downstream.
+    """
+    try:
+        from aihydro_watershed import identity
+
+        if path == "comid_fallback":
+            anchor, ok = identity.comid_anchor(comid)
+            kw = {"usgs_relation": "fallback_of", "comid": comid,
+                  "extra_flags": ("gauge_basin_comid_fallback",)}
+        else:
+            anchor, ok = identity.gauge_anchor(gauge_id)
+            kw = {}
+        ref = identity.mint_basin_ref(
+            anchor=anchor, version_verified=ok, method=f"nldi_{path}",
+            geometry_geojson=geometry_geojson, outlet_lon=lon, outlet_lat=lat,
+            area_km2=area_km2, usgs_site=gauge_id, **kw,
+        )
+        return ref.to_dict()
+    except Exception as exc:
+        log.warning("BasinRef minting failed for gauge %s: %s", gauge_id, exc)
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -169,7 +210,7 @@ def delineate_watershed(
     try:
         # ── Step 1: Watershed boundary from NLDI ─────────────────────────
         nldi = NLDI()
-        watershed_gdf = _get_nldi_basin_for_gauge(nldi, gauge_id)
+        watershed_gdf, basin_path, fallback_comid = _get_nldi_basin_for_gauge_ex(nldi, gauge_id)
 
         if watershed_gdf.empty:
             raise ToolError(
@@ -234,6 +275,10 @@ def delineate_watershed(
                 json.dump(geometry_geojson, f)
             log.info("Saved GeoJSON: %s", out_path)
 
+        basin_ref = _mint_gauge_ref(
+            gauge_id, basin_path, fallback_comid, geometry_geojson, area_km2, gauge_lon, gauge_lat
+        )
+
         return HydroResult(
             data={
                 "geometry_geojson": geometry_geojson,
@@ -243,6 +288,9 @@ def delineate_watershed(
                 "gauge_lat": gauge_lat,
                 "gauge_lon": gauge_lon,
                 "huc_02": huc_02,
+                "delineation_path": basin_path,
+                "comid": fallback_comid,
+                "basin_ref": basin_ref,
             },
             meta=HydroMeta(
                 tool=_TOOL_PATH,

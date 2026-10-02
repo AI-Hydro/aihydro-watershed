@@ -220,3 +220,37 @@ class DelineationResult:
     warnings:  list[str]
     meta:      dict                # method-specific provenance
 ```
+
+---
+
+## Place identity (BasinRef) — ADR-003, slice 3 P3
+
+`aihydro_watershed/identity.py` is the **only minter** of
+`aihydro_core.records.place.BasinRef` (spec and `aihydro.geom/1` live in core).
+Every delineation result carries `data["basin_ref"]` (a `BasinRef.to_dict()`,
+or `None` if minting failed, in which case basin-scoped claim promotion fails
+closed downstream). Identity is the **network anchor**; the polygon digest names
+one geometry realisation only.
+
+| Method (`method_used`) | Anchor kind | network / version | element |
+|---|---|---|---|
+| NLDI `get_basins(<site>)` (`delineate_watershed`) | `gauge_index` | `nhdplusv2` / `unversioned` | `usgs:<site>` |
+| NLDI COMID (point route, or gauge COMID fallback) | `network_element` | `nhdplusv2` / `unversioned` | `<comid>` |
+| `merit_basins_hybrid` (terminal id known) | `network_element` | `merit-basins` / vector dataset version | terminal catchment id |
+| `merit_gee_pyflwdir`, `local_merit_pyflwdir`, hybrid without terminal id | `grid_cell` | `merit-hydro` / raster dataset version | `EPSG:4326\|<n>as\|ix\|iy` |
+| `dem_raw_fallback` | `grid_cell` | `raw-dem` / `unversioned` | `EPSG:4326\|<n>as\|ix\|iy` |
+| `small_catchment_3dep` | `grid_cell` | `3dep-dem` / `unversioned` | `EPSG:5070\|10m\|ix\|iy` |
+
+- Unknown product versions become `unversioned` plus flag `network_version_unverified`.
+- Grid anchors use the tier's snapped cell; if a tier reports none the requested
+  outlet is used and `grid_anchor_from_requested_outlet` is flagged. Cell edges
+  are subject to float rounding at exact boundaries.
+- Different methods give different ids. Sameness across methods is asserted only
+  by a shared `usgs:` alias or `compare_realisations` (area ratio, IoU, outlet
+  distance); ids are never merged.
+- Gauge COMID fallback: `delineation_path="comid_fallback"`, flag
+  `gauge_basin_comid_fallback`, usgs alias relation `fallback_of`.
+- Geoconnex: `.../usgs/monitoring-location/<site>` is added with `verified=False`;
+  a `ref/gages/<n>` PID comes only from `resolve_geoconnex_gage` (one GET, 5 s,
+  cached at `$AIHYDRO_HOME|~/.aihydro/cache/place/geoconnex.json`) and is never
+  constructed. No PID available: flag `geoconnex_unresolved`. Minting does no I/O.

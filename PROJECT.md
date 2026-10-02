@@ -40,6 +40,11 @@ signatures.
   fast DEM delineation (Rhine/Cologne) returns non-empty polygon. AST layering guard green.
 - **A5 ✅** Docs: README, ARCHITECTURE, MIGRATION, PROJECT updated.
 
+## Place identity (2040 slice 3, P3)
+`aihydro_watershed/identity.py` mints `BasinRef` (requires `aihydro-core>=0.2.3`).
+Router and `delineate_watershed` attach `data["basin_ref"]`. See ARCHITECTURE.md
+"Place identity" and `docs/vision-2040/plans/slice-3-place-identity.md`.
+
 ## Non-goals
 - The flood-inundation suite (separate subsystem; not here).
 - No upward import of the `ai_hydro` tools package (layering guard enforces this).

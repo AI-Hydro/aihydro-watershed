@@ -32,6 +32,7 @@ jobs:
       - name: Install package with dev + all extras
         run: |
           python -m pip install --upgrade pip
+          pip install import-linter
           pip install -e ".[all,dev]"
 
       - name: Lint with ruff (advisory — pre-existing debt, not yet a merge gate)

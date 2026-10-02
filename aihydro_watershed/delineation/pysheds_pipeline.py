@@ -108,7 +108,10 @@ def delineate_watershed_from_array(
     latitude: float,
     longitude: float,
     expected_area_km2: float | None = None,
+    snap_out: dict | None = None,
 ) -> gpd.GeoDataFrame:
+    """Delineate on ``dem_da``. If ``snap_out`` is a dict it receives the DEM-snapped
+    pour point: ``lon``, ``lat`` (EPSG:4326), ``crs`` (grid CRS) and ``resolution_m``."""
     with tempfile.NamedTemporaryFile(suffix=".tif", delete=False) as tmp:
         temp_dem_path = tmp.name
     try:
@@ -140,6 +143,17 @@ def delineate_watershed_from_array(
             y_pour,
             expected_area_km2=expected_area_km2,
         )
+
+        if snap_out is not None:
+            # _snap_outlet_on_dem returns the cell's upper-left corner; identity uses
+            # the cell centre so float rounding never sits on a cell edge.
+            xc = x_snap + grid.affine.a / 2.0
+            yc = y_snap + grid.affine.e / 2.0
+            ll = gpd.GeoSeries([Point(xc, yc)], crs=dem_da.rio.crs).to_crs(4326).iloc[0]
+            snap_out.update(
+                lon=float(ll.x), lat=float(ll.y),
+                crs=str(dem_da.rio.crs), resolution_m=float(pixel_size_m),
+            )
 
         catch = grid.catchment(
             x=x_snap, y=y_snap, fdir=fdir, dirmap=dirmap, xytype="coordinate"
@@ -295,8 +309,9 @@ def delineate_fast(
             verbose=verbose,
         )
 
+    final_snap: dict = {}
     ws_final = delineate_watershed_from_array(
-        dem_fine, lat, lon, expected_area_km2=expected_area_km2
+        dem_fine, lat, lon, expected_area_km2=expected_area_km2, snap_out=final_snap
     )
     a = area_km2(ws_final)
     if verbose:
@@ -310,4 +325,8 @@ def delineate_fast(
         outlet_lon=lon,
         merit_snap_distance_m=merit_snap_m,
         pfaf_code=pfaf,
+        snapped_outlet_lon=final_snap.get("lon"),
+        snapped_outlet_lat=final_snap.get("lat"),
+        snap_grid_crs=final_snap.get("crs"),
+        snap_grid_resolution_m=final_snap.get("resolution_m"),
     )

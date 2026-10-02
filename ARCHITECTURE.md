@@ -242,9 +242,16 @@ one geometry realisation only.
 | `small_catchment_3dep` | `grid_cell` | `3dep-dem` / `unversioned` | `EPSG:5070\|10m\|ix\|iy` |
 
 - Unknown product versions become `unversioned` plus flag `network_version_unverified`.
-- Grid anchors use the tier's snapped cell; if a tier reports none the requested
-  outlet is used and `grid_anchor_from_requested_outlet` is flagged. Cell edges
-  are subject to float rounding at exact boundaries.
+- Grid anchors use ONLY the snapped pour point and grid the tier reports
+  (`snapped_outlet_lon/lat`, `snap_grid_crs`, `snap_grid_resolution_m`; pysheds
+  reports the DEM-snapped cell centre on its UTM grid). The requested outlet is
+  never used: with no snapped point `basin_ref` is `None` and
+  `data["basin_ref_unavailable"]` says why (`no_snapped_pour_point`,
+  `unsupported_method`, `mint_failed:<code>`). So two requests snapping to one
+  cell share an id, and one request cell with two snapped streams does not.
+  A centre lying exactly on a cell edge is subject to float rounding. In
+  EPSG:4326 the step is `round(res/30.87)` arc-seconds (min 1"), so products
+  finer than 30 m are quantised coarser on that CRS; use a projected CRS for them.
 - Different methods give different ids. Sameness across methods is asserted only
   by a shared `usgs:` alias or `compare_realisations` (area ratio, IoU, outlet
   distance); ids are never merged.

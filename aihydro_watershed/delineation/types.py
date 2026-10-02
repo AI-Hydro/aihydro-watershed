@@ -18,6 +18,14 @@ class FastDelineationResult(NamedTuple):
     merit_snap_distance_m: float | None
     pfaf_code: str | None
     used_nldi_basin: bool = False
+    # Snapped pour point (EPSG:4326) of the DEM delineation and the grid it sits
+    # on. ``outlet_lat/lon`` above may be the requested/NLDI/MERIT-snapped point;
+    # identity (BasinRef grid anchors) uses ONLY these fields. None when no DEM
+    # snap happened (e.g. the NLDI indexed basin was used).
+    snapped_outlet_lon: float | None = None
+    snapped_outlet_lat: float | None = None
+    snap_grid_crs: str | None = None
+    snap_grid_resolution_m: float | None = None
 
 
 def area_km2(gdf: gpd.GeoDataFrame) -> float:

@@ -295,7 +295,7 @@ def _workflow_steps(
 
 
 def _lonlat(res: Any) -> tuple[float, float] | None:
-    """(lon, lat) of a tier result's snapped outlet, if it reports one."""
+    """(lon, lat) of a tier result's snapped pour point, if it reports one."""
     try:
         lo, la = float(res.outlet_lon), float(res.outlet_lat)
         return (lo, la) if -180 <= lo <= 180 and -90 <= la <= 90 else None
@@ -306,68 +306,69 @@ def _lonlat(res: Any) -> tuple[float, float] | None:
 def _mint_ref_dict(
     *,
     method_used: str | None,
-    geojson: dict[str, Any],
+    geojson: dict[str, Any] | None,
     area_km2: float | None,
-    lat: float,
-    lon: float,
+    lat: float | None,
+    lon: float | None,
     snapped_outlet: tuple[float, float] | None = None,
+    snap_grid_crs: str | None = None,
+    snap_grid_resolution_m: float | None = None,
     snap_distance_m: float | None = None,
     comid: Any = None,
     terminal_catchment_id: Any = None,
     vector_dataset_version: str | None = None,
     raster_dataset_version: str | None = None,
-    routing_dataset: str | None = None,
-    routing_resolution_m: float | None = None,
-) -> dict[str, Any] | None:
-    """Mint the canonical BasinRef dict for one delineation, or None on failure.
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Mint the canonical BasinRef dict. Returns ``(ref, reason)``.
 
-    Minting never breaks delineation: on any failure the result carries
-    ``basin_ref=None`` and downstream claim promotion fails closed
-    (BASIN_REF_REQUIRED). No network I/O happens here.
+    ``ref`` is None with a ``reason`` code when no honest identity exists:
+    ``no_snapped_pour_point`` (a grid anchor needs the tier's snapped pour
+    point and grid; the requested outlet is never used), ``unsupported_method``
+    or ``mint_failed:<code>``. Minting never raises and never affects tier
+    selection; downstream claim promotion fails closed on ``basin_ref=None``.
+    No network I/O happens here.
     """
     try:
         from aihydro_watershed import identity
 
         if method_used == "nldi_comid" and comid is not None:
             anchor, ok = identity.comid_anchor(comid)
-            extra: tuple[str, ...] = ()
+            out_ll = (lon, lat) if lon is not None and lat is not None else None
         elif method_used in ("merit_basins", "merit_basins_hybrid") and terminal_catchment_id not in (None, ""):
             anchor, ok = identity.merit_basins_anchor(terminal_catchment_id, vector_dataset_version)
-            extra = ()
+            out_ll = snapped_outlet or ((lon, lat) if lon is not None and lat is not None else None)
         else:
-            # Grid-cell anchors: product by tier. Prefer the snapped cell the
-            # tier reports; else the requested outlet (flagged).
-            res = float(routing_resolution_m or 0) or None
             if method_used == _SMALL_CATCHMENT_METHOD:
-                product, version, res, crs = "3dep-dem", None, res or 10.0, "EPSG:5070"
+                product, version = "3dep-dem", None
             elif method_used in ("merit_gee_pyflwdir", "local_merit_pyflwdir", "merit_basins_hybrid"):
-                product, version, res, crs = "merit-hydro", raster_dataset_version, res or 90.0, "EPSG:4326"
+                product, version = "merit-hydro", raster_dataset_version
             elif method_used == "dem_raw_fallback":
-                product, version, res, crs = "raw-dem", None, res or 30.0, "EPSG:4326"
+                product, version = "raw-dem", None
             else:
-                return None
-            cl, cn = snapped_outlet if snapped_outlet else (lon, lat)
-            # snapped_outlet is (lon, lat)
-            anchor, ok = identity.grid_cell_anchor(product, version, res, cl, cn, crs=crs)
-            extra = () if snapped_outlet else (identity.FLAG_UNSNAPPED_GRID,)
-        out_lon, out_lat = snapped_outlet if snapped_outlet else (lon, lat)
+                return None, "unsupported_method"
+            if snapped_outlet is None or not snap_grid_crs or not snap_grid_resolution_m:
+                return None, "no_snapped_pour_point"
+            anchor, ok = identity.grid_cell_anchor(
+                product, version, snap_grid_resolution_m, snapped_outlet[0], snapped_outlet[1],
+                crs=snap_grid_crs,
+            )
+            out_ll = snapped_outlet
         ref = identity.mint_basin_ref(
             anchor=anchor,
             version_verified=ok,
             method=str(method_used),
             geometry_geojson=geojson,
-            outlet_lon=out_lon,
-            outlet_lat=out_lat,
+            outlet_lon=out_ll[0] if out_ll else None,
+            outlet_lat=out_ll[1] if out_ll else None,
             snap_distance_m=snap_distance_m,
             area_km2=area_km2,
             comid=comid if method_used == "nldi_comid" else None,
             merit_catchment=terminal_catchment_id if anchor.network == identity.MERIT_BASINS_NETWORK else None,
-            extra_flags=extra,
         )
-        return ref.to_dict()
+        return ref.to_dict(), None
     except Exception as exc:
         log.warning("BasinRef minting failed (%s): %s", method_used, exc)
-        return None
+        return None, f"mint_failed:{getattr(exc, 'code', type(exc).__name__)}"
 
 
 def _attach_workflow_steps(
@@ -396,17 +397,28 @@ def _attach_workflow_steps(
         # Pure side effect after tier selection: must never raise (a raise here
         # is caught by the tier try/except and would silently change routing).
         try:
-            d["basin_ref"] = _mint_ref_dict(
+            sn = (
+                (d["snapped_outlet_lon"], d["snapped_outlet_lat"])
+                if d.get("snapped_outlet_lon") is not None and d.get("snapped_outlet_lat") is not None
+                else None
+            )
+            d["basin_ref"], d["basin_ref_unavailable"] = _mint_ref_dict(
                 method_used=d.get("method_used") or method_used,
                 geojson=d.get("geometry_geojson"),
                 area_km2=d.get("area_km2"),
                 lat=d.get("outlet_lat") if d.get("outlet_lat") is not None else lat,
                 lon=d.get("outlet_lon") if d.get("outlet_lon") is not None else lon,
                 comid=d.get("comid"),
+                snapped_outlet=sn,
+                snap_grid_crs=d.get("snap_grid_crs"),
+                snap_grid_resolution_m=d.get("snap_grid_resolution_m"),
+                terminal_catchment_id=d.get("terminal_catchment_id"),
+                vector_dataset_version=d.get("vector_dataset_version"),
+                raster_dataset_version=d.get("raster_dataset_version"),
             )
         except Exception as exc:  # pragma: no cover - _mint_ref_dict already guards
             log.warning("BasinRef attach failed: %s", exc)
-            d["basin_ref"] = None
+            d["basin_ref"], d["basin_ref_unavailable"] = None, "mint_failed:attach"
     return result
 
 
@@ -487,7 +499,9 @@ def delineate_from_point(
     memory_telemetry: dict[str, float] | None = None
     fallback_history: list[dict[str, Any]] = []
     safe_envelope_version: str | None = None
-    snapped_outlet: tuple[float, float] | None = None  # (lon, lat) of the snapped cell, if the tier reports it
+    snapped_outlet: tuple[float, float] | None = None  # (lon, lat) of the snapped pour point, if the tier reports it
+    snap_grid_crs: str | None = None  # CRS / resolution of the grid that point sits on
+    snap_grid_resolution_m: float | None = None
     terminal_catchment_id: str | int | None = None
     upstream_catchment_count: int | None = None
     terminal_refinement_used: bool | None = None
@@ -502,6 +516,7 @@ def delineate_from_point(
         """Run the 3DEP small-catchment tier; on success fill the result state."""
         nonlocal gdf, area, method_used, routing_dataset, routing_resolution_m
         nonlocal snap_distance_m, polygon_area_km2, area_validation, snapped_outlet
+        nonlocal snap_grid_crs, snap_grid_resolution_m
         nonlocal window_expansion_iterations, final_window_bounds
         nonlocal basin_touched_window_boundary, window_complete
         nonlocal license_note, citation
@@ -542,6 +557,7 @@ def delineate_from_point(
         routing_resolution_m = sc.resolution_m
         snap_distance_m = sc.snap_distance_m
         snapped_outlet = (sc.outlet_lon, sc.outlet_lat)
+        snap_grid_crs, snap_grid_resolution_m = "EPSG:5070", float(sc.resolution_m)
         window_expansion_iterations = sc.window_iterations
         if sc.window_bounds_5070:
             w = sc.window_bounds_5070
@@ -745,7 +761,7 @@ def delineate_from_point(
         nonlocal window_expansion_iterations, final_window_bounds, final_window_cell_count
         nonlocal basin_touched_window_boundary, window_complete, peak_memory_mb, runtime_seconds
         nonlocal memory_telemetry
-        nonlocal method_used, snapped_outlet
+        nonlocal method_used, snapped_outlet, snap_grid_crs, snap_grid_resolution_m
         nonlocal safe_envelope_version, terminal_catchment_id, upstream_catchment_count
         nonlocal terminal_refinement_used, vector_assembly_area_km2, refined_polygon_area_km2
         nonlocal vector_dataset_version, raster_dataset_version
@@ -755,6 +771,7 @@ def delineate_from_point(
         area = local.area_km2
         snap_distance_m = local.snap_distance_m
         snapped_outlet = _lonlat(local)
+        snap_grid_crs, snap_grid_resolution_m = "EPSG:4326", local.routing_resolution_m or 90.0
         snap_quality = local.snap_quality
         snap_validation = local.snap_validation
         snapped_upa_km2 = local.snapped_upa_km2
@@ -914,6 +931,7 @@ def delineate_from_point(
             area = merit_gee.area_km2
             snap_distance_m = merit_gee.snap_distance_m
             snapped_outlet = _lonlat(merit_gee)
+            snap_grid_crs, snap_grid_resolution_m = "EPSG:4326", merit_gee.routing_resolution_m or 90.0
             snap_quality = merit_gee.snap_quality
             snap_validation = merit_gee.snap_validation
             snapped_upa_km2 = merit_gee.snapped_upa_km2
@@ -1131,7 +1149,12 @@ def delineate_from_point(
             )
             pfaf_code = fast.pfaf_code
             snap_distance_m = fast.merit_snap_distance_m
-            snapped_outlet = _lonlat(fast)
+            if fast.snapped_outlet_lon is not None and fast.snapped_outlet_lat is not None:
+                snapped_outlet = (fast.snapped_outlet_lon, fast.snapped_outlet_lat)
+                snap_grid_crs = fast.snap_grid_crs
+                snap_grid_resolution_m = fast.snap_grid_resolution_m
+            else:  # e.g. NLDI indexed basin: no DEM snap, so no grid identity
+                snapped_outlet, snap_grid_crs, snap_grid_resolution_m = None, None, None
             escalation_reason = _should_escalate(
                 fast, expected_area_km2=expected_area_km2
             )
@@ -1238,19 +1261,19 @@ def delineate_from_point(
 
     import aihydro_watershed
 
-    basin_ref = _mint_ref_dict(
+    basin_ref, basin_ref_unavailable = _mint_ref_dict(
         method_used=method_used,
         geojson=geojson,
         area_km2=round(area, 3),
         lat=lat,
         lon=lon,
         snapped_outlet=snapped_outlet,
+        snap_grid_crs=snap_grid_crs,
+        snap_grid_resolution_m=snap_grid_resolution_m,
         snap_distance_m=snap_distance_m,
         terminal_catchment_id=terminal_catchment_id,
         vector_dataset_version=vector_dataset_version,
         raster_dataset_version=raster_dataset_version,
-        routing_dataset=routing_dataset,
-        routing_resolution_m=routing_resolution_m,
     )
 
     meta = HydroMeta(
@@ -1333,6 +1356,9 @@ def delineate_from_point(
             "escalation_reason": escalation_reason,
             "name": name or "watershed",
             "basin_ref": basin_ref,
+            "basin_ref_unavailable": basin_ref_unavailable,
+            "snapped_outlet_lon": snapped_outlet[0] if snapped_outlet else None,
+            "snapped_outlet_lat": snapped_outlet[1] if snapped_outlet else None,
         },
         meta=meta,
     )

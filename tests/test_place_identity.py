@@ -141,18 +141,68 @@ def test_mint_failure_yields_none_not_exception():
     assert out["basin_ref"] is None
 
 
-def test_router_final_result_merit_hybrid_ref(monkeypatch):
-    ref = router._mint_ref_dict(
-        method_used="merit_basins_hybrid", geojson={"type": "Feature", "geometry": SQUARE}, area_km2=9000.0,
-        lat=40.5, lon=-89.5, terminal_catchment_id=71000123, vector_dataset_version="v1.0",
-    )
+def _mint(**kw):
+    base = dict(geojson={"type": "Feature", "geometry": SQUARE}, area_km2=1.0, lat=40.5, lon=-89.5)
+    base.update(kw)
+    return router._mint_ref_dict(**base)
+
+
+def test_merit_hybrid_with_terminal_id_is_network_element_anchor():
+    ref, why = _mint(method_used="merit_basins_hybrid", area_km2=9000.0, terminal_catchment_id=71000123,
+                     vector_dataset_version="v1.0")
+    assert why is None
     assert ref["anchor"]["network"] == "merit-basins" and ref["anchor"]["element"] == "71000123"
-    grid = router._mint_ref_dict(
-        method_used="merit_gee_pyflwdir", geojson={"type": "Feature", "geometry": SQUARE}, area_km2=1.0,
-        lat=40.5, lon=-89.5, raster_dataset_version=None, routing_resolution_m=90.0,
-    )
-    assert grid["anchor"]["kind"] == "grid_cell" and "grid_anchor_from_requested_outlet" in grid["quality_flags"]
-    assert router._mint_ref_dict(method_used="weird", geojson=SQUARE, area_km2=1.0, lat=0, lon=0) is None
+    # and the same through the NLDI-style attach path (W1a)
+    d = SimpleNamespace(data={"geometry_geojson": {"type": "Feature", "geometry": SQUARE}, "area_km2": 1.0,
+                              "method_used": "merit_basins_hybrid", "terminal_catchment_id": 71000123,
+                              "vector_dataset_version": "v1.0"})
+    out = router._attach_workflow_steps(d, method_used="merit_basins_hybrid", lat=40.5, lon=-89.5).data
+    assert out["basin_ref"]["anchor"] == ref["anchor"]
+
+
+def test_grid_identity_follows_snapped_cell_not_request():
+    kw = dict(method_used="merit_gee_pyflwdir", snap_grid_crs="EPSG:4326", snap_grid_resolution_m=90.0)
+    # two different requests, same snapped cell -> same id
+    a, _ = _mint(lat=40.5000, lon=-89.5000, snapped_outlet=(-89.50011, 40.50011), **kw)
+    b, _ = _mint(lat=40.5003, lon=-89.5004, snapped_outlet=(-89.50012, 40.50012), **kw)
+    assert a["id"] == b["id"]
+    # same request, snapped to different cells (different streams) -> different ids
+    c, _ = _mint(lat=40.5000, lon=-89.5000, snapped_outlet=(-89.50011, 40.50011), **kw)
+    d, _ = _mint(lat=40.5000, lon=-89.5000, snapped_outlet=(-89.5101, 40.5101), **kw)
+    assert c["id"] != d["id"]
+    assert a["outlet"]["lon"] == pytest.approx(-89.50011)  # outlet recorded is the snapped point
+
+
+def test_no_snapped_pour_point_means_no_ref():
+    for method in ("merit_gee_pyflwdir", "local_merit_pyflwdir", "dem_raw_fallback", "small_catchment_3dep"):
+        ref, why = _mint(method_used=method)
+        assert ref is None and why == "no_snapped_pour_point"
+    ref, why = _mint(method_used="weird")
+    assert ref is None and why == "unsupported_method"
+
+
+def test_attach_nldi_has_no_unavailable_reason():
+    assert _attached()["basin_ref_unavailable"] is None
+
+
+def test_pysheds_reports_snapped_pour_point_field():
+    from aihydro_watershed.delineation.types import FastDelineationResult
+
+    f = FastDelineationResult.__new__.__defaults__
+    assert f[-4:] == (None, None, None, None)
+
+
+def test_geoconnex_requires_exact_provider_id():
+    class Resp:
+        def __init__(self, props): self.props = props
+        def raise_for_status(self): pass
+        def json(self): return {"features": [{"properties": self.props}]}
+
+    uri = "https://geoconnex.us/ref/gages/99"
+    for props in ({"uri": uri}, {"uri": uri, "provider_id": ""}, {"uri": uri, "provider_id": "USGS-99999999"}):
+        assert identity.resolve_geoconnex_gage(SITE, _get=lambda *a, **k: Resp(props)).status == "not_found"
+    ok = identity.resolve_geoconnex_gage(SITE, _get=lambda *a, **k: Resp({"uri": uri, "provider_id": f"USGS-{SITE}"}))
+    assert ok.status == "resolved"
 
 
 # ---- gauge path (fake NLDI / NWIS) ---------------------------------------
@@ -215,7 +265,7 @@ def test_gauge_comid_fallback_flagged(monkeypatch):
 def test_attach_never_raises_on_minimal_result():
     r = SimpleNamespace(data={"area_km2": 420.0, "method_used": "nldi_comid", "comid": 1})
     out = router._attach_workflow_steps(r, method_used="nldi_comid").data
-    assert out["basin_ref"] is None  # no geometry: fail closed downstream, but no exception
+    assert out["basin_ref"] is None and out["basin_ref_unavailable"].startswith("mint_failed")  # no geometry: fail closed downstream, but no exception
 
 
 def test_auto_conus_nldi_quick_selected_with_minimal_nldi_result(monkeypatch):
@@ -237,3 +287,25 @@ def test_auto_conus_nldi_quick_selected_with_minimal_nldi_result(monkeypatch):
     assert out.data["method_used"] == "nldi_comid"
     assert out.data["basin_ref"]["anchor"]["element"] == "1"
     assert out.data["basin_ref"]["outlet"]["lat"] == 40.71829
+
+
+def test_pysheds_snap_out_reports_snapped_cell_on_grid():
+    pytest.importorskip("pysheds")
+    import numpy as np
+    import xarray as xr
+    import rioxarray  # noqa: F401
+    from aihydro_watershed.delineation.pysheds_pipeline import delineate_watershed_from_array
+
+    n = 60
+    ys = 4_500_000 - 30 * np.arange(n) - 15.0
+    xs = 500_000 + 30 * np.arange(n) + 15.0
+    X, Y = np.meshgrid(xs, ys)
+    z = (np.abs(X - 500_900) * 0.5 + (Y - ys.min()) * 0.2 + 100).astype("float32")  # V valley, drains south
+    da = xr.DataArray(z, dims=("y", "x"), coords={"y": ys, "x": xs}).rio.write_crs("EPSG:32616")
+    import pyproj
+    lon, lat = pyproj.Transformer.from_crs(32616, 4326, always_xy=True).transform(500_930, 4_499_500)
+    out: dict = {}
+    delineate_watershed_from_array(da, lat, lon, snap_out=out)
+    assert out["crs"] == "EPSG:32616" and out["resolution_m"] == pytest.approx(30.0)
+    x, y = pyproj.Transformer.from_crs(4326, 32616, always_xy=True).transform(out["lon"], out["lat"])
+    assert (x - 500_000) % 30 == pytest.approx(15, abs=1e-3) and (y % 30) == pytest.approx(15, abs=1e-3)

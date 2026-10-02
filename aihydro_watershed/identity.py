@@ -82,7 +82,6 @@ _USGS_SITE_RE = re.compile(r"^\d{8,15}$")  # O3: one rule; 7-digit strings stay 
 FLAG_VERSION_UNVERIFIED = "network_version_unverified"
 FLAG_GEOCONNEX_UNRESOLVED = "geoconnex_unresolved"
 FLAG_ANTIMERIDIAN = "antimeridian_crossing"
-FLAG_UNSNAPPED_GRID = "grid_anchor_from_requested_outlet"
 
 
 def valid_usgs_site(site: Any) -> bool:
@@ -211,8 +210,7 @@ def _extract_gage_uri(payload: Mapping[str, Any], site: str) -> Optional[str]:
         props = (feat or {}).get("properties") or {}
         uri = props.get("uri") or props.get("id") or (feat or {}).get("id")
         if isinstance(uri, str) and _GEOCONNEX_GAGE_RE.match(uri):
-            pid = str(props.get("provider_id") or "")
-            if pid in ("", f"USGS-{site}"):
+            if str(props.get("provider_id") or "") == f"USGS-{site}":
                 return uri
     return None
 

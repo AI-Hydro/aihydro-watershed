@@ -377,6 +377,8 @@ def _attach_workflow_steps(
     routing_dataset: str | None = None,
     expected_area_km2: float | None = None,
     escalation_reason: str | None = None,
+    lat: float | None = None,
+    lon: float | None = None,
 ) -> HydroResult:
     result.data.setdefault(
         "workflow_steps",
@@ -391,15 +393,20 @@ def _attach_workflow_steps(
     result.data.setdefault("quality_flags", [])
     d = result.data
     if "basin_ref" not in d:
-        # NLDI result: carry the COMID through (anchor + alias) and mint.
-        d["basin_ref"] = _mint_ref_dict(
-            method_used=d.get("method_used") or method_used,
-            geojson=d["geometry_geojson"],
-            area_km2=d.get("area_km2"),
-            lat=d["outlet_lat"],
-            lon=d["outlet_lon"],
-            comid=d.get("comid"),
-        )
+        # Pure side effect after tier selection: must never raise (a raise here
+        # is caught by the tier try/except and would silently change routing).
+        try:
+            d["basin_ref"] = _mint_ref_dict(
+                method_used=d.get("method_used") or method_used,
+                geojson=d.get("geometry_geojson"),
+                area_km2=d.get("area_km2"),
+                lat=d.get("outlet_lat") if d.get("outlet_lat") is not None else lat,
+                lon=d.get("outlet_lon") if d.get("outlet_lon") is not None else lon,
+                comid=d.get("comid"),
+            )
+        except Exception as exc:  # pragma: no cover - _mint_ref_dict already guards
+            log.warning("BasinRef attach failed: %s", exc)
+            d["basin_ref"] = None
     return result
 
 
@@ -622,6 +629,8 @@ def delineate_from_point(
                     method_used="nldi_comid",
                     routing_dataset="USGS NLDI / NHDPlus",
                     expected_area_km2=expected_area_km2,
+                    lat=lat,
+                    lon=lon,
                 )
             escalation_reason = (
                 f"NLDI COMID area {nldi_area:.0f} km² "
@@ -658,6 +667,8 @@ def delineate_from_point(
                     method_used="nldi_comid",
                     routing_dataset="USGS NLDI / NHDPlus",
                     expected_area_km2=expected_area_km2,
+                    lat=lat,
+                    lon=lon,
                 )
             escalation_reason = (
                 f"NLDI quick area {nldi_area:.0f} km² outside "

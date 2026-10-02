@@ -209,3 +209,31 @@ def test_gauge_comid_fallback_flagged(monkeypatch):
     assert usgs[0]["relation"] == "fallback_of"
     idx = _gauge_run(monkeypatch, index_fails=False)["basin_ref"]
     assert idx["id"] != r["id"]
+
+
+# ---- regression: minting must never change tier selection -----------------
+def test_attach_never_raises_on_minimal_result():
+    r = SimpleNamespace(data={"area_km2": 420.0, "method_used": "nldi_comid", "comid": 1})
+    out = router._attach_workflow_steps(r, method_used="nldi_comid").data
+    assert out["basin_ref"] is None  # no geometry: fail closed downstream, but no exception
+
+
+def test_auto_conus_nldi_quick_selected_with_minimal_nldi_result(monkeypatch):
+    """NLDI result without outlet_lat/lon (as mocked in aihydro-tools) must still win."""
+    from shapely.geometry import box
+    import geopandas as gpd
+
+    geom = box(-96.5, 40.5, -96.2, 40.9)
+    feat = json.loads(gpd.GeoDataFrame(geometry=[geom], crs=4326).to_json())["features"][0]
+    res = SimpleNamespace(data={"geometry_geojson": feat, "area_km2": 420.0,
+                                "method_used": "nldi_comid", "comid": 1})
+    monkeypatch.setattr("aihydro_watershed.delineation.nldi_point.delineate_nldi_at_point", lambda *a, **k: res)
+
+    def no_small(*a, **k):
+        raise AssertionError("small-catchment tier must not run")
+
+    monkeypatch.setattr("aihydro_watershed.delineation.small_catchment.delineate_small_catchment", no_small)
+    out = router.delineate_from_point(40.71829, -96.41265, method="auto")
+    assert out.data["method_used"] == "nldi_comid"
+    assert out.data["basin_ref"]["anchor"]["element"] == "1"
+    assert out.data["basin_ref"]["outlet"]["lat"] == 40.71829

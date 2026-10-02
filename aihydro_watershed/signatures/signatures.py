@@ -305,6 +305,7 @@ def extract_hydrological_signatures(
                     }
                     _u = bootstrap_dict(_fns, q_arr, use_block=True, n=500, ci=0.90)
                     _uncertainty = {k: dict(v) for k, v in _u.items()}
+                    _uncertainty.update(_baseflow_index_uncertainty(q_arr))
             except Exception as _ue:
                 log.warning("signatures: uncertainty estimation failed (non-fatal): %s", _ue)
 
@@ -760,6 +761,42 @@ def _lyne_hollick_baseflow(
         bf = _sweep(bf, forward=(i % 2 == 0))
 
     return np.clip(bf, 0, q)
+
+
+BFI_BOOTSTRAP_BLOCK_DAYS = 365
+
+
+def _baseflow_index_uncertainty(q: np.ndarray, n: int = 500, ci: float = 0.90) -> Dict[str, dict]:
+    """Moving-block bootstrap CI for the baseflow index.
+
+    The Lyne-Hollick filter is applied ONCE to the observed series (exactly as
+    for the reported point value). Blocks of paired (baseflow, flow) days are
+    then resampled and the index re-evaluated as ``sum(b) / sum(q)``.
+    Re-running the filter on a spliced resample is deliberately avoided: every
+    splice is an artificial step change that the filter reads as quick flow,
+    which biases bootstrap BFI low. Consequence: the interval reflects
+    sampling variability of the ratio over a ~annual-block dependence
+    structure; it does NOT include filter-state/parameter uncertainty or
+    observation (rating-curve) error.
+    """
+    if q.size < 2 * BFI_BOOTSTRAP_BLOCK_DAYS:
+        return {}
+    bf = _lyne_hollick_baseflow(q, alpha=BASEFLOW_SEPARATION_PARAMS["alpha"],
+                                passes=BASEFLOW_SEPARATION_PARAMS["passes"])
+    if not np.isfinite(bf).all() or float(np.sum(q)) <= 0:
+        return {}
+
+    def _bfi(idx: np.ndarray) -> float:
+        i = idx.astype(int)
+        return float(np.sum(bf[i]) / np.sum(q[i]))
+
+    res = bootstrap_dict({"baseflow_index": _bfi}, np.arange(q.size, dtype=float),
+                         use_block=True, block_size=BFI_BOOTSTRAP_BLOCK_DAYS, n=n, ci=ci)
+    out = {k: dict(v) for k, v in res.items()}
+    for v in out.values():
+        v.setdefault("block_size", BFI_BOOTSTRAP_BLOCK_DAYS)
+        v["scope"] = "sampling_variability_of_ratio; excludes filter and observation uncertainty"
+    return out
 
 
 def _align_daily(

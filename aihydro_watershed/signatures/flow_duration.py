@@ -18,6 +18,11 @@ So Q95 is a low flow (exceeded 95% of days → small) and Q5 is a high flow
 (exceeded only 5% of days → large). This is the standard hydrologic convention
 (WMO-168), and is the inverse of a statistical "95th percentile".
 
+Do not confuse these exceedance flows with the CAMELS signatures ``q5`` / ``q95``
+produced by ``signatures.compute_flow_stats_camels``: there ``q5`` is the 5% flow
+quantile (low flow) and ``q95`` the 95% quantile (high flow), i.e. CAMELS ``q5``
+equals the exceedance flow ``Q95`` and CAMELS ``q95`` equals ``Q5`` here.
+
 The mid-section ``slope_fdc`` matches the existing convention in
 ``signatures.compute_slope_fdc_camels`` (Sawicz et al., 2011): the slope of the
 log-discharge FDC between the 33% and 66% exceedance points.

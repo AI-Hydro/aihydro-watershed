@@ -131,6 +131,9 @@ BASEFLOW_METHOD_QUALITY_FLAG = (
 )
 
 log = logging.getLogger(__name__)
+
+# q5 / q95 semantics of this module's output (CAMELS: Addor et al. 2017, Table 3).
+FLOW_QUANTILE_CONVENTION = "camels_nonexceedance_v1"
 warnings.filterwarnings('ignore')
 
 __all__ = [
@@ -196,6 +199,7 @@ def extract_hydrological_signatures(
     HydroResult
         result.data keys (all float, NaN where insufficient data):
         q_mean, q_std, q5, q95, q_median, baseflow_index,
+        (q5 / q95 = 5% / 95% flow quantiles, low / high flow, as in CAMELS),
         runoff_ratio, stream_elas, high_q_freq, high_q_dur,
         low_q_freq, low_q_dur, zero_q_freq, flow_variability,
         hfd_mean, half_flow_date_std, slope_fdc
@@ -293,8 +297,9 @@ def extract_hydrological_signatures(
                 if len(q_arr) >= 30:
                     def _mean(x): return float(np.mean(x))
                     def _median(x): return float(np.median(x))
-                    def _q5(x): return float(np.quantile(x, 0.95))
-                    def _q95(x): return float(np.quantile(x, 0.05))
+                    # CAMELS: q5 / q95 are the 5% / 95% flow quantiles (low / high flow).
+                    def _q5(x): return float(np.quantile(x, 0.05))
+                    def _q95(x): return float(np.quantile(x, 0.95))
                     def _cv(x): return float(np.std(x) / np.mean(x)) if np.mean(x) > 0 else float("nan")
                     _fns = {
                         "q_mean": _mean,
@@ -315,6 +320,10 @@ def extract_hydrological_signatures(
         if _uncertainty:
             clean["_uncertainty"] = _uncertainty
         clean["_streamflow_source"] = _source
+        # Marks q5/q95 as CAMELS non-exceedance quantiles. Absent on results
+        # computed before this fix, whose q5/q95 were swapped
+        # (docs/vision-2040/findings/defect-q5-q95.md).
+        clean["_flow_quantile_convention"] = FLOW_QUANTILE_CONVENTION
 
         if _global_product == "GEOGLOWS_RETRO":
             _global_sources = _SOURCES_GEOGLOWS
@@ -390,8 +399,12 @@ def compute_flow_stats_camels(q_mm_day: pd.Series) -> Dict[str, float]:
 
     q_mean = float(np.mean(q))
     q_std = float(np.std(q))
-    q5 = float(np.quantile(q, 0.95))   # High flow (95th percentile)
-    q95 = float(np.quantile(q, 0.05))  # Low flow (5th percentile)
+    # CAMELS (Addor et al. 2017, Table 3): q5 = 5% flow quantile (low flow),
+    # q95 = 95% flow quantile (high flow). These are plain non-exceedance
+    # quantiles, NOT hydrologic exceedance flows (Q5 high / Q95 low); see
+    # flow_duration.py for that other convention.
+    q5 = float(np.quantile(q, 0.05))
+    q95 = float(np.quantile(q, 0.95))
     q_med = float(np.median(q))
 
     # Baseflow index using Lyne-Hollick filter

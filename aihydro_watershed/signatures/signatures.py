@@ -145,6 +145,7 @@ __all__ = [
     'compute_timing_stats_camels',
     'compute_slope_fdc_camels',
     'precipitation_problem',
+    'RUNOFF_RATIO_PLAUSIBLE',
     'BASEFLOW_SEPARATION_METHOD',
     'BASEFLOW_SEPARATION_PARAMS',
     'BASEFLOW_SEPARATION_REFERENCE',
@@ -310,19 +311,19 @@ def extract_hydrological_signatures(
                 p_mm_day = _fetch_precipitation_data_bygeom(watershed_geom, start_date, end_date)
                 _precip_record = _precipitation_record(p_mm_day, getattr(_PRECIP_DIAG, "d", {}))
 
+            _wb, _wb_reason = _water_balance(
+                q_mm_day, p_mm_day, _effective_units(_precip_record))
             sigs = {
                 **compute_flow_stats_camels(q_mm_day),
-                **compute_water_balance_camels(q_mm_day, p_mm_day),
+                **_wb,
                 **compute_event_stats_camels(q_mm_day),
                 **compute_timing_stats_camels(q_mm_day),
                 **compute_slope_fdc_camels(q_mm_day),
             }
-            if _precip_record["status"] == "used" and not np.isfinite(
-                    float(sigs.get("runoff_ratio", np.nan))):
+            if _precip_record["status"] == "used" and _wb_reason:
                 _precip_record.update(
                     status="unusable",
-                    reason="water balance not computable: precipitation and "
-                           "streamflow overlap < 365 days or non-finite result",
+                    reason=f"water balance not computable: {_wb_reason}",
                 )
             log.info(
                 "Extracted %d signatures (gauge=%s, preloaded_q=%s)",
@@ -367,6 +368,13 @@ def extract_hydrological_signatures(
         # (docs/vision-2040/findings/defect-q5-q95.md).
         clean["flow_quantile_convention"] = FLOW_QUANTILE_CONVENTION
         clean["_precipitation"] = _precip_record
+        # Non-underscore mirrors: the tools layer drops "_" keys before sealing,
+        # and a claim bound to runoff_ratio must carry its precipitation
+        # provenance in the sealed evidence.
+        clean["precipitation_status"] = _precip_record["status"]
+        clean["precipitation_product"] = _precip_record["product"]
+        clean["precipitation_digest"] = _precip_record["digest"]
+        clean["precipitation_units"] = _effective_units(_precip_record)
 
         if _global_product == "GEOGLOWS_RETRO":
             _global_sources = _SOURCES_GEOGLOWS
@@ -474,38 +482,58 @@ def compute_flow_stats_camels(q_mm_day: pd.Series) -> Dict[str, float]:
 def compute_water_balance_camels(
     q_mm_day: pd.Series,
     p_mm_day: Optional[pd.Series],
+    p_units: Optional[str] = None,
 ) -> Dict[str, float]:
     """
     Compute water balance metrics (runoff ratio, streamflow elasticity).
 
     Following Sankarasubramanian et al. (2001).
-    Returns: runoff_ratio, stream_elas
+    Returns: runoff_ratio, stream_elas (NaN when precipitation is unusable or
+    the ratio is outside the plausible range; see :func:`_water_balance`).
+    ``p_units``: the unit the precipitation series declares, if known; a unit
+    that is not mm/day-equivalent makes the series unusable.
     """
+    return _water_balance(q_mm_day, p_mm_day, p_units)[0]
+
+
+def _water_balance(q_mm_day, p_mm_day, p_units=None):
+    """``(signatures dict, reason | None)``; reason is set when NaN was returned
+    because an input or the result was unusable."""
+    nan = {'runoff_ratio': np.nan, 'stream_elas': np.nan}
 
     # A precipitation series that is absent, empty, all-zero, negative,
-    # non-finite or outside physical bounds is never divided into: the
-    # precipitation-dependent signatures are NaN (recorded as None, with the
-    # reason in ``_precipitation``), not a number computed from a placeholder.
-    problem = precipitation_problem(p_mm_day)
+    # non-finite, in the wrong unit or outside physical bounds is never
+    # divided into: the precipitation-dependent signatures are NaN (recorded as
+    # None, with the reason in ``_precipitation``), not a number computed from
+    # a placeholder.
+    problem = precipitation_problem(p_mm_day, p_units)
     if problem is not None:
         log.warning("Precipitation unusable for water balance (%s)", problem)
-        return {'runoff_ratio': np.nan, 'stream_elas': np.nan}
+        return nan, problem
 
     q_aln, p_aln = _align_daily(q_mm_day, p_mm_day, min_days=365)
 
     if q_aln is None:
         log.warning("Failed to align Q and P time series")
-        return {'runoff_ratio': np.nan, 'stream_elas': np.nan}
+        return nan, "precipitation and streamflow overlap < 365 days"
 
-    problem = precipitation_problem(p_aln)
+    problem = precipitation_problem(p_aln, p_units)
     if problem is not None:
         log.warning("Aligned precipitation unusable for water balance (%s)", problem)
-        return {'runoff_ratio': np.nan, 'stream_elas': np.nan}
+        return nan, problem
 
     mean_q, mean_p = float(q_aln.mean()), float(p_aln.mean())
     rr = mean_q / mean_p
     if not np.isfinite(rr):
-        return {'runoff_ratio': np.nan, 'stream_elas': np.nan}
+        return nan, "runoff ratio is not finite"
+    # An impossible Q/P is never sealed, whatever produced it (wrong unit,
+    # fill value, broken streamflow). Same bound the water-balance validator uses.
+    if not (RUNOFF_RATIO_PLAUSIBLE[0] <= rr <= RUNOFF_RATIO_PLAUSIBLE[1]):
+        reason = (f"runoff ratio {rr:.4g} outside the plausible range "
+                  f"[{RUNOFF_RATIO_PLAUSIBLE[0]:g}, {RUNOFF_RATIO_PLAUSIBLE[1]:g}] "
+                  "(engineering bound; source to verify)")
+        log.warning("Water balance rejected: %s", reason)
+        return nan, reason
 
     # Streamflow elasticity
     hy = _year_series(q_aln.index, hydro_year_start_month=10)
@@ -514,7 +542,7 @@ def compute_water_balance_camels(
 
     if len(mp) < 3 or len(mq) < 3:
         log.warning("Insufficient years for elasticity calculation")
-        return {'runoff_ratio': rr, 'stream_elas': np.nan}
+        return {'runoff_ratio': rr, 'stream_elas': np.nan}, None
 
     mp_tot, mq_tot = float(mp.mean()), float(mq.mean())
     dp, dq = (mp - mp_tot), (mq - mq_tot)
@@ -527,7 +555,7 @@ def compute_water_balance_camels(
 
     log.debug(f"Water balance: RR={rr:.2f}, elasticity={elas:.2f}")
 
-    return {'runoff_ratio': rr, 'stream_elas': elas}
+    return {'runoff_ratio': rr, 'stream_elas': elas}, None
 
 
 def compute_event_stats_camels(q_mm_day: pd.Series) -> Dict[str, float]:
@@ -790,6 +818,8 @@ def _fetch_precipitation_data_bygeom(
         s.index = s.index.tz_localize(None) if s.index.tzinfo is not None else s.index
         s.name = "precip_mm"
         diag["product"] = getattr(result, "product", None)
+        diag["units"] = getattr(result, "units", None) or None
+        diag["units_declared"] = getattr(result, "units_declared", None) or None
         s.attrs["product"] = diag["product"]
         log.info(
             "Retrieved %d days of precipitation (product=%s)",
@@ -825,9 +855,36 @@ PRECIP_DIGEST_SCHEME = "sha256 over 'YYYY-MM-DD<TAB>repr(float)<LF>' lines of th
 PRECIP_DEPENDENT_SIGNATURES = ["runoff_ratio", "stream_elas"]
 
 
-def precipitation_problem(p) -> Optional[str]:
+_MM_PER_DAY_UNITS = {
+    "mm/day", "mm/d", "mmday-1", "mmd-1", "mmday^-1", "mm.day-1",
+    "kg/m2/day", "kgm-2day-1", "kgm-2d-1", "kg/m^2/day",
+}
+#: Plausible long-term Q/P. ENGINEERING BOUND; SOURCE TO VERIFY. Same bounds as
+#: aihydro-tools' water-balance validator.
+RUNOFF_RATIO_PLAUSIBLE = (1e-3, 3.0)
+
+
+def _unit_is_mm_per_day(units: str) -> bool:
+    norm = "".join(str(units).lower().replace("\u00b2", "2").split())
+    return norm in _MM_PER_DAY_UNITS
+
+
+def _effective_units(rec: dict) -> Optional[str]:
+    """The unit to judge: what the payload declared, else the product spec's."""
+    return rec.get("units_declared") or rec.get("units") or None
+
+
+def precipitation_problem(p, units: Optional[str] = None) -> Optional[str]:
     """Return ``None`` if ``p`` is a usable basin-mean daily precipitation
-    series (mm/day), else a short reason string. Never raises."""
+    series (mm/day), else a short reason string. Never raises.
+
+    ``units``: the unit the series declares, if known. A declared unit that is
+    not mm/day-equivalent (e.g. m/day, mm/month) is refused as malformed input:
+    the magnitude gate cannot catch a plausible-looking wrong-unit series.
+    Unknown (None / empty) units are not refused.
+    """
+    if units is not None and str(units).strip() and not _unit_is_mm_per_day(units):
+        return f"precipitation declared in unit {str(units).strip()!r}, not mm/day"
     if p is None:
         return "no precipitation series (no source returned data)"
     try:
@@ -868,6 +925,7 @@ def _precipitation_record(p, diag: dict, attempted: bool = True) -> dict:
     import hashlib
     rec: dict = {
         "status": "not_attempted", "product": diag.get("product"),
+        "units": diag.get("units"), "units_declared": diag.get("units_declared"),
         "digest": None, "digest_scheme": PRECIP_DIGEST_SCHEME,
         "n_days": 0, "start": None, "end": None,
         "mean_mm_day": None, "min_mm_day": None, "max_mm_day": None,
@@ -895,7 +953,7 @@ def _precipitation_record(p, diag: dict, attempted: bool = True) -> dict:
         max_mm_day=_finite_or_none(finite.max()) if len(finite) else None,
         product=rec["product"] or ser.attrs.get("product"),
     )
-    problem = precipitation_problem(p)
+    problem = precipitation_problem(p, _effective_units(rec))
     if problem is None:
         rec["status"], rec["reason"] = "used", None
     else:

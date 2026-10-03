@@ -125,7 +125,7 @@ def test_only_water_balance_signatures_depend_on_precipitation(monkeypatch):
     _install(monkeypatch, None)
     without_p = _run().data
     changed = {k for k in with_p
-               if not k.startswith("_") and with_p[k] != without_p[k]}
+               if not k.startswith(("_", "precipitation_")) and with_p[k] != without_p[k]}
     # (stream_elas needs >= 3 hydro years; this 2-year fixture only moves runoff_ratio)
     assert "runoff_ratio" in changed and changed <= {"runoff_ratio", "stream_elas"}
 
@@ -185,3 +185,57 @@ def test_precipitation_option_rejects_unknown_value():
         sig.extract_hydrological_signatures(None, SQUARE, 100.0, START, END,
                                             q_cms_series=_q_cms(), precipitation="maybe")
     assert "INVALID_PARAMETER" in str(getattr(e.value, "code", "")) or "precipitation" in str(e.value)
+
+
+def test_declared_wrong_unit_is_refused_and_recorded(monkeypatch):
+    """m/day looks plausible to the magnitude gate (mean ~0.004) and used to seal
+    runoff_ratio ~ 450; a declared non-mm/day unit is refused instead."""
+    from types import SimpleNamespace
+    import aihydro_data
+
+    frame = pd.DataFrame({"date": IDX, "precipitation": np.full(len(IDX), 0.004)})
+    monkeypatch.setattr(aihydro_data, "fetch", lambda **kw: SimpleNamespace(
+        product="X_PRECIP", data=frame, units="m/day", units_declared="m/day"))
+    d = _run().data
+    assert d["runoff_ratio"] is None and d["stream_elas"] is None
+    rec = d["_precipitation"]
+    assert rec["status"] == "rejected" and "m/day" in rec["reason"]
+    assert rec["units"] == "m/day" and rec["units_declared"] == "m/day"
+    assert d["precipitation_status"] == "rejected"
+
+
+@pytest.mark.parametrize("unit,ok", [("mm/day", True), ("kg m-2 day-1", True), ("mm d-1", True),
+                                     ("m/day", False), ("mm/month", False), ("in/day", False)])
+def test_precipitation_problem_unit_table(unit, ok):
+    p = pd.Series(np.full(400, 2.0))
+    assert (sig.precipitation_problem(p, unit) is None) is ok
+    assert sig.precipitation_problem(p) is None          # unknown unit is not refused
+
+
+def test_impossible_runoff_ratio_is_never_returned():
+    # Unitless-but-plausible-magnitude P (mean 0.004 mm/day) gives Q/P ~ 450.
+    q = _q_cms()
+    out = sig.compute_water_balance_camels(q, _precip(np.full(len(IDX), 0.004)))
+    assert np.isnan(out["runoff_ratio"]) and np.isnan(out["stream_elas"])
+    out, reason = sig._water_balance(q, _precip(np.full(len(IDX), 0.004)))
+    assert "outside the plausible range" in reason
+
+
+def test_impossible_ratio_records_unusable_with_reason(monkeypatch):
+    _install(monkeypatch, _precip(np.full(len(IDX), 0.004)), product="X")
+    d = _run().data
+    assert d["runoff_ratio"] is None
+    assert d["_precipitation"]["status"] == "unusable"
+    assert "plausible range" in d["_precipitation"]["reason"]
+    assert d["precipitation_status"] == "unusable"
+
+
+def test_flat_provenance_keys_present_and_json_safe(monkeypatch):
+    rng = np.random.default_rng(5)
+    _install(monkeypatch, _precip(rng.gamma(0.5, 6.0, len(IDX)), "GRIDMET_PRECIP"),
+             product="GRIDMET_PRECIP")
+    d = _run().data
+    assert d["precipitation_status"] == "used"
+    assert d["precipitation_product"] == "GRIDMET_PRECIP"
+    assert d["precipitation_digest"] == d["_precipitation"]["digest"]
+    json.dumps(d)

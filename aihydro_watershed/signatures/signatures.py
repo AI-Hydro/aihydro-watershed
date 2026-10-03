@@ -26,6 +26,7 @@ from __future__ import annotations
 
 from typing import Dict, Optional, Tuple
 import logging
+import threading
 import warnings
 
 import numpy as np
@@ -143,6 +144,7 @@ __all__ = [
     'compute_event_stats_camels',
     'compute_timing_stats_camels',
     'compute_slope_fdc_camels',
+    'precipitation_problem',
     'BASEFLOW_SEPARATION_METHOD',
     'BASEFLOW_SEPARATION_PARAMS',
     'BASEFLOW_SEPARATION_REFERENCE',
@@ -262,6 +264,8 @@ def extract_hydrological_signatures(
             log.warning("Insufficient streamflow data for gauge %s", gauge_id)
             sigs = _get_default_hydrology()
             _source = {"product": None, "observation": "none"}
+            _precip_record = _precipitation_record(
+                None, {"reason": "not attempted: no usable streamflow"}, attempted=False)
         else:
             q_cms = streamflow_result["q_cms"]
             # _to_mm_per_day expects a pd.Series with a DatetimeIndex.
@@ -275,7 +279,12 @@ def extract_hydrological_signatures(
                                       periods=len(q_cms), freq="D")
                 q_cms = _pd.Series(list(q_cms), index=_idx, dtype=float)
             q_mm_day = _to_mm_per_day(q_cms, area_km2)
+            # The fetch reports product / failure reason through a
+            # thread-local side channel so its (Series | None) contract, which
+            # callers and tests patch, stays unchanged.
+            _PRECIP_DIAG.d = {}
             p_mm_day = _fetch_precipitation_data_bygeom(watershed_geom, start_date, end_date)
+            _precip_record = _precipitation_record(p_mm_day, getattr(_PRECIP_DIAG, "d", {}))
 
             sigs = {
                 **compute_flow_stats_camels(q_mm_day),
@@ -284,6 +293,13 @@ def extract_hydrological_signatures(
                 **compute_timing_stats_camels(q_mm_day),
                 **compute_slope_fdc_camels(q_mm_day),
             }
+            if _precip_record["status"] == "used" and not np.isfinite(
+                    float(sigs.get("runoff_ratio", np.nan))):
+                _precip_record.update(
+                    status="unusable",
+                    reason="water balance not computable: precipitation and "
+                           "streamflow overlap < 365 days or non-finite result",
+                )
             log.info(
                 "Extracted %d signatures (gauge=%s, preloaded_q=%s)",
                 len(sigs),
@@ -326,6 +342,7 @@ def extract_hydrological_signatures(
         # this fix (watershed < 0.1.1), whose q5/q95 were swapped
         # (docs/vision-2040/findings/defect-q5-q95.md).
         clean["flow_quantile_convention"] = FLOW_QUANTILE_CONVENTION
+        clean["_precipitation"] = _precip_record
 
         if _global_product == "GEOGLOWS_RETRO":
             _global_sources = _SOURCES_GEOGLOWS
@@ -368,6 +385,9 @@ def extract_hydrological_signatures(
             data={
                 **_get_default_hydrology(),
                 "_streamflow_source": {"product": None, "observation": "none"},
+                "_precipitation": _precipitation_record(
+                    None, {"reason": "not attempted: signature extraction failed"},
+                    attempted=False),
             },
             meta=HydroMeta(
                 tool=_TOOL_PATH_SIGNATURES,
@@ -437,8 +457,13 @@ def compute_water_balance_camels(
     Returns: runoff_ratio, stream_elas
     """
 
-    if p_mm_day is None or len(p_mm_day) < 365:
-        log.warning("Insufficient precipitation data for water balance")
+    # A precipitation series that is absent, empty, all-zero, negative,
+    # non-finite or outside physical bounds is never divided into: the
+    # precipitation-dependent signatures are NaN (recorded as None, with the
+    # reason in ``_precipitation``), not a number computed from a placeholder.
+    problem = precipitation_problem(p_mm_day)
+    if problem is not None:
+        log.warning("Precipitation unusable for water balance (%s)", problem)
         return {'runoff_ratio': np.nan, 'stream_elas': np.nan}
 
     q_aln, p_aln = _align_daily(q_mm_day, p_mm_day, min_days=365)
@@ -447,8 +472,15 @@ def compute_water_balance_camels(
         log.warning("Failed to align Q and P time series")
         return {'runoff_ratio': np.nan, 'stream_elas': np.nan}
 
+    problem = precipitation_problem(p_aln)
+    if problem is not None:
+        log.warning("Aligned precipitation unusable for water balance (%s)", problem)
+        return {'runoff_ratio': np.nan, 'stream_elas': np.nan}
+
     mean_q, mean_p = float(q_aln.mean()), float(p_aln.mean())
-    rr = mean_q / mean_p if mean_p > 0 else np.nan
+    rr = mean_q / mean_p
+    if not np.isfinite(rr):
+        return {'runoff_ratio': np.nan, 'stream_elas': np.nan}
 
     # Streamflow elasticity
     hy = _year_series(q_aln.index, hydro_year_start_month=10)
@@ -686,12 +718,20 @@ def _fetch_precipitation_data_bygeom(
     **CHIRPS_IRI** (IRI OPeNDAP, auth-free, 1981→present, 0.05°) is always the
     last fallback — it requires only ``pip install aihydro-data[opendap]``
     (xarray + netCDF4) and no API key.
+
+    The product the data layer reports it served (and, on failure, the reason)
+    is left in ``_PRECIP_DIAG.d``; the returned series carries the product in
+    ``.attrs["product"]``. Validity is NOT judged here — see
+    :func:`precipitation_problem`.
     """
+    diag: dict = {}
+    _PRECIP_DIAG.d = diag
     try:
         import aihydro_data
         import geopandas as gpd
     except ImportError:
         log.warning("aihydro_data not installed — precipitation fetch unavailable.")
+        diag["reason"] = "aihydro_data not installed"
         return None
 
     gdf = gpd.GeoDataFrame(geometry=[watershed_geom], crs="EPSG:4326")
@@ -708,6 +748,8 @@ def _fetch_precipitation_data_bygeom(
         df = result.data
         if not isinstance(df, pd.DataFrame) or df.empty:
             log.warning("Precipitation fetch returned empty result")
+            diag["reason"] = "precipitation fetch returned an empty result"
+            diag["product"] = getattr(result, "product", None)
             return None
         # Both GEE and CHIRPS_IRI backends return DataFrame[date, precipitation]
         p_col = "precipitation" if "precipitation" in df.columns else None
@@ -715,11 +757,15 @@ def _fetch_precipitation_data_bygeom(
             p_col = next((c for c in df.columns if c != "date"), None)
         if p_col is None:
             log.warning("Precipitation DataFrame has no usable column")
+            diag["reason"] = "precipitation result has no usable column"
+            diag["product"] = getattr(result, "product", None)
             return None
         idx = pd.to_datetime(df["date"] if "date" in df.columns else df.index)
         s = pd.Series(df[p_col].values, index=idx, dtype=float).dropna()
         s.index = s.index.tz_localize(None) if s.index.tzinfo is not None else s.index
         s.name = "precip_mm"
+        diag["product"] = getattr(result, "product", None)
+        s.attrs["product"] = diag["product"]
         log.info(
             "Retrieved %d days of precipitation (product=%s)",
             len(s), getattr(result, "product", "unknown"),
@@ -727,7 +773,112 @@ def _fetch_precipitation_data_bygeom(
         return s
     except Exception as e:
         log.warning("Precipitation fetch skipped (runoff_ratio/stream_elas will be NaN): %s", e)
+        diag["reason"] = f"no precipitation source returned data: {type(e).__name__}: {e}"
         return None
+
+
+# ---------------------------------------------------------------------------
+# Precipitation validity gate + provenance record
+# ---------------------------------------------------------------------------
+
+# Physical bounds for a basin-mean DAILY precipitation series (mm/day). They
+# are deliberately generous: the point is to refuse fill values / placeholders
+# (e.g. a ~1e33 netCDF fill, the likely cause of runoff_ratio = 2.3e-33 in
+# e2e proof 2), not to second-guess real climate.
+#   daily max : 2000 mm/day - above the world 24-h point record (~1825 mm,
+#               Foc-Foc, La Reunion, Jan 1966, WMO Weather & Climate Extremes
+#               Archive; widely published, not re-verified in this offline
+#               change). A basin-MEAN day cannot exceed a point record.
+#   mean max  : 35 mm/day (~12,800 mm/yr) - above the wettest long-term
+#               station means (Mawsynram/Cherrapunji, ~11,900 mm/yr).
+#   mean min  : 1e-4 mm/day (~0.04 mm/yr) - an effectively-zero / denormal
+#               series is a placeholder, not climate; the driest places on
+#               Earth (Atacama, ~1 mm/yr) are still ~30x above it.
+_PRECIP_DIAG = threading.local()
+PRECIP_MIN_DAYS = 365
+PRECIP_MAX_DAILY_MM = 2000.0
+PRECIP_MAX_MEAN_MM_DAY = 35.0
+PRECIP_MIN_MEAN_MM_DAY = 1e-4
+PRECIP_DIGEST_SCHEME = "sha256 over 'YYYY-MM-DD<TAB>repr(float)<LF>' lines of the received series"
+PRECIP_DEPENDENT_SIGNATURES = ["runoff_ratio", "stream_elas"]
+
+
+def precipitation_problem(p) -> Optional[str]:
+    """Return ``None`` if ``p`` is a usable basin-mean daily precipitation
+    series (mm/day), else a short reason string. Never raises."""
+    if p is None:
+        return "no precipitation series (no source returned data)"
+    try:
+        vals = np.asarray(p, dtype=float).ravel()
+    except Exception as exc:  # noqa: BLE001
+        return f"precipitation series not numeric: {exc}"
+    if np.isinf(vals).any():
+        return "precipitation contains non-finite (inf) values"
+    vals = vals[~np.isnan(vals)]
+    if len(vals) < PRECIP_MIN_DAYS:
+        return f"fewer than {PRECIP_MIN_DAYS} valid precipitation days ({len(vals)})"
+    if (vals < 0).any():
+        return f"negative precipitation values (min {vals.min():.4g} mm/day)"
+    if vals.max() > PRECIP_MAX_DAILY_MM:
+        return (f"precipitation outside physical range: max {vals.max():.4g} mm/day "
+                f"> {PRECIP_MAX_DAILY_MM:g} (fill value or unit error)")
+    mean = float(vals.mean())
+    if not mean >= PRECIP_MIN_MEAN_MM_DAY:
+        return (f"precipitation is zero or effectively zero (mean {mean:.4g} mm/day "
+                f"< {PRECIP_MIN_MEAN_MM_DAY:g}): placeholder series")
+    if mean > PRECIP_MAX_MEAN_MM_DAY:
+        return (f"precipitation outside physical range: mean {mean:.4g} mm/day "
+                f"> {PRECIP_MAX_MEAN_MM_DAY:g}")
+    return None
+
+
+def _finite_or_none(x) -> Optional[float]:
+    try:
+        x = float(x)
+    except Exception:  # noqa: BLE001
+        return None
+    return x if np.isfinite(x) else None
+
+
+def _precipitation_record(p, diag: dict, attempted: bool = True) -> dict:
+    """Provenance of the precipitation the water-balance signatures used (or
+    did not use). ``status``: used | rejected | unavailable | not_attempted."""
+    import hashlib
+    rec: dict = {
+        "status": "not_attempted", "product": diag.get("product"),
+        "digest": None, "digest_scheme": PRECIP_DIGEST_SCHEME,
+        "n_days": 0, "start": None, "end": None,
+        "mean_mm_day": None, "min_mm_day": None, "max_mm_day": None,
+        "reason": diag.get("reason"),
+        "dependent_signatures": list(PRECIP_DEPENDENT_SIGNATURES),
+    }
+    if not attempted:
+        return rec
+    if p is None or len(p) == 0:
+        rec["status"] = "unavailable"
+        rec["reason"] = rec["reason"] or "no precipitation source returned data"
+        return rec
+    ser = pd.Series(p)
+    h = hashlib.sha256()
+    idx = pd.to_datetime(ser.index)
+    for d, v in zip(idx, ser.values):
+        h.update(f"{d:%Y-%m-%d}\t{float(v)!r}\n".encode())
+    vals = ser.astype(float).values
+    finite = vals[np.isfinite(vals)]
+    rec.update(
+        digest="sha256:" + h.hexdigest(), n_days=int(len(ser)),
+        start=f"{idx.min():%Y-%m-%d}", end=f"{idx.max():%Y-%m-%d}",
+        mean_mm_day=_finite_or_none(finite.mean()) if len(finite) else None,
+        min_mm_day=_finite_or_none(finite.min()) if len(finite) else None,
+        max_mm_day=_finite_or_none(finite.max()) if len(finite) else None,
+        product=rec["product"] or ser.attrs.get("product"),
+    )
+    problem = precipitation_problem(p)
+    if problem is None:
+        rec["status"], rec["reason"] = "used", None
+    else:
+        rec["status"], rec["reason"] = "rejected", problem
+    return rec
 
 
 def _lyne_hollick_baseflow(

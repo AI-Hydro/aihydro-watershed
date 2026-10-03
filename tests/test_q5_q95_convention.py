@@ -67,7 +67,7 @@ def test_extract_signatures_carries_orientation_marker_and_bootstrap_matches(mon
         gauge_id=None, watershed_geojson=square, area_km2=250.0, q_cms_series=q_cms,
     )
     d = res.data
-    assert d["_flow_quantile_convention"] == sig.FLOW_QUANTILE_CONVENTION == "camels_nonexceedance_v1"
+    assert d["flow_quantile_convention"] == sig.FLOW_QUANTILE_CONVENTION == "camels_nonexceedance_v1"
     assert d["q5"] < d["q_median"] < d["q95"]
     u = d["_uncertainty"]
     # The bootstrap CI belongs to the same quantile as the point value it labels.

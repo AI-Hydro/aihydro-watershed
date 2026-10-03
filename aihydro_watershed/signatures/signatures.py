@@ -320,10 +320,12 @@ def extract_hydrological_signatures(
         if _uncertainty:
             clean["_uncertainty"] = _uncertainty
         clean["_streamflow_source"] = _source
-        # Marks q5/q95 as CAMELS non-exceedance quantiles. Absent on results
-        # computed before this fix, whose q5/q95 were swapped
+        # Marks q5/q95 as CAMELS non-exceedance quantiles. Deliberately NOT
+        # underscore-prefixed: the tools layer drops "_" keys before sealing, and
+        # this one must reach the sealed record. Absent on results computed before
+        # this fix (watershed < 0.1.1), whose q5/q95 were swapped
         # (docs/vision-2040/findings/defect-q5-q95.md).
-        clean["_flow_quantile_convention"] = FLOW_QUANTILE_CONVENTION
+        clean["flow_quantile_convention"] = FLOW_QUANTILE_CONVENTION
 
         if _global_product == "GEOGLOWS_RETRO":
             _global_sources = _SOURCES_GEOGLOWS

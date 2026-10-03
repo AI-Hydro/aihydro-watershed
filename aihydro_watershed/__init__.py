@@ -33,7 +33,7 @@ is the interim path.
 
 from __future__ import annotations
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 # Public API — populated in Wave A2 as modules land in their subpackages.
 # Kept intentionally lazy (no eager submodule imports) so `import aihydro_watershed`

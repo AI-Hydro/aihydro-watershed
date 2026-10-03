@@ -21,7 +21,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "aihydro-watershed"
-version = "0.1.0"
+version = "0.1.1"
 description = "Watershed delineation + characterization — global pour-point delineation (NLDI + MERIT-Hydro), geomorphics, TWI, and watershed-scale hydrological signatures"
 requires-python = ">=3.10"
 license = "Apache-2.0"

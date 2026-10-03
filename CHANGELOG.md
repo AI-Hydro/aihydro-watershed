@@ -1,6 +1,6 @@
 # Changelog — aihydro-watershed
 
-## [Unreleased]
+## [0.1.1] - 2026-10-03
 
 ### Fixed
 
@@ -11,8 +11,8 @@
   This was a computation error under correct-looking labels, not only a rename: the values
   for each key changed. On the proof-1 gauge 01013500 the platform gave q5 = 6.357,
   q95 = 0.240 against CAMELS q5 = 0.241, q95 = 6.373. After the fix q5 = 0.2405 and
-  q95 = 6.3566 (mm/day). `result.data` gains `_flow_quantile_convention =
-  "camels_nonexceedance_v1"`; results sealed before this change lack the key and carry the
+  q95 = 6.3566 (mm/day). `result.data` gains the non-underscore key `flow_quantile_convention =
+  "camels_nonexceedance_v1"` (non-underscore so the tools layer keeps it in the sealed evidence; the package version moves to 0.1.1 so the run record's `env_digest` also changes); results sealed before this change lack the key (and were produced by watershed < 0.1.1) and carry the
   swapped values, so readers must treat a missing marker on a `q5`/`q95` as swapped (the
   historical records are not rewritten). The hydrologic exceedance flows of
   `flow_duration_curve` (`Q5` high, `Q95` low) are a separate, documented convention and

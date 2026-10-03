@@ -171,6 +171,7 @@ def extract_hydrological_signatures(
     start_date: str = "1989-10-01",
     end_date: str = "2009-09-30",
     q_cms_series: list | pd.Series | None = None,
+    precipitation: str = "auto",
 ) -> HydroResult:
     """
     Extract 17 CAMELS-style hydrological signatures for a watershed.
@@ -195,6 +196,14 @@ def extract_hydrological_signatures(
         a list is assumed consecutive daily values from start_date. When supplied the USGS
         NWIS fetch is skipped — enables global / non-USGS workflows where
         streamflow was already fetched via ``data_fetch`` or another source.
+    precipitation : {"auto", "skip"}, optional
+        ``"auto"`` (default) fetches basin-mean precipitation through
+        aihydro-data and computes ``runoff_ratio`` / ``stream_elas`` when the
+        series passes the physical-validity gate. ``"skip"`` makes NO
+        precipitation request at all (use for offline / network-guarded runs:
+        some backends read through the netCDF C library, which Python-level
+        network guards cannot see); both signatures are then None and
+        ``_precipitation.status == "not_attempted"`` with the reason recorded.
 
     Returns
     -------
@@ -213,6 +222,14 @@ def extract_hydrological_signatures(
     """
 
     log.info("Extracting hydrological signatures for gauge %s (%s to %s)", gauge_id, start_date, end_date)
+
+    if precipitation not in ("auto", "skip"):
+        raise ToolError(
+            code="INVALID_PARAMETER",
+            message=f"precipitation must be 'auto' or 'skip', got {precipitation!r}.",
+            tool=_TOOL_PATH_SIGNATURES,
+            recovery="Pass precipitation='auto' (default) or 'skip'.",
+        )
 
     if not np.isfinite(area_km2) or area_km2 <= 0:
         raise ToolError(
@@ -282,9 +299,16 @@ def extract_hydrological_signatures(
             # The fetch reports product / failure reason through a
             # thread-local side channel so its (Series | None) contract, which
             # callers and tests patch, stays unchanged.
-            _PRECIP_DIAG.d = {}
-            p_mm_day = _fetch_precipitation_data_bygeom(watershed_geom, start_date, end_date)
-            _precip_record = _precipitation_record(p_mm_day, getattr(_PRECIP_DIAG, "d", {}))
+            if precipitation == "skip":
+                p_mm_day = None
+                _precip_record = _precipitation_record(
+                    None, {"reason": "skipped by caller (precipitation='skip'); "
+                                     "no precipitation request was made"},
+                    attempted=False)
+            else:
+                _PRECIP_DIAG.d = {}
+                p_mm_day = _fetch_precipitation_data_bygeom(watershed_geom, start_date, end_date)
+                _precip_record = _precipitation_record(p_mm_day, getattr(_PRECIP_DIAG, "d", {}))
 
             sigs = {
                 **compute_flow_stats_camels(q_mm_day),
@@ -366,6 +390,7 @@ def extract_hydrological_signatures(
                     "baseflow_method": BASEFLOW_SEPARATION_METHOD,
                     "baseflow_params": dict(BASEFLOW_SEPARATION_PARAMS),
                     "baseflow_reference": BASEFLOW_SEPARATION_REFERENCE,
+                    "precipitation": precipitation,
                 },
             ),
         )
@@ -785,15 +810,12 @@ def _fetch_precipitation_data_bygeom(
 # are deliberately generous: the point is to refuse fill values / placeholders
 # (e.g. a ~1e33 netCDF fill, the likely cause of runoff_ratio = 2.3e-33 in
 # e2e proof 2), not to second-guess real climate.
-#   daily max : 2000 mm/day - above the world 24-h point record (~1825 mm,
-#               Foc-Foc, La Reunion, Jan 1966, WMO Weather & Climate Extremes
-#               Archive; widely published, not re-verified in this offline
-#               change). A basin-MEAN day cannot exceed a point record.
-#   mean max  : 35 mm/day (~12,800 mm/yr) - above the wettest long-term
-#               station means (Mawsynram/Cherrapunji, ~11,900 mm/yr).
+# ENGINEERING BOUNDS; SOURCE TO VERIFY (no literature value is asserted here).
+#   daily max : 2000 mm/day - chosen to sit above any plausible basin-mean day.
+#   mean max  : 35 mm/day (~12,800 mm/yr) - chosen above the wettest places.
 #   mean min  : 1e-4 mm/day (~0.04 mm/yr) - an effectively-zero / denormal
 #               series is a placeholder, not climate; the driest places on
-#               Earth (Atacama, ~1 mm/yr) are still ~30x above it.
+#               Earth are expected to be well above it (source to verify).
 _PRECIP_DIAG = threading.local()
 PRECIP_MIN_DAYS = 365
 PRECIP_MAX_DAILY_MM = 2000.0

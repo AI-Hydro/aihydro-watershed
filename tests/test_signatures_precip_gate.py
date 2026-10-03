@@ -161,3 +161,27 @@ def test_real_fetch_path_when_every_backend_fails(monkeypatch):
     assert d["runoff_ratio"] is None
     rec = d["_precipitation"]
     assert rec["status"] == "unavailable" and "all products failed" in rec["reason"]
+
+
+def test_precipitation_skip_makes_no_request_and_records_not_attempted(monkeypatch):
+    import aihydro_data
+
+    def forbidden(*a, **k):
+        raise AssertionError("precipitation='skip' must not fetch")
+    monkeypatch.setattr(sig, "_fetch_precipitation_data_bygeom", forbidden)
+    monkeypatch.setattr(aihydro_data, "fetch", forbidden)
+    res = sig.extract_hydrological_signatures(
+        None, SQUARE, 100.0, START, END, q_cms_series=_q_cms(), precipitation="skip")
+    d = res.data
+    assert d["runoff_ratio"] is None and d["stream_elas"] is None
+    assert d["_precipitation"]["status"] == "not_attempted"
+    assert "skip" in d["_precipitation"]["reason"]
+    assert d["baseflow_index"] is not None          # precipitation-free signatures unaffected
+    assert res.meta.params["precipitation"] == "skip"
+
+
+def test_precipitation_option_rejects_unknown_value():
+    with pytest.raises(Exception) as e:
+        sig.extract_hydrological_signatures(None, SQUARE, 100.0, START, END,
+                                            q_cms_series=_q_cms(), precipitation="maybe")
+    assert "INVALID_PARAMETER" in str(getattr(e.value, "code", "")) or "precipitation" in str(e.value)

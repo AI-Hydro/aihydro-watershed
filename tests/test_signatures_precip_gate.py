@@ -239,3 +239,11 @@ def test_flat_provenance_keys_present_and_json_safe(monkeypatch):
     assert d["precipitation_product"] == "GRIDMET_PRECIP"
     assert d["precipitation_digest"] == d["_precipitation"]["digest"]
     json.dumps(d)
+
+
+def test_product_taken_from_series_attrs_when_no_diag(monkeypatch):
+    rng = np.random.default_rng(6)
+    monkeypatch.setattr(sig, "_fetch_precipitation_data_bygeom",
+                        lambda *a, **k: _precip(rng.gamma(0.5, 6.0, len(IDX)), "ATTR_PRODUCT"))
+    d = _run().data
+    assert d["precipitation_product"] == "ATTR_PRODUCT"

@@ -951,7 +951,7 @@ def _precipitation_record(p, diag: dict, attempted: bool = True) -> dict:
         mean_mm_day=_finite_or_none(finite.mean()) if len(finite) else None,
         min_mm_day=_finite_or_none(finite.min()) if len(finite) else None,
         max_mm_day=_finite_or_none(finite.max()) if len(finite) else None,
-        product=rec["product"] or ser.attrs.get("product"),
+        product=rec["product"] or (getattr(p, "attrs", None) or {}).get("product"),
     )
     problem = precipitation_problem(p, _effective_units(rec))
     if problem is None:

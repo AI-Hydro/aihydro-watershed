@@ -34,6 +34,7 @@ import pandas as pd
 
 from aihydro_core import DataSource, HydroMeta, HydroResult, ToolError
 from aihydro_watershed.signatures._streamflow_internal import (
+    _fetch_diag,
     _fetch_streamflow_internal,
     _to_mm_per_day,
 )
@@ -42,13 +43,13 @@ from aihydro_core.science.uncertainty import bootstrap_dict
 _SOURCES_NWIS = [
     DataSource(
         name="USGS NWIS",
-        url="https://waterservices.usgs.gov/nwis/dv/",
+        url="https://api.waterdata.usgs.gov/ogcapi/v1/collections/daily/items",
         citation=(
             "@misc{NWIS2024,\n"
-            "  title={National Water Information System (NWIS)},\n"
+            "  title={National Water Information System (NWIS), served by the USGS Water Data APIs},\n"
             "  author={{USGS Water Resources Mission Area}},\n"
             "  year={2024},\n"
-            "  url={https://waterdata.usgs.gov/nwis}\n"
+            "  url={https://api.waterdata.usgs.gov/ogcapi/v1}\n"
             "}"
         ),
     )
@@ -268,8 +269,15 @@ def extract_hydrological_signatures(
             streamflow_result = {"q_cms": q_cms_series}
             _source = {"product": None, "observation": "caller_supplied"}
         elif gauge_id:
+            _fetch_diag(clear=True)
             streamflow_result = _fetch_streamflow_internal(gauge_id, start_date, end_date)
             _source = {"product": "NWIS_STREAMFLOW", "observation": "observed"}
+            # Served-series identity and quality, when the fetch supplies them
+            # (the adapter does; a patched fetch may not).
+            for _k_src, _k_res in (("site", "site"), ("quality_summary", "quality"),
+                                   ("upstream", "upstream")):
+                if streamflow_result and streamflow_result.get(_k_res) is not None:
+                    _source[_k_src] = streamflow_result[_k_res]
         else:
             # Auto-route: try GEOGLOWS v2 (anonymous S3 Zarr, 1940→present),
             # fall back to Open-Meteo GloFAS v4 (no auth, ~1984→present).
@@ -282,6 +290,9 @@ def extract_hydrological_signatures(
             log.warning("Insufficient streamflow data for gauge %s", gauge_id)
             sigs = _get_default_hydrology()
             _source = {"product": None, "observation": "none"}
+            # Say WHY (e.g. GAUGE refusal, rate limit); never substitute another product.
+            if gauge_id and q_cms_series is None and _fetch_diag():
+                _source["error"] = _fetch_diag()
             _precip_record = _precipitation_record(
                 None, {"reason": "not attempted: no usable streamflow"}, attempted=False)
         else:

@@ -40,22 +40,22 @@ from aihydro_core import DataSource, HydroMeta, HydroResult, ToolError
 _SOURCES = [
     DataSource(
         name="USGS NLDI",
-        url="https://labs.waterdata.usgs.gov/api/nldi/",
+        url="https://api.water.usgs.gov/nldi/",
         citation=(
             "@misc{NLDI2024,\n"
             "  title={Network-Linked Data Index (NLDI)},\n"
             "  author={{USGS Water Resources}},\n"
             "  year={2024},\n"
-            "  url={https://labs.waterdata.usgs.gov/api/nldi/}\n"
+            "  url={https://api.water.usgs.gov/nldi/}\n"
             "}"
         ),
     ),
     DataSource(
         name="USGS NWIS",
-        url="https://waterservices.usgs.gov/",
+        url="https://api.waterdata.usgs.gov/ogcapi/v1/collections/monitoring-locations",
         citation=(
             "@misc{NWIS2024,\n"
-            "  title={National Water Information System (NWIS)},\n"
+            "  title={National Water Information System (NWIS), served by the USGS Water Data APIs},\n"
             "  author={{USGS Water Resources Mission Area}},\n"
             "  year={2024},\n"
             "  url={https://waterdata.usgs.gov/nwis}\n"
@@ -68,8 +68,8 @@ _TOOL_PATH = "aihydro_watershed.characterize.watershed.delineate_watershed"
 
 try:
     from pynhd import NLDI
-    from pygeohydro import NWIS
     import geopandas as gpd
+    from aihydro_data.sources import usgs_waterdata as _uw
     _DEPS_OK = True
 except ImportError:
     _DEPS_OK = False
@@ -78,6 +78,33 @@ except ImportError:
 def _get_nldi_basin_for_gauge(nldi: NLDI, gauge_id: str) -> gpd.GeoDataFrame:
     """Fetch NLDI basin by NWIS site id, with COMID fallback when API shape fails."""
     return _get_nldi_basin_for_gauge_ex(nldi, gauge_id)[0]
+
+
+def _gauge_location(gauge_id: str):
+    """Monitoring location of a gauge from the USGS Water Data API (via aihydro-data).
+
+    Replaces the legacy pygeohydro site-info lookup. A site the API does not list is a terminal
+    ``GAUGE_NOT_FOUND``; an unreachable / throttled API is ``NETWORK_ERROR`` (the lookup did
+    not happen, which is not the same claim).
+    """
+    from aihydro_data.exceptions import AihydroDataError, TerminalSourceError
+
+    try:
+        return _uw.get_monitoring_locations(ids=[gauge_id])[0]
+    except TerminalSourceError as e:
+        raise ToolError(
+            code="GAUGE_NOT_FOUND",
+            message=f"Gauge {gauge_id} not found in the USGS Water Data API ({getattr(e, 'code', '')}).",
+            tool=_TOOL_PATH,
+            recovery="Verify gauge ID at https://waterdata.usgs.gov/nwis",
+        ) from e
+    except AihydroDataError as e:
+        raise ToolError(
+            code="NETWORK_ERROR",
+            message=f"USGS monitoring-location lookup for {gauge_id} failed: {e}",
+            tool=_TOOL_PATH,
+            recovery="Retry later; the gauge may exist but could not be looked up.",
+        ) from e
 
 
 def _get_nldi_basin_for_gauge_ex(nldi: NLDI, gauge_id: str):
@@ -101,17 +128,11 @@ def _get_nldi_basin_for_gauge_ex(nldi: NLDI, gauge_id: str):
             e,
         )
 
-    nwis = NWIS()
-    site_info = nwis.get_info([{"site": gauge_id}])
-    if site_info is None or site_info.empty:
-        raise ToolError(
-            code="GAUGE_NOT_FOUND",
-            message=f"Gauge {gauge_id} not found in NWIS.",
-            tool=_TOOL_PATH,
-        ) from first_error
-    row = site_info.iloc[0]
-    lat = float(row["dec_lat_va"])
-    lon = float(row["dec_long_va"])
+    try:
+        loc = _gauge_location(gauge_id)
+    except ToolError as e:
+        raise e from first_error
+    lat, lon = loc.lat, loc.lon
     comid = int(nldi.comid_byloc((lon, lat)).comid.iloc[0])
     gdf = nldi.get_basins(comid, fsource="comid")
     return _normalize_nldi_basins(gdf), "comid_fallback", comid
@@ -185,7 +206,7 @@ def delineate_watershed(
         GAUGE_NOT_FOUND   — gauge_id not in NLDI or NWIS
         INVALID_GAUGE_ID  — bad format
         NETWORK_ERROR     — API unreachable
-        DEPENDENCY_ERROR  — pynhd/pygeohydro not installed
+        DEPENDENCY_ERROR  — pynhd or aihydro-data not installed
 
     Examples
     --------
@@ -240,24 +261,12 @@ def delineate_watershed(
         )
         log.info("Watershed area: %.1f km²", area_km2)
 
-        # ── Step 2: Gauge metadata from NWIS ─────────────────────────────
-        nwis = NWIS()
-        site_info = nwis.get_info([{"site": gauge_id}])
-        site_info["site_no"] = [str(x) for x in site_info["site_no"]]
-
-        if gauge_id not in site_info["site_no"].values:
-            raise ToolError(
-                code="GAUGE_NOT_FOUND",
-                message=f"Gauge {gauge_id} not found in NWIS.",
-                tool=_TOOL_PATH,
-                recovery="Verify gauge ID at https://waterdata.usgs.gov/nwis",
-            )
-
-        row = site_info.loc[site_info["site_no"] == gauge_id].iloc[0]
-        gauge_lat = float(row["dec_lat_va"])
-        gauge_lon = float(row["dec_long_va"])
-        gauge_name = str(row["station_nm"])
-        huc_full = str(row.get("huc_cd", ""))
+        # ── Step 2: Gauge metadata from the USGS Water Data API ─────────────────────────────
+        loc = _gauge_location(gauge_id)
+        gauge_lat = float(loc.lat)
+        gauge_lon = float(loc.lon)
+        gauge_name = str(loc.name or "")
+        huc_full = str(loc.hydrologic_unit_code or "")
         huc_02 = huc_full[:2] if len(huc_full) >= 2 else "NA"
 
         # ── Step 3: Geometry → GeoJSON dict (JSON-serializable) ──────────
@@ -288,6 +297,13 @@ def delineate_watershed(
                 "gauge_lat": gauge_lat,
                 "gauge_lon": gauge_lon,
                 "huc_02": huc_02,
+                # Gauge position as the Water Data API serves it. The API states no CRS for the
+                # geometry; original_horizontal_datum is the source datum (NAD83 for most gauges),
+                # recorded here, not asserted as the geometry's datum.
+                "gauge_hydrologic_unit_code": huc_full or None,
+                "gauge_horizontal_datum": loc.horizontal_datum,
+                "gauge_coordinate_note": loc.geometry_crs_note,
+                "gauge_site_id": loc.site_id,
                 "delineation_path": basin_path,
                 "comid": fallback_comid,
                 "basin_ref": basin_ref,

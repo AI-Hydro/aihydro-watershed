@@ -1,5 +1,39 @@
 # Changelog — aihydro-watershed
 
+## [0.1.3] - 2026-10-17 (Wave U / U2)
+
+### Changed
+
+- **USGS streamflow and gauge metadata now come from the Water Data API through the
+  aihydro-data adapter** (`aihydro_data.sources.usgs_waterdata`); the legacy
+  `waterservices.usgs.gov` path (decommissioned 2027-02-22) is gone from this package.
+  `dataretrieval` and `pygeohydro.NWIS` are no longer imported anywhere in watershed
+  (requires `aihydro-data>=0.2.3`).
+- `_fetch_streamflow_internal` returns `{q_cms, meta, quality, flags, upstream, site}`:
+  the adapter's quality summary (approval and qualifier counts, provisional span, gaps), a
+  per-day `approval_code` / `qualifier_code` frame aligned with `q_cms`, and the request
+  provenance (URLs, body sha256). On failure it still returns `None` but leaves the
+  adapter's error code and whether it is terminal in `_fetch_diag()`.
+- `extract_hydrological_signatures`: `_streamflow_source` additionally carries `site`,
+  `quality_summary` and `upstream` for an observed gauge, and `error` when no streamflow was
+  obtained. A refused or unreachable gauge is reported as `observation: "none"`; no modelled
+  product is substituted for a gauge request. Citation URL updated.
+- `delineate_watershed` takes name, position and HUC from the API's monitoring-location
+  record and adds `gauge_hydrologic_unit_code` (12-digit; legacy was 8-digit),
+  `gauge_horizontal_datum` (the API's `original_horizontal_datum`, e.g. NAD83),
+  `gauge_coordinate_note` (the API does not state the geometry CRS) and `gauge_site_id`.
+  `gauge_name` capitalisation follows the API ("near", legacy "Near"). The NLDI citation
+  host is `api.water.usgs.gov/nldi`.
+
+### Precision note (not a defect fix)
+
+- Discharge is converted once, with the exact `0.028316846592` (1 ft = 0.3048 m). Values
+  from the former watershed constant `0.0283168` differ by up to 1.6e-6 relative; values
+  that came through aihydro-data's `0.028316847` differ by 1.44e-8. Scale-free signatures
+  (baseflow index, event frequencies and durations, timing) are unchanged; scale-bearing
+  ones (q_mean, q5, q95, ...) move by that relative amount. Proof-1 gauge 01013500
+  WY1990-2009: `baseflow_index` 0.5853970180143581 and `high_q_freq` 6.1 reproduce exactly.
+
 ## [0.1.1] - 2026-10-03
 
 ### Fixed

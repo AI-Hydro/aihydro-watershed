@@ -44,7 +44,7 @@ Pour point (lat, lon)
        │      fallback when NLDI returns < 1 km2 or fails.
        │
        ├─── Tier 1: NLDI (CONUS, NHDPlus-indexed)
-       │      nldi_point.py: USGS NLDI via pynhd (labs.waterdata.usgs.gov/api/nldi)
+       │      nldi_point.py: USGS NLDI via pynhd (api.water.usgs.gov/nldi)
        │      Returns NHDPlus COMID basin polygons (not StreamStats)
        │      ↓ fail (non-CONUS, network error, basin < 1 km2)
        │
@@ -158,7 +158,7 @@ extract_hydrological_signatures(
 )
           │
           ├─ Streamflow fetch
-          │    gauge_id provided → NWIS (dataretrieval.nwis.get_dv)
+          │    gauge_id provided → USGS Water Data API daily values (aihydro_data.sources.usgs_waterdata.get_daily)
           │    gauge_id = None   → GEOGLOWS v2 S3 Zarr (anonymous, 1940-present)
           │
           ├─ Precipitation fetch

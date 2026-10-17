@@ -8,9 +8,9 @@
   `extract_hydrological_signatures`, `extract_geomorphic_parameters` and `delineate_watershed` was read
   with `importlib.metadata.version("aihydro-tools")`, which reads the `dist-info` of an editable install and
   goes stale when the source is bumped (sealed records stated 2.3.7 while 2.4.0 ran). It is now the
-  imported module's `__version__` (new `aihydro_watershed/_version.py`): the already-loaded `ai_hydro` host
-  module when the tools server is running (looked up in `sys.modules`, never imported: layering), else this
-  package's own `__version__` (`version_source` says which). When distribution metadata disagrees, `meta.params["version_check"]` carries `module_version`, `distribution_version` and
+  imported `aihydro_watershed.__version__` (new `aihydro_watershed/_version.py`). This package always states its own
+  identity and never looks at the tools layer; the tools run record states the tools version and keeps this one as
+  the producer version. When distribution metadata disagrees, `meta.params["version_check"]` carries `module_version`, `distribution_version` and
   `version_mismatch: true`; on agreement nothing is added.
 
 ## [0.1.3] - 2026-10-17 (Wave U / U2)

@@ -135,7 +135,6 @@ def test_meta_version_is_module_version_not_stale_dist_info(monkeypatch):
     import aihydro_watershed
     from aihydro_watershed import _version
 
-    monkeypatch.delitem(__import__("sys").modules, "ai_hydro", raising=False)
     real = md.version
     monkeypatch.setattr(md, "version", lambda name: "0.0.1" if name.startswith("aihydro") else real(name))
     assert sig._get_version() == aihydro_watershed.__version__ != "0.0.1"
@@ -147,20 +146,20 @@ def test_meta_version_is_module_version_not_stale_dist_info(monkeypatch):
     assert chk["version_source"] == "module"
 
 
-def test_host_module_version_wins_over_stale_dist_info(monkeypatch):
+def test_host_module_is_never_consulted(monkeypatch):
+    """Watershed states its own identity even when an ai_hydro module is loaded."""
     import importlib.metadata as md
     import sys
     import types
+    import aihydro_watershed
     from aihydro_watershed import _version
 
     host = types.ModuleType("ai_hydro")
     host.__version__ = "9.8.7"
     monkeypatch.setitem(sys.modules, "ai_hydro", host)
-    monkeypatch.setattr(md, "version", lambda name: "2.3.7")
-    assert sig._get_version() == "9.8.7"
-    chk = _version.version_params()["version_check"]
-    assert (chk["package"], chk["version_source"], chk["module_version"], chk["distribution_version"],
-            chk["version_mismatch"]) == ("aihydro-tools", "host_module", "9.8.7", "2.3.7", True)
+    monkeypatch.setattr(md, "version", lambda name: "2.3.7" if name == "aihydro-tools" else aihydro_watershed.__version__)
+    assert sig._get_version() == aihydro_watershed.__version__
+    assert _version.version_params() == {}          # aihydro-tools dist-info is not this package's business
 
 
 def test_no_version_params_when_metadata_agrees(monkeypatch):
@@ -168,7 +167,6 @@ def test_no_version_params_when_metadata_agrees(monkeypatch):
     import aihydro_watershed
     from aihydro_watershed import _version
 
-    monkeypatch.delitem(__import__("sys").modules, "ai_hydro", raising=False)
     monkeypatch.setattr(md, "version", lambda name: aihydro_watershed.__version__)
     assert _version.version_params() == {}
     monkeypatch.setattr(md, "version", lambda name: (_ for _ in ()).throw(md.PackageNotFoundError(name)))

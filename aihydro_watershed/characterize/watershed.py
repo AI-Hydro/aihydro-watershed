@@ -320,6 +320,7 @@ def delineate_watershed(
                 gauge_id=gauge_id,
                 sources=_SOURCES,
                 params={
+                    **_version_params(),
                     "gauge_id": gauge_id,
                     "save_geojson": save_geojson,
                     "output_dir": output_dir,
@@ -364,9 +365,4 @@ def _check_deps() -> None:
         )
 
 
-def _get_version() -> str:
-    try:
-        from importlib.metadata import version
-        return version("aihydro-tools")
-    except Exception:
-        return "unknown"
+from aihydro_watershed._version import tool_version as _get_version, version_params as _version_params  # noqa: E402

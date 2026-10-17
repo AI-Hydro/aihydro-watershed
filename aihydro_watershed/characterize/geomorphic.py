@@ -846,12 +846,7 @@ def extract_geomorphic_parameters_result(
                 clean[k] = None
         clean["_units"] = units
 
-        def _get_version():
-            try:
-                from importlib.metadata import version
-                return version("aihydro-tools")
-            except Exception:
-                return "unknown"
+        from aihydro_watershed._version import tool_version as _get_version, version_params as _version_params
 
         return HydroResult(
             data=clean,
@@ -872,6 +867,7 @@ def extract_geomorphic_parameters_result(
                     )
                 ],
                 params={
+                    **_version_params(),
                     "outlet_lat": outlet_lat,
                     "outlet_lon": outlet_lon,
                     "dem_resolution": dem_resolution,

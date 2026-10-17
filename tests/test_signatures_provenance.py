@@ -124,3 +124,60 @@ def test_insufficient_streamflow_is_labelled_none(monkeypatch):
 
     assert result.data["_streamflow_source"] == {"product": None, "observation": "none"}
     assert result.data["q_mean"] is None or not np.isfinite(result.data["q_mean"])
+
+
+# ---------------------------------------------------------------------------
+# Version provenance: the running module, never stale dist-info (Wave U E7)
+# ---------------------------------------------------------------------------
+
+def test_meta_version_is_module_version_not_stale_dist_info(monkeypatch):
+    import importlib.metadata as md
+    import aihydro_watershed
+    from aihydro_watershed import _version
+
+    monkeypatch.delitem(__import__("sys").modules, "ai_hydro", raising=False)
+    real = md.version
+    monkeypatch.setattr(md, "version", lambda name: "0.0.1" if name.startswith("aihydro") else real(name))
+    assert sig._get_version() == aihydro_watershed.__version__ != "0.0.1"
+    p = _version.version_params()
+    chk = p["version_check"]
+    assert chk["version_mismatch"] is True
+    assert chk["module_version"] == aihydro_watershed.__version__
+    assert chk["distribution_version"] == "0.0.1"
+    assert chk["version_source"] == "module"
+
+
+def test_host_module_version_wins_over_stale_dist_info(monkeypatch):
+    import importlib.metadata as md
+    import sys
+    import types
+    from aihydro_watershed import _version
+
+    host = types.ModuleType("ai_hydro")
+    host.__version__ = "9.8.7"
+    monkeypatch.setitem(sys.modules, "ai_hydro", host)
+    monkeypatch.setattr(md, "version", lambda name: "2.3.7")
+    assert sig._get_version() == "9.8.7"
+    chk = _version.version_params()["version_check"]
+    assert (chk["package"], chk["version_source"], chk["module_version"], chk["distribution_version"],
+            chk["version_mismatch"]) == ("aihydro-tools", "host_module", "9.8.7", "2.3.7", True)
+
+
+def test_no_version_params_when_metadata_agrees(monkeypatch):
+    import importlib.metadata as md
+    import aihydro_watershed
+    from aihydro_watershed import _version
+
+    monkeypatch.delitem(__import__("sys").modules, "ai_hydro", raising=False)
+    monkeypatch.setattr(md, "version", lambda name: aihydro_watershed.__version__)
+    assert _version.version_params() == {}
+    monkeypatch.setattr(md, "version", lambda name: (_ for _ in ()).throw(md.PackageNotFoundError(name)))
+    assert _version.version_params() == {} and _version.tool_version() == aihydro_watershed.__version__
+
+
+def test_no_package_reads_distribution_metadata_for_result_version():
+    import pathlib
+    root = pathlib.Path(sig.__file__).resolve().parents[1]
+    offenders = [str(p.relative_to(root)) for p in root.rglob("*.py")
+                 if p.name != "_version.py" and "importlib.metadata" in p.read_text()]
+    assert offenders == []

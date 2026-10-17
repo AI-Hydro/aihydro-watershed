@@ -154,12 +154,7 @@ __all__ = [
 ]
 
 
-def _get_version() -> str:
-    try:
-        from importlib.metadata import version
-        return version("aihydro-tools")
-    except Exception:
-        return "unknown"
+from aihydro_watershed._version import tool_version as _get_version, version_params as _version_params  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -427,6 +422,7 @@ def extract_hydrological_signatures(
                 gauge_id=gauge_id or "",
                 sources=_sources,
                 params={
+                    **_version_params(),
                     "gauge_id": gauge_id or "global_watershed",
                     "area_km2": area_km2,
                     "start_date": start_date,
@@ -464,7 +460,7 @@ def extract_hydrological_signatures(
                 gauge_id=gauge_id,
                 # Cite NWIS only when a gauge was actually requested.
                 sources=_SOURCES_NWIS if gauge_id else [],
-                params={"gauge_id": gauge_id, "error": str(e)},
+                params={"gauge_id": gauge_id, "error": str(e), **_version_params()},
             ),
         )
 

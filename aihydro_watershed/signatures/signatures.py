@@ -265,6 +265,7 @@ def extract_hydrological_signatures(
         #   modelled        — reach-scale modelled discharge (GEOGLOWS / GloFAS)
         #   caller_supplied — q_cms_series passed in; origin unknown here
         #   none            — no usable streamflow; signatures are NaN
+        _gauge_check: dict | None = None
         if q_cms_series is not None:
             streamflow_result = {"q_cms": q_cms_series}
             _source = {"product": None, "observation": "caller_supplied"}
@@ -278,6 +279,13 @@ def extract_hydrological_signatures(
                                    ("upstream", "upstream")):
                 if streamflow_result and streamflow_result.get(_k_res) is not None:
                     _source[_k_src] = streamflow_result[_k_res]
+            # ADR-003 A2 R0 (explicit id): the identity is honoured, but the caller's area is
+            # compared with the gauge's and the outcome recorded. Fail warns, never refuses.
+            if streamflow_result and streamflow_result.get("site"):
+                _gauge_check = _gauge_area_check(gauge_id, area_km2)
+                _source["site_resolution"] = _gauge_check
+                for _w in _gauge_check.get("warnings", []):
+                    log.warning("%s", _w)
         else:
             # Auto-route: try GEOGLOWS v2 (anonymous S3 Zarr, 1940→present),
             # fall back to Open-Meteo GloFAS v4 (no auth, ~1984→present).
@@ -298,7 +306,7 @@ def extract_hydrological_signatures(
                 _source["error"] = {"code": "INSUFFICIENT_RECORD",
                                     "n_days": len(streamflow_result.get("q_cms", [])),
                                     "terminal": False}
-                for _k in ("site", "quality_summary"):
+                for _k in ("site", "quality_summary", "site_resolution"):
                     if _k in _prev:
                         _source[_k] = _prev[_k]
             elif gauge_id and q_cms_series is None and _fetch_diag():
@@ -389,6 +397,13 @@ def extract_hydrological_signatures(
         # (docs/vision-2040/findings/defect-q5-q95.md).
         clean["flow_quantile_convention"] = FLOW_QUANTILE_CONVENTION
         clean["_precipitation"] = _precip_record
+        # Non-underscore mirror of the gauge-vs-polygon area check (the tools layer drops "_"
+        # keys before sealing; a runoff depth computed with a mismatched area must say so).
+        if _gauge_check is not None:
+            clean["gauge_area_check"] = _gauge_check["area_check"]
+            clean["gauge_area_ratio"] = _gauge_check.get("area_ratio")
+            clean["gauge_area_km2"] = _gauge_check.get("gauge_area_km2")
+            clean["streamflow_warnings"] = list(_gauge_check.get("warnings", []))
         # Non-underscore mirrors: the tools layer drops "_" keys before sealing,
         # and a claim bound to runoff_ratio must carry its precipitation
         # provenance in the sealed evidence.
@@ -457,6 +472,45 @@ def extract_hydrological_signatures(
 # ---------------------------------------------------------------------------
 # Signature computation groups
 # ---------------------------------------------------------------------------
+
+def _gauge_area_check(gauge_id: str, area_km2: float) -> dict:
+    """ADR-003 A2 R0 area check for an explicit gauge id against the caller's ``area_km2``.
+
+    The gauge's total drainage area comes from the adapter's ``resolve_gauge(gauge_id=...)``
+    (mi2 x 2.589988110336); the pass / fail rule is the adapter's pre-registered
+    ``|ln(A_gauge / A_request)| <= ln 1.10``. ``area_check`` is pass | fail | unavailable.
+    Never raises: a lookup that cannot be made is ``unavailable`` with the reason recorded.
+    """
+    import math
+    from aihydro_data.sources import usgs_waterdata as uw
+
+    lim = uw.DEFAULT_THRESHOLDS["max_abs_log_area_ratio"]
+    out: dict = {"method": "explicit_id", "area_basis": "caller_area_km2",
+                 "request_area_km2": float(area_km2), "threshold_max_abs_log_area_ratio": lim,
+                 "rule_version": uw.RULE_VERSION, "area_check": "unavailable", "area_ratio": None,
+                 "log_area_ratio": None, "gauge_area_km2": None, "warnings": []}
+    try:
+        g = uw.resolve_gauge(gauge_id=gauge_id)
+    except Exception as e:                      # lookup could not be made: unavailable, not a refusal
+        out["reason"] = f"{getattr(e, 'code', type(e).__name__)}: {e}"
+        return out
+    out.update(site=g.site, gauge_area_km2=g.A_gauge_km2,
+               gauge_contributing_area_km2=g.A_gauge_contributing_km2,
+               area_units_note=g.area_units_note, upstream=g.upstream)
+    a = g.A_gauge_km2
+    if a is None or not a > 0 or not area_km2 > 0:
+        out["reason"] = "gauge drainage area not published"
+        return out
+    out["area_ratio"] = a / area_km2
+    out["log_area_ratio"] = math.log(a / area_km2)
+    out["area_check"] = "pass" if abs(out["log_area_ratio"]) <= lim + 1e-12 else "fail"
+    if out["area_check"] == "fail":
+        out["warnings"].append(
+            f"area_check=fail: gauge {g.site} total drainage area {a:.2f} km2 vs supplied area_km2 "
+            f"{area_km2:.2f} km2 (ratio {a / area_km2:.3f}); runoff depths (mm/day) use the supplied "
+            "area and are probably wrong. The gauge identity was honoured, not refused.")
+    return out
+
 
 def compute_flow_stats_camels(q_mm_day: pd.Series) -> Dict[str, float]:
     """

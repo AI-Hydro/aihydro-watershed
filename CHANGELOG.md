@@ -25,6 +25,14 @@
   `gauge_name` capitalisation follows the API ("near", legacy "Near"). The NLDI citation
   host is `api.water.usgs.gov/nldi`.
 
+- **Gauge-vs-polygon area check (ADR-003 A2 R0, explicit id).** For a fetched gauge the
+  supplied `area_km2` is compared with the gauge's total drainage area (adapter
+  `resolve_gauge(gauge_id=...)`, mi2 x 2.589988110336; pass when |ln ratio| <= ln 1.10).
+  Recorded in `_streamflow_source["site_resolution"]` and mirrored in the non-underscore keys
+  `gauge_area_check` (pass | fail | unavailable), `gauge_area_ratio`, `gauge_area_km2` and
+  `streamflow_warnings`. `fail` warns (log + `streamflow_warnings`) and never refuses; the
+  runoff depth still uses the supplied area. No check for caller-supplied series.
+
 ### Precision note (not a defect fix)
 
 - Discharge is converted once, with the exact `0.028316846592` (1 ft = 0.3048 m). Values

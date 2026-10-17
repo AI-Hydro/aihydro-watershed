@@ -247,3 +247,50 @@ def test_missing_adapter_is_its_own_dependency_error(monkeypatch):
     with pytest.raises(ToolError) as e:
         w._check_deps()
     assert e.value.code == "DEPENDENCY_ERROR" and "aihydro-data>=0.2.3" in e.value.message
+
+
+# --------------------------------------------------------------- ADR-003 A2 R0 area check
+def test_area_check_pass_for_matching_polygon(replay):
+    r = sig.extract_hydrological_signatures(
+        gauge_id=SITE, watershed_geojson=POLY, area_km2=AREA,       # gauge 870 mi2 = 2253.29 km2
+        start_date=START, end_date=END, precipitation="skip")
+    d = r.data
+    assert d["gauge_area_check"] == "pass" and d["streamflow_warnings"] == []
+    assert d["gauge_area_km2"] == pytest.approx(870 * 2.589988110336)
+    assert d["gauge_area_ratio"] == pytest.approx(870 * 2.589988110336 / AREA)
+    sr = d["_streamflow_source"]["site_resolution"]
+    assert sr["area_check"] == "pass" and sr["method"] == "explicit_id"
+    assert sr["request_area_km2"] == AREA and sr["area_basis"] == "caller_area_km2"
+    assert d["baseflow_index"] == PROOF1["baseflow_index"]          # check changes no number
+
+
+def test_area_check_fail_warns_but_still_computes(replay, caplog):
+    r = sig.extract_hydrological_signatures(
+        gauge_id=SITE, watershed_geojson=POLY, area_km2=2.6,
+        start_date=START, end_date=END, precipitation="skip")
+    d = r.data
+    assert d["gauge_area_check"] == "fail" and d["gauge_area_ratio"] > 800
+    assert len(d["streamflow_warnings"]) == 1 and "area_check=fail" in d["streamflow_warnings"][0]
+    assert d["_streamflow_source"]["site_resolution"]["area_check"] == "fail"
+    assert d["_streamflow_source"]["observation"] == "observed"     # a warning, never a refusal
+    assert np.isfinite(d["q_mean"])
+    assert "area_check=fail" in caplog.text
+
+
+def test_area_check_unavailable_when_lookup_fails(replay, monkeypatch):
+    def boom(**k):
+        raise uw._err("USGS_TIMEOUT", "timeout")
+    monkeypatch.setattr(uw, "resolve_gauge", boom)
+    r = sig.extract_hydrological_signatures(
+        gauge_id=SITE, watershed_geojson=POLY, area_km2=AREA,
+        start_date=START, end_date=END, precipitation="skip")
+    assert r.data["gauge_area_check"] == "unavailable"
+    assert "USGS_TIMEOUT" in r.data["_streamflow_source"]["site_resolution"]["reason"]
+    assert r.data["_streamflow_source"]["observation"] == "observed"
+
+
+def test_area_check_absent_for_caller_supplied_series():
+    r = sig.extract_hydrological_signatures(
+        gauge_id=None, watershed_geojson=POLY, area_km2=AREA, q_cms_series=[1.0] * 400,
+        precipitation="skip")
+    assert "gauge_area_check" not in r.data

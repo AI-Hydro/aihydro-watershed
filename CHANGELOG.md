@@ -30,9 +30,17 @@
 - Discharge is converted once, with the exact `0.028316846592` (1 ft = 0.3048 m). Values
   from the former watershed constant `0.0283168` differ by up to 1.6e-6 relative; values
   that came through aihydro-data's `0.028316847` differ by 1.44e-8. Scale-free signatures
-  (baseflow index, event frequencies and durations, timing) are unchanged; scale-bearing
-  ones (q_mean, q5, q95, ...) move by that relative amount. Proof-1 gauge 01013500
-  WY1990-2009: `baseflow_index` 0.5853970180143581 and `high_q_freq` 6.1 reproduce exactly.
+  (baseflow index, event frequencies and durations, timing) are equal to floating-point
+  precision (`slope_fdc` differs by 1 ulp); scale-bearing ones (q_mean, q5, q95, ...) move
+  by that relative amount. Proof-1 gauge 01013500 WY1990-2009: `baseflow_index`
+  0.5853970180143581 and `high_q_freq` 6.1 are bit-identical.
+- A record shorter than 365 days (fetched or caller-supplied) is labelled `observation:
+  "none"` with `error: {code: "INSUFFICIENT_RECORD", n_days, terminal: false}`; `site` and
+  `quality_summary` are kept when the record was fetched.
+- An unexpected exception inside the streamflow fetch maps to the non-terminal
+  `FETCH_FAILED` code (only adapter errors carry their own code and terminal flag).
+- `delineate_watershed` reports a missing adapter as `DEPENDENCY_ERROR` naming
+  `aihydro-data>=0.2.3`, separately from the pynhd / geopandas check.
 
 ## [0.1.1] - 2026-10-03
 

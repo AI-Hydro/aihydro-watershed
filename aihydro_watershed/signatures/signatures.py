@@ -289,10 +289,20 @@ def extract_hydrological_signatures(
         if streamflow_result is None or len(streamflow_result.get("q_cms", [])) < 365:
             log.warning("Insufficient streamflow data for gauge %s", gauge_id)
             sigs = _get_default_hydrology()
+            _prev = _source
             _source = {"product": None, "observation": "none"}
-            # Say WHY (e.g. GAUGE refusal, rate limit); never substitute another product.
-            if gauge_id and q_cms_series is None and _fetch_diag():
-                _source["error"] = _fetch_diag()
+            # Say WHY; never substitute another product.
+            if streamflow_result is not None:
+                # A record was obtained but is too short (fetched or caller-supplied): keep what
+                # identifies / qualifies it.
+                _source["error"] = {"code": "INSUFFICIENT_RECORD",
+                                    "n_days": len(streamflow_result.get("q_cms", [])),
+                                    "terminal": False}
+                for _k in ("site", "quality_summary"):
+                    if _k in _prev:
+                        _source[_k] = _prev[_k]
+            elif gauge_id and q_cms_series is None and _fetch_diag():
+                _source["error"] = _fetch_diag()   # e.g. gauge refusal, rate limit
             _precip_record = _precipitation_record(
                 None, {"reason": "not attempted: no usable streamflow"}, attempted=False)
         else:

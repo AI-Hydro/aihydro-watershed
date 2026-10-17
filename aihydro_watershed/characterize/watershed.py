@@ -69,10 +69,16 @@ _TOOL_PATH = "aihydro_watershed.characterize.watershed.delineate_watershed"
 try:
     from pynhd import NLDI
     import geopandas as gpd
-    from aihydro_data.sources import usgs_waterdata as _uw
     _DEPS_OK = True
 except ImportError:
     _DEPS_OK = False
+
+try:
+    from aihydro_data.sources import usgs_waterdata as _uw
+    _UW_OK = True
+except ImportError:
+    _uw = None
+    _UW_OK = False
 
 
 def _get_nldi_basin_for_gauge(nldi: NLDI, gauge_id: str) -> gpd.GeoDataFrame:
@@ -342,6 +348,13 @@ def validate_gauge_id(gauge_id: str) -> bool:
 
 
 def _check_deps() -> None:
+    if not _UW_OK:
+        raise ToolError(
+            code="DEPENDENCY_ERROR",
+            message="The USGS Water Data adapter is unavailable: this needs aihydro-data>=0.2.3.",
+            tool=_TOOL_PATH,
+            recovery="pip install -U 'aihydro-data>=0.2.3'",
+        )
     if not _DEPS_OK:
         raise ToolError(
             code="DEPENDENCY_ERROR",

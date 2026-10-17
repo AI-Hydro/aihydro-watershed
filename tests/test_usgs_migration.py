@@ -65,7 +65,7 @@ def test_proof1_recompute_bfi_and_high_q_freq_exact(replay):
         gauge_id=SITE, watershed_geojson=POLY, area_km2=AREA,
         start_date=START, end_date=END, precipitation="skip")
     d = r.data
-    # exact, not approximate: scale-free signatures are bit-identical to proof-1
+    # BFI and high_q_freq are bit-identical to proof-1; the other scale-free ones are asserted equal too
     assert d["baseflow_index"] == PROOF1["baseflow_index"]
     assert d["high_q_freq"] == PROOF1["high_q_freq"]
     for k in ("high_q_dur", "low_q_freq", "hfd_mean"):
@@ -213,3 +213,37 @@ def test_no_legacy_usgs_imports_in_package():
         txt = p.read_text()
         assert "waterservices.usgs.gov" not in txt or "# legacy-ok" in txt, p
     assert not bad, bad
+
+
+def test_short_record_is_labelled_with_reason_and_keeps_fetched_identity(monkeypatch):
+    # the recorded 20-year body, cut to the requested half-year (same feature shape)
+    full = doc("daily_01013500_wy1990_2009")
+    feats = [f for f in full["features"] if f["properties"]["time"] <= "1990-03-31"]
+    monkeypatch.setattr(uw, "_http_get", Replay(
+        lambda u, p: ok({**full, "features": feats, "links": []}) if "/daily/items" in u else None))
+    r = sig.extract_hydrological_signatures(
+        gauge_id=SITE, watershed_geojson=POLY, area_km2=AREA,
+        start_date="1989-10-01", end_date="1990-03-31", precipitation="skip")      # ~182 days
+    s = r.data["_streamflow_source"]
+    assert s["observation"] == "none" and s["product"] is None
+    assert s["error"] == {"code": "INSUFFICIENT_RECORD", "n_days": 182, "terminal": False}
+    assert s["site"] == "USGS-01013500" and s["quality_summary"]["n_rows"] == 182
+
+
+def test_short_caller_supplied_record_is_labelled():
+    r = sig.extract_hydrological_signatures(
+        gauge_id=None, watershed_geojson=POLY, area_km2=AREA, q_cms_series=[1.0] * 100,
+        precipitation="skip")
+    s = r.data["_streamflow_source"]
+    assert s["observation"] == "none" and s["error"]["code"] == "INSUFFICIENT_RECORD"
+    assert s["error"]["n_days"] == 100 and "site" not in s
+
+
+def test_missing_adapter_is_its_own_dependency_error(monkeypatch):
+    from aihydro_core import ToolError
+    from aihydro_watershed.characterize import watershed as w
+
+    monkeypatch.setattr(w, "_UW_OK", False)
+    with pytest.raises(ToolError) as e:
+        w._check_deps()
+    assert e.value.code == "DEPENDENCY_ERROR" and "aihydro-data>=0.2.3" in e.value.message

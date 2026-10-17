@@ -1,18 +1,34 @@
 """
 Private streamflow helpers for aihydro-watershed signature computation.
 
-These functions fetch USGS NWIS streamflow (via dataretrieval) and convert
-units for use by the hydrological signatures module.  They are NOT part of
-the public API — use aihydro-data for general streamflow acquisition.
+These functions fetch USGS streamflow through the aihydro-data Water Data API
+adapter (``aihydro_data.sources.usgs_waterdata``; the legacy waterservices
+path is gone) and convert depth units for the hydrological signatures module.
+Discharge units are converted once, inside the adapter. They are NOT part of the
+public API - use aihydro-data for general streamflow acquisition.
 """
 from __future__ import annotations
 
 import logging
+import threading
 from typing import Dict, Optional
 
 import pandas as pd
 
 log = logging.getLogger(__name__)
+
+
+# Why the last fetch returned None, for the caller on the same thread (the
+# ``Optional[Dict]`` contract, which callers and tests patch, stays unchanged).
+_FETCH_DIAG = threading.local()
+
+
+def _fetch_diag(clear: bool = False) -> dict:
+    """Failure record of the last :func:`_fetch_streamflow_internal` on this thread ({} if none)."""
+    d = dict(getattr(_FETCH_DIAG, "d", None) or {})
+    if clear:
+        _FETCH_DIAG.d = {}
+    return d
 
 
 def _fetch_streamflow_internal(
@@ -21,51 +37,63 @@ def _fetch_streamflow_internal(
     end_date: str,
     interval: str = "daily",
 ) -> Optional[Dict]:
-    """Internal fetch that returns {q_cms: pd.Series, meta: dict} for computation."""
+    """Internal fetch for computation.
+
+    Returns ``{q_cms, meta, quality, flags, upstream, site}`` or None. ``q_cms`` is a
+    tz-naive daily (or UTC-instant) Series in m3/s converted ONCE by the adapter from the
+    unit the API states; ``quality`` is the adapter's quality summary (approval counts,
+    qualifier counts, provisional span, gaps); ``flags`` is a DataFrame aligned with
+    ``q_cms`` (``approval_code`` A/P, ``qualifier_code``); ``upstream`` is the request
+    provenance (URLs, body sha256, retrieval time). On any failure the reason is left in
+    :func:`_fetch_diag` (``code``, ``message``, ``terminal``) - never raised, never
+    answered with another product.
+    """
+    _FETCH_DIAG.d = {}
     try:
-        from dataretrieval import nwis as dr_nwis
+        from aihydro_data.exceptions import AihydroDataError, TerminalSourceError
+        from aihydro_data.sources import usgs_waterdata as uw
 
-        service = "dv" if interval == "daily" else "iv"
-        if service == "dv":
-            df, _ = dr_nwis.get_dv(
-                sites=gauge_id, parameterCd="00060",
-                start=start_date, end=end_date,
-            )
-        else:
-            df, _ = dr_nwis.get_iv(
-                sites=gauge_id, parameterCd="00060",
-                startDT=start_date, endDT=end_date,
-            )
-
-        if df is None or df.empty:
-            return None
-
-        q_col = next((c for c in df.columns if "00060" in c and "Mean" in c), None)
-        if q_col is None:
-            q_col = df.select_dtypes(include="number").columns[0]
-
-        q_cfs = pd.to_numeric(df[q_col], errors="coerce")
-        q_cms = q_cfs * 0.0283168
-        q_cms.index = pd.to_datetime(q_cms.index).tz_localize(None)
-        q_cms = q_cms.dropna()
-        if len(q_cms) == 0:
-            return None
-
-        row_meta: dict = {}
         try:
-            site_df, _ = dr_nwis.get_info(sites=gauge_id)
-            site_df["site_no"] = site_df["site_no"].astype(str)
-            if gauge_id in site_df["site_no"].values:
-                row = site_df.loc[site_df["site_no"] == gauge_id].iloc[0]
-                row_meta = {
-                    "gauge_name": str(row.get("station_nm", "")),
-                    "latitude": float(row.get("dec_lat_va", float("nan"))),
-                    "longitude": float(row.get("dec_long_va", float("nan"))),
-                }
-        except Exception:
-            pass
-        return {"q_cms": q_cms, "meta": row_meta}
+            if interval == "daily":
+                series = uw.get_daily(gauge_id, start_date, end_date)
+            else:
+                series = uw.get_continuous(gauge_id, start_date, end_date)
+        except AihydroDataError as e:
+            _FETCH_DIAG.d = {"code": getattr(e, "code", type(e).__name__),
+                             "message": str(e), "terminal": isinstance(e, TerminalSourceError)}
+            log.error("USGS streamflow fetch failed for %s: %s", gauge_id, e)
+            return None
+
+        frame = series.frame.dropna(subset=["value_m3s"])
+        if frame.empty:
+            _FETCH_DIAG.d = {"code": "USGS_NO_DATA", "message": "series has no non-null values",
+                             "terminal": False}
+            return None
+        idx = pd.DatetimeIndex(frame["time"])
+        if idx.tz is not None:                      # continuous: UTC instants -> naive UTC
+            idx = idx.tz_convert("UTC").tz_localize(None)
+        q_cms = pd.Series(frame["value_m3s"].to_numpy(dtype=float), index=idx, name="q_cms")
+        flags = pd.DataFrame({"approval_code": frame["approval_code"].to_numpy(),
+                              "qualifier_code": frame["qualifier_code"].to_numpy()}, index=idx)
+
+        row_meta: dict = {"site_id": series.site_id, "time_series_id": series.time_series_id,
+                          "units_native": series.units_native}
+        try:   # site metadata is best-effort: signatures do not need it
+            loc = uw.get_monitoring_locations(ids=[gauge_id])[0]
+            row_meta.update(
+                gauge_name=loc.name or "",
+                latitude=loc.lat, longitude=loc.lon,
+                horizontal_datum=loc.horizontal_datum,
+                coordinate_note=loc.geometry_crs_note,
+                hydrologic_unit_code=loc.hydrologic_unit_code,
+            )
+        except Exception as e:
+            log.warning("monitoring-location metadata unavailable for %s: %s", gauge_id, e)
+        return {"q_cms": q_cms, "meta": row_meta, "quality": series.quality_summary,
+                "flags": flags, "upstream": series.upstream, "site": series.site_id}
     except Exception as e:
+        _FETCH_DIAG.d = {"code": "FETCH_FAILED", "message": f"{type(e).__name__}: {e}",
+                         "terminal": False}
         log.error("Internal streamflow fetch failed: %s", e)
         return None
 

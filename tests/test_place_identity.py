@@ -225,14 +225,14 @@ def _gauge_run(monkeypatch, index_fails):
         def comid_byloc(self, xy):
             return SimpleNamespace(comid=SimpleNamespace(iloc=[777]))
 
-    class NWIS:
-        def get_info(self, q):
-            import pandas as pd
-            return pd.DataFrame({"site_no": [SITE], "dec_lat_va": [40.5], "dec_long_va": [-89.5],
-                                 "station_nm": ["x"], "huc_cd": ["07120000"]})
+    def locations(ids=None, **kw):
+        assert ids == [SITE]
+        return [SimpleNamespace(site_id=f"USGS-{SITE}", name="x", lat=40.5, lon=-89.5,
+                                hydrologic_unit_code="07120000", horizontal_datum="NAD83",
+                                geometry_crs_note="api states no CRS")]
 
     monkeypatch.setattr(w, "NLDI", NLDI, raising=False)
-    monkeypatch.setattr(w, "NWIS", NWIS, raising=False)
+    monkeypatch.setattr(w._uw, "get_monitoring_locations", locations)
     monkeypatch.setattr(w, "_DEPS_OK", True)
     monkeypatch.setattr("aihydro_watershed.delineation.nldi_point._normalize_nldi_basins", lambda g: g)
     return w.delineate_watershed(SITE).data

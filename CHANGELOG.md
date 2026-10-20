@@ -1,6 +1,10 @@
 # Changelog — aihydro-watershed
 
-## [Unreleased] (session study 01031500, S1 / M5)
+## [0.1.5] - 2026-10-20 (session study 01031500, S1 / M5)
+
+### Notes
+
+- `slope_fdc` uses the natural log over the 33-66% exceedance span. It differs from CAMELS' convention and is not comparable to the CAMELS column; a convention reconciliation is tracked separately.
 
 ### Added
 
@@ -10,7 +14,7 @@
   `hfd_mean` is day of water year (1 = 1 Oct); `high/low_q_freq` are days/year; durations are days.
   The map is a plain key so it survives the tools layer's `_`-key drop and reaches the sealed record.
 - **Streamflow data digest.** The series the signatures were computed from (m3/s) is now digested like
-  precipitation: `streamflow_digest`, `streamflow_n_days`, `streamflow_start`, `streamflow_end` (plain keys)
+  precipitation: `streamflow_digest`, `streamflow_n_days`, `streamflow_n_valid_days` (finite values), `streamflow_start`, `streamflow_end` (plain keys)
   and `_streamflow` (digest scheme, units). Absent when no usable streamflow was obtained.
 
 ## [0.1.4] - 2026-10-17 (Wave U patch, proof 3 finding E7)

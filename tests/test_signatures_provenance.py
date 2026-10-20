@@ -226,7 +226,7 @@ def test_streamflow_series_is_digested(monkeypatch):
     a = sig.extract_hydrological_signatures(
         gauge_id="01013500", watershed_geojson=SQUARE, area_km2=250.0).data
     assert a["streamflow_digest"].startswith("sha256:")
-    assert a["streamflow_n_days"] == 800
+    assert a["streamflow_n_days"] == 800 and a["streamflow_n_valid_days"] == 800
     assert a["streamflow_start"] == "2000-01-01"
     assert a["_streamflow"]["units"] == "m3/s"
     # Deterministic, and sensitive to a change in the data.
@@ -245,3 +245,12 @@ def test_no_digest_without_streamflow(monkeypatch):
     d = sig.extract_hydrological_signatures(
         gauge_id="01013500", watershed_geojson=SQUARE, area_km2=250.0).data
     assert "streamflow_digest" not in d
+
+
+def test_valid_day_count_excludes_nan(monkeypatch):
+    q = _q_series(800)
+    q.iloc[:50] = np.nan
+    monkeypatch.setattr(sig, "_fetch_streamflow_internal", lambda *a, **k: {"q_cms": q})
+    d = sig.extract_hydrological_signatures(
+        gauge_id="01013500", watershed_geojson=SQUARE, area_km2=250.0).data
+    assert d["streamflow_n_days"] == 800 and d["streamflow_n_valid_days"] == 750

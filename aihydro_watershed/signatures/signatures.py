@@ -158,7 +158,10 @@ SIGNATURE_UNITS: Dict[str, str] = {
     "flow_variability": "dimensionless",  # std/mean of q (coefficient of variation)
     "hfd_mean": "day of water year",    # days since 1 Oct (1 = 1 Oct) of the half-flow date
     "half_flow_date_std": "days",
-    "slope_fdc": "dimensionless",       # (ln q33 - ln q66) / 0.33: natural-log of mm/day per exceedance fraction
+    # NATURAL log (np.log) over the 33-66% exceedance span, divided by 0.33. CAMELS' published
+    # slope_fdc follows a different convention (log base and/or percentile definition), so this
+    # value is not comparable to the CAMELS column; the reconciliation is tracked separately.
+    "slope_fdc": "dimensionless",       # (ln q33 - ln q66) / 0.33
 }
 
 STREAMFLOW_DIGEST_SCHEME = (
@@ -177,6 +180,7 @@ def _series_digest(ser: pd.Series) -> dict:
         "digest": "sha256:" + h.hexdigest(),
         "digest_scheme": STREAMFLOW_DIGEST_SCHEME,
         "n_days": int(len(ser)),
+        "n_valid_days": int(np.isfinite(ser.astype(float).values).sum()),
         "start": f"{idx.min():%Y-%m-%d}",
         "end": f"{idx.max():%Y-%m-%d}",
         "units": "m3/s",
@@ -451,6 +455,7 @@ def extract_hydrological_signatures(
         if _stream_digest:
             clean["streamflow_digest"] = _stream_digest["digest"]
             clean["streamflow_n_days"] = _stream_digest["n_days"]
+            clean["streamflow_n_valid_days"] = _stream_digest["n_valid_days"]
             clean["streamflow_start"] = _stream_digest["start"]
             clean["streamflow_end"] = _stream_digest["end"]
             clean["_streamflow"] = _stream_digest

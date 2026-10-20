@@ -1,5 +1,18 @@
 # Changelog — aihydro-watershed
 
+## [0.1.6] - 2026-10-20 (CI fix: NumPy compatibility)
+
+### Fixed
+
+- **Delineation no longer fails on the newest NumPy (`AttributeError: module 'numpy' has no attribute 'in1d'`).**
+  `pysheds` 0.5 (its latest release, so there is no upstream fix to pin to) calls `np.in1d` in
+  `Grid.accumulation`; NumPy 2.5 no longer has it (2.4.6 still does, deprecated). New
+  `aihydro_watershed/_numpy_compat.py` restores `np.in1d` (via `np.isin(...).ravel()`, which keeps the flat
+  1-D result) only when it is missing, and is applied where pysheds is imported (`delineation/pysheds_pipeline.py`,
+  `characterize/twi.py`). A no-op on NumPy versions that still ship `in1d`. Reproduced with NumPy 2.5.4 + pysheds 0.5:
+  `test_pysheds_snap_out_reports_snapped_cell_on_grid` failed before, passes after. Version bumped because runtime
+  behaviour changed for users on the newest NumPy.
+
 ## [0.1.5] - 2026-10-20 (session study 01031500, S1 / M5)
 
 ### Notes

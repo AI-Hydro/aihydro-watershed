@@ -179,3 +179,69 @@ def test_no_package_reads_distribution_metadata_for_result_version():
     offenders = [str(p.relative_to(root)) for p in root.rglob("*.py")
                  if p.name != "_version.py" and "importlib.metadata" in p.read_text()]
     assert offenders == []
+
+
+# ---------------------------------------------------------------------------
+# Units and streamflow digest (session study S1 / M5)
+# ---------------------------------------------------------------------------
+
+def test_every_signature_carries_units(monkeypatch):
+    monkeypatch.setattr(sig, "_fetch_streamflow_internal", lambda *a, **k: {"q_cms": _q_series(800)})
+    result = sig.extract_hydrological_signatures(
+        gauge_id="01013500", watershed_geojson=SQUARE, area_km2=250.0,
+    )
+    units = result.data["units"]
+    expected = set(sig._get_default_hydrology())
+    assert expected <= set(units), f"signatures without units: {expected - set(units)}"
+    # Flow statistics are depth rates, never discharge.
+    for k in ("q_mean", "q_std", "q5", "q95", "q_median"):
+        assert units[k] == "mm/day"
+    assert units["runoff_ratio"] == "dimensionless"
+    assert units["high_q_freq"] == "days/year" and units["high_q_dur"] == "days"
+    assert units["zero_q_freq"] == "dimensionless"          # a fraction, not days/year
+    assert units["hfd_mean"] == "day of water year"
+
+
+def test_units_map_agrees_with_the_conversion():
+    # q_mean is the mean of the mm/day series: m3/s * 86.4 / km2.
+    q = _q_series(800)
+    result = sig.extract_hydrological_signatures(
+        gauge_id=None, watershed_geojson=SQUARE, area_km2=250.0, q_cms_series=q,
+    )
+    assert result.data["units"]["q_mean"] == "mm/day"
+    assert result.data["q_mean"] == pytest.approx(float(q.mean()) * 86.4 / 250.0)
+
+
+def test_units_present_when_streamflow_unavailable(monkeypatch):
+    monkeypatch.setattr(sig, "_fetch_streamflow_internal", lambda *a, **k: None)
+    result = sig.extract_hydrological_signatures(
+        gauge_id="01013500", watershed_geojson=SQUARE, area_km2=250.0,
+    )
+    assert result.data["units"]["q_mean"] == "mm/day"
+
+
+def test_streamflow_series_is_digested(monkeypatch):
+    q = _q_series(800)
+    monkeypatch.setattr(sig, "_fetch_streamflow_internal", lambda *a, **k: {"q_cms": q})
+    a = sig.extract_hydrological_signatures(
+        gauge_id="01013500", watershed_geojson=SQUARE, area_km2=250.0).data
+    assert a["streamflow_digest"].startswith("sha256:")
+    assert a["streamflow_n_days"] == 800
+    assert a["streamflow_start"] == "2000-01-01"
+    assert a["_streamflow"]["units"] == "m3/s"
+    # Deterministic, and sensitive to a change in the data.
+    b = sig.extract_hydrological_signatures(
+        gauge_id="01013500", watershed_geojson=SQUARE, area_km2=250.0).data
+    assert a["streamflow_digest"] == b["streamflow_digest"]
+    q2 = q.copy(); q2.iloc[10] += 1.0
+    monkeypatch.setattr(sig, "_fetch_streamflow_internal", lambda *a_, **k: {"q_cms": q2})
+    c = sig.extract_hydrological_signatures(
+        gauge_id="01013500", watershed_geojson=SQUARE, area_km2=250.0).data
+    assert c["streamflow_digest"] != a["streamflow_digest"]
+
+
+def test_no_digest_without_streamflow(monkeypatch):
+    monkeypatch.setattr(sig, "_fetch_streamflow_internal", lambda *a, **k: None)
+    d = sig.extract_hydrological_signatures(
+        gauge_id="01013500", watershed_geojson=SQUARE, area_km2=250.0).data
+    assert "streamflow_digest" not in d

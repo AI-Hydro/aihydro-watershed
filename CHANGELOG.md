@@ -1,5 +1,18 @@
 # Changelog — aihydro-watershed
 
+## [Unreleased] (session study 01031500, S1 / M5)
+
+### Added
+
+- **`units` map on every signature result** (`SIGNATURE_UNITS`, derived from the computing code). The flow
+  statistics `q_mean`, `q_std`, `q5`, `q95`, `q_median` are basin-mean depth rates in **mm/day**, not discharge
+  (a real session read `q_mean = 2.02` as m3/s, a ~9x error). `zero_q_freq` is a fraction (not days/year);
+  `hfd_mean` is day of water year (1 = 1 Oct); `high/low_q_freq` are days/year; durations are days.
+  The map is a plain key so it survives the tools layer's `_`-key drop and reaches the sealed record.
+- **Streamflow data digest.** The series the signatures were computed from (m3/s) is now digested like
+  precipitation: `streamflow_digest`, `streamflow_n_days`, `streamflow_start`, `streamflow_end` (plain keys)
+  and `_streamflow` (digest scheme, units). Absent when no usable streamflow was obtained.
+
 ## [0.1.4] - 2026-10-17 (Wave U patch, proof 3 finding E7)
 
 ### Fixed

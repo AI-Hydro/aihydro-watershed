@@ -15,6 +15,7 @@ import xarray as xr
 from pysheds.grid import Grid
 from shapely.geometry import Point, box, shape
 
+from aihydro_watershed._numpy_compat import ensure_in1d
 from aihydro_watershed.delineation.dem_conditioning import prepare_dem_array
 from aihydro_watershed.delineation.dem_fetch import StacItemCache, fetch_dem_bbox
 from aihydro_watershed.delineation.merit_snap import snap_outlet_to_merit_rivers
@@ -28,6 +29,9 @@ from aihydro_watershed.delineation.utils import (
 )
 
 log = logging.getLogger(__name__)
+
+# pysheds calls np.in1d, removed in the newest NumPy (see _numpy_compat).
+ensure_in1d()
 
 DEFAULT_RESOLUTION_M = 30.0
 COARSE_RESOLUTION_M = 90.0

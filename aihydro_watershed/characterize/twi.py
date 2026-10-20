@@ -62,6 +62,8 @@ try:
     import numpy as np
     import geopandas as gpd
     from pysheds.grid import Grid
+    from aihydro_watershed._numpy_compat import ensure_in1d
+    ensure_in1d()  # pysheds calls np.in1d, removed in the newest NumPy
     import tempfile
     import os
     import json

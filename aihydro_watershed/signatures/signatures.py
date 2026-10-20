@@ -136,6 +136,55 @@ log = logging.getLogger(__name__)
 
 # q5 / q95 semantics of this module's output (CAMELS: Addor et al. 2017, Table 3).
 FLOW_QUANTILE_CONVENTION = "camels_nonexceedance_v1"
+
+# Units of every signature this module emits, derived from the code that computes it
+# (not from CAMELS documentation). Streamflow is converted to basin-mean depth
+# (mm/day = m3/s * 86.4 / area_km2) before any signature is computed, so the flow
+# statistics are DEPTH rates, not discharge: 2.02 here is 2.02 mm/day, not 2.02 m3/s.
+SIGNATURE_UNITS: Dict[str, str] = {
+    "q_mean": "mm/day",                 # np.mean(q_mm_day)
+    "q_std": "mm/day",                  # np.std(q_mm_day)
+    "q5": "mm/day",                     # 5% non-exceedance quantile of q_mm_day
+    "q95": "mm/day",                    # 95% non-exceedance quantile of q_mm_day
+    "q_median": "mm/day",
+    "baseflow_index": "dimensionless",  # sum(baseflow) / sum(q), in [0, 1]
+    "runoff_ratio": "dimensionless",    # mean(q_mm_day) / mean(p_mm_day)
+    "stream_elas": "dimensionless",     # median of (dQ/Q)/(dP/P) over hydrologic years
+    "high_q_freq": "days/year",         # days with q > 9*median, scaled to 365.25
+    "high_q_dur": "days",               # mean run length of those days
+    "low_q_freq": "days/year",          # days with q <= 0.2*mean, scaled to 365.25
+    "low_q_dur": "days",
+    "zero_q_freq": "dimensionless",     # FRACTION of days with q == 0 (not days/year)
+    "flow_variability": "dimensionless",  # std/mean of q (coefficient of variation)
+    "hfd_mean": "day of water year",    # days since 1 Oct (1 = 1 Oct) of the half-flow date
+    "half_flow_date_std": "days",
+    # NATURAL log (np.log) over the 33-66% exceedance span, divided by 0.33. CAMELS' published
+    # slope_fdc follows a different convention (log base and/or percentile definition), so this
+    # value is not comparable to the CAMELS column; the reconciliation is tracked separately.
+    "slope_fdc": "dimensionless",       # (ln q33 - ln q66) / 0.33
+}
+
+STREAMFLOW_DIGEST_SCHEME = (
+    "sha256 over 'YYYY-MM-DD<TAB>repr(float)<LF>' lines of the daily m3/s series the signatures were computed from"
+)
+
+
+def _series_digest(ser: pd.Series) -> dict:
+    """Digest + extent of the (m3/s) streamflow series actually used."""
+    import hashlib
+    idx = pd.to_datetime(ser.index)
+    h = hashlib.sha256()
+    for d, v in zip(idx, ser.values):
+        h.update(f"{d:%Y-%m-%d}\t{float(v)!r}\n".encode())
+    return {
+        "digest": "sha256:" + h.hexdigest(),
+        "digest_scheme": STREAMFLOW_DIGEST_SCHEME,
+        "n_days": int(len(ser)),
+        "n_valid_days": int(np.isfinite(ser.astype(float).values).sum()),
+        "start": f"{idx.min():%Y-%m-%d}",
+        "end": f"{idx.max():%Y-%m-%d}",
+        "units": "m3/s",
+    }
 warnings.filterwarnings('ignore')
 
 __all__ = [
@@ -145,6 +194,7 @@ __all__ = [
     'compute_event_stats_camels',
     'compute_timing_stats_camels',
     'compute_slope_fdc_camels',
+    'SIGNATURE_UNITS',
     'precipitation_problem',
     'RUNOFF_RATIO_PLAUSIBLE',
     'BASEFLOW_SEPARATION_METHOD',
@@ -289,6 +339,7 @@ def extract_hydrological_signatures(
             _source = {"product": _global_product, "observation": "modelled"}
 
         _uncertainty: dict = {}
+        _stream_digest: dict | None = None
         if streamflow_result is None or len(streamflow_result.get("q_cms", [])) < 365:
             log.warning("Insufficient streamflow data for gauge %s", gauge_id)
             sigs = _get_default_hydrology()
@@ -320,6 +371,10 @@ def extract_hydrological_signatures(
                 _idx = _pd.date_range(start_date or "2000-01-01",
                                       periods=len(q_cms), freq="D")
                 q_cms = _pd.Series(list(q_cms), index=_idx, dtype=float)
+            try:
+                _stream_digest = _series_digest(q_cms)
+            except Exception as _de:   # provenance must never break the computation
+                log.warning("signatures: streamflow digest failed (non-fatal): %s", _de)
             q_mm_day = _to_mm_per_day(q_cms, area_km2)
             # The fetch reports product / failure reason through a
             # thread-local side channel so its (Series | None) contract, which
@@ -392,6 +447,18 @@ def extract_hydrological_signatures(
         # (docs/vision-2040/findings/defect-q5-q95.md).
         clean["flow_quantile_convention"] = FLOW_QUANTILE_CONVENTION
         clean["_precipitation"] = _precip_record
+        # Units for every signature present in the output (see SIGNATURE_UNITS). A plain key,
+        # not underscore-prefixed: the tools layer drops "_" keys before sealing, and the
+        # unit must reach the sealed record the model and the auditor read.
+        clean["units"] = {k: SIGNATURE_UNITS[k] for k in clean if k in SIGNATURE_UNITS}
+        # Digest of the streamflow series used (precipitation already carries one).
+        if _stream_digest:
+            clean["streamflow_digest"] = _stream_digest["digest"]
+            clean["streamflow_n_days"] = _stream_digest["n_days"]
+            clean["streamflow_n_valid_days"] = _stream_digest["n_valid_days"]
+            clean["streamflow_start"] = _stream_digest["start"]
+            clean["streamflow_end"] = _stream_digest["end"]
+            clean["_streamflow"] = _stream_digest
         # Non-underscore mirror of the gauge-vs-polygon area check (the tools layer drops "_"
         # keys before sealing; a runoff depth computed with a mismatched area must say so).
         if _gauge_check is not None:
@@ -449,6 +516,7 @@ def extract_hydrological_signatures(
         return HydroResult(
             data={
                 **_get_default_hydrology(),
+                "units": dict(SIGNATURE_UNITS),
                 "_streamflow_source": {"product": None, "observation": "none"},
                 "_precipitation": _precipitation_record(
                     None, {"reason": "not attempted: signature extraction failed"},

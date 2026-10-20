@@ -2,7 +2,7 @@ cff-version: 1.2.0
 message: "If you use this software, please cite it as below."
 title: "aihydro-watershed: Global Watershed Delineation and Characterization"
 version: "0.1.6"
-date-released: "2026-10-17"
+date-released: "2026-10-20"
 license: Apache-2.0
 repository-code: "https://github.com/AI-Hydro/aihydro-watershed"
 abstract: >

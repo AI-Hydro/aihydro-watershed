@@ -44,5 +44,17 @@ jobs:
           pytest tests/test_layering.py -q
           lint-imports
 
+      - name: Report NumPy / pysheds versions
+        run: python -c "import numpy, pysheds; print('numpy', numpy.__version__, 'has in1d:', hasattr(numpy, 'in1d'))"
+
+      - name: Exercise the np.in1d shim on NumPy >= 2.5
+        # NumPy 2.5 requires Python >= 3.11; 3.10 resolves an older NumPy and
+        # covers the shim via the monkeypatched tests only.
+        if: matrix.python-version != '3.10'
+        run: |
+          pip install "numpy>=2.5"
+          python -c "import numpy; assert not hasattr(numpy, 'in1d'), numpy.__version__"
+          pytest tests/test_numpy_compat.py tests/test_place_identity.py -q --tb=short
+
       - name: Run offline suite
         run: pytest -m "not live" -q --tb=short

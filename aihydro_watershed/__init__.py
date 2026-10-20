@@ -33,10 +33,17 @@ is the interim path.
 
 from __future__ import annotations
 
+from aihydro_watershed._numpy_compat import ensure_in1d as ensure_numpy_compat
+
 __version__ = "0.1.6"
+
+# pysheds (<= 0.5) calls np.in1d, removed in NumPy 2.5. Applying the idempotent
+# shim at import time covers every process that imports this package, including
+# callers that import pysheds directly (e.g. the tools pack). See _numpy_compat.
+ensure_numpy_compat()
 
 # Public API — populated in Wave A2 as modules land in their subpackages.
 # Kept intentionally lazy (no eager submodule imports) so `import aihydro_watershed`
 # stays cheap and does not require the heavy delineation extras until a real
 # entry point is called.
-__all__: list[str] = ["__version__"]
+__all__: list[str] = ["__version__", "ensure_numpy_compat"]

@@ -47,12 +47,12 @@ jobs:
       - name: Report NumPy / pysheds versions
         run: python -c "import numpy, pysheds; print('numpy', numpy.__version__, 'has in1d:', hasattr(numpy, 'in1d'))"
 
-      - name: Exercise the np.in1d shim on NumPy >= 2.5
-        # NumPy 2.5 requires Python >= 3.11; 3.10 resolves an older NumPy and
-        # covers the shim via the monkeypatched tests only.
+      - name: Exercise the np.in1d shim (NumPy lacking in1d)
+        # CI resolves numpy 2.2.x on 3.10 (has in1d), 2.4.x on 3.11 and 2.5.x on
+        # 3.12 (both lack it), so 3.11/3.12 run the shim path. Assert that, so a
+        # future resolver change cannot silently stop covering it.
         if: matrix.python-version != '3.10'
         run: |
-          pip install "numpy>=2.5"
           python -c "import numpy; assert not hasattr(numpy, 'in1d'), numpy.__version__"
           pytest tests/test_numpy_compat.py tests/test_place_identity.py -q --tb=short
 

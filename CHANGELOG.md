@@ -6,11 +6,11 @@
 
 - **Delineation no longer fails on the newest NumPy (`AttributeError: module 'numpy' has no attribute 'in1d'`).**
   `pysheds` 0.5 (its latest release, so there is no upstream fix to pin to) calls `np.in1d` in
-  `Grid.accumulation`; NumPy 2.5 no longer has it (2.4.6 still does, deprecated). New
+  `Grid.accumulation`; NumPy 2.4.6 and 2.5.4 no longer have it (2.2.6 does; the removal version was observed, not looked up in release notes). New
   `aihydro_watershed/_numpy_compat.py` restores `np.in1d` (via `np.isin(...).ravel()`, which keeps the flat
   1-D result) only when it is missing, and is applied where pysheds is imported (`delineation/pysheds_pipeline.py`,
-  `characterize/twi.py`). A no-op on NumPy versions that still ship `in1d`. Reproduced with NumPy 2.5.4 + pysheds 0.5:
-  `test_pysheds_snap_out_reports_snapped_cell_on_grid` failed before, passes after. The shim is also applied at `import aihydro_watershed` time and exported as `aihydro_watershed.ensure_numpy_compat()`, so callers that import pysheds directly (e.g. the tools pack) are covered. CI gains a step that installs `numpy>=2.5` (Python 3.11/3.12; 3.10 cannot resolve it) and runs the compat + place-identity tests. Version bumped because runtime
+  `characterize/twi.py`). A no-op on NumPy versions that still ship `in1d`. Reproduced with NumPy 2.5.4 (CI saw it on 3.11 / NumPy 2.4.6 and 3.12 / 2.5.4) + pysheds 0.5:
+  `test_pysheds_snap_out_reports_snapped_cell_on_grid` failed before, passes after. The shim is also applied at `import aihydro_watershed` time and exported as `aihydro_watershed.ensure_numpy_compat()`, so callers that import pysheds directly (e.g. the tools pack) are covered. CI gains a step (Python 3.11/3.12, whose resolved NumPy lacks `in1d`; 3.10 resolves 2.2.6) that asserts `in1d` is absent and runs the compat + place-identity tests. Version bumped because runtime
   behaviour changed for users on the newest NumPy.
 
 ## [0.1.5] - 2026-10-20 (session study 01031500, S1 / M5)

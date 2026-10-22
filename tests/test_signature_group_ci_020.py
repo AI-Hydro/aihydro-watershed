@@ -93,6 +93,7 @@ def test_core_diagnostics_and_machine_readable_scope_are_surfaced(run):
         assert "forcing_product" in s["excludes"] and "interannual_persistence" in s["excludes"]
         assert "exchangeable_years" in s["assumes"]
         assert e["annual_lag1_autocorrelation"]["threshold"] > 0
+        assert e["annual_lag1_autocorrelation"]["low_n"] is False     # 19 pairs >= 8
     json.dumps(run())               # JSON-safe (no NaN leaks past the sanitiser)
 
 
@@ -251,3 +252,14 @@ def test_reference_comparison_sawicz_slope_is_not_comparable(run):
     d["signature_definitions"]["slope_fdc"] = sig.SIGNATURE_DEFINITIONS["slope_fdc_sawicz2011"]
     t = reference_comparison(d, REF_01013500, AREA_GAGES2, AREA_GAGES2, (START, END))["table"]
     assert t["slope_fdc"]["definition_comparable"] is False
+
+
+def test_lag1_low_n_is_passed_through_when_too_few_consecutive_years():
+    idx = pd.date_range("1990-10-01", periods=10 * 365, freq="D")      # 10 groups -> 9 pairs
+    q = np.random.default_rng(2).gamma(2.0, 1.0, len(idx))
+    ok = gu.flow_statistic_cis(q, idx)["q_mean"]["annual_lag1_autocorrelation"]
+    assert ok["low_n"] is False
+    from aihydro_core.science import annual_lag1_autocorrelation
+    few = annual_lag1_autocorrelation(np.arange(6.0))
+    assert few["low_n"] is True and np.isnan(few["r1"])
+    assert gu._clean(few)["r1"] is None and gu._clean(few)["low_n"] is True

@@ -1,5 +1,54 @@
 # Changelog — aihydro-watershed
 
+## [0.2.0] - 2026-10-22 (Science Wave 3)
+
+Evidence: `docs/vision-2040/evidence/signature-definitions-1` (scripts, CAMELS R sources, sha256, results).
+
+### BREAKING-VALUE
+
+- **`slope_fdc` changes meaning.** It is now `(Q66 - Q33) / (mean(q) * 0.33)`: non-exceedance percentiles (R type 7),
+  zero-flow days kept, defined only when mean(q) > 0, no logarithm. Before 0.2.0 it was the log-space Sawicz et al.
+  (2011) slope (e.g. 2.697 on 01013500; now 1.528). The new value reproduces the CAMELS-US v1.2 file at 8.7e-9
+  (01013500) and 2.3e-7 (01031500) relative. The old value is kept as **`slope_fdc_sawicz2011`**. The same change is
+  made in `flow_duration.flow_duration_curve`. Provenance (carried as `signature_definitions["slope_fdc"]`):
+  "CAMELS-US v1.2 distributed definition. Reproduces the file at <=2.3e-7 relative on 01013500 and 01031500, and
+  9.7e-5 on 01516500. Its zero-structure prediction holds on all 671 basins. Source: naddor/camels@88e7a0d2d2
+  hydro/hydro_signatures.R:97. It contradicts the log-space definition in Addor et al. 2017 (text and Table 3). No
+  erratum or release note found. Not proven to be the script that produced the file." This is not "the CAMELS
+  definition" in general: later naddor/camels code (used for CAMELS-GB) emits the log form under the same name.
+  Consumers that compare `slope_fdc` across datasets or versions must read `signature_definitions`.
+- **Baseflow index kernel replaced; `separate_baseflow` BFI changes (e.g. 0.36 -> 0.445 on 01031500).** One canonical kernel,
+  `baseflow.lyne_hollick_ladson2013` (alpha 0.925, 3 passes forward-backward-forward, 30-day reflection, quick flow
+  subtracted only where positive, final clip at zero; the Ladson et al. 2013 recipe CAMELS used), now serves
+  `extract_hydrological_signatures`, `baseflow.lyne_hollick` (what the `separate_baseflow` tool calls) and the BFI
+  bootstrap. It reproduces CAMELS v1.2 at 1.1e-7 (01013500: 0.585226) and 1.9e-6 (01031500: 0.445091) relative.
+  Replaced: `baseflow.lyne_hollick` clamped the baseflow at every step and fed the clamped value back into the recursion
+  (5-19% low, matches no reference implementation; kept, deprecated, as `lyne_hollick_legacy_clamp`), and the signatures
+  filter lacked the 30-day reflection (+3e-4 relative). The two were the same filter in different algebraic forms; the
+  difference was constraint handling. `BASEFLOW_SEPARATION_METHOD` is now `lyne_hollick_ladson2013`, so the
+  `baseflow_method` param and the `baseflow_method=...` quality flag change with it.
+- **`runoff_ratio` and `stream_elas` use complete water years only.** A water year counts when at least 95% of its days
+  have both streamflow and precipitation (engineering choice, source to verify; `WATER_YEAR_MIN_PAIRED_FRACTION`).
+  Incomplete years no longer enter either signature, so values can change where precipitation had holes.
+- **`zero_q_freq` counts days with q <= 0** (was `== 0`; CAMELS `sum(q<=0)/length`).
+
+### Added
+
+- `signature_definitions` (plain key): formula, quantile type, zero handling and source for slope_fdc,
+  slope_fdc_sawicz2011, baseflow_index, q5, q95, high/low/zero_q_freq, runoff_ratio, stream_elas.
+- `_precipitation` gains `n_expected_days`, `completeness`, `missing_ranges` (run-compressed `{start, end, days,
+  reason}`; reason codes are passed through from aihydro-data when it supplies them, otherwise `absent_in_response`),
+  `data_coverage`, `water_year_rule`, `water_years_used`, `water_years_excluded`, `n_paired_days_used`.
+- `precipitation_status` / `_precipitation.status` gains **`used_with_gaps`** (computed, but not from a complete
+  record; the reason lists the gaps and excluded years) and `rejected` for "no water year is complete".
+  Consumers that test `status == "used"` must also accept `used_with_gaps`.
+- `baseflow.lyne_hollick_ladson2013`, `flow_duration.fdc_slope_camels_file`, `flow_duration.fdc_slope_sawicz2011`.
+- Test fixture `served_streamflow_01031500.csv` (USGS NWIS, public domain) with provenance.
+
+### Fixed
+
+- `high_q_freq` / `low_q_freq` are days/year (already so in `SIGNATURE_UNITS`; stale wording removed).
+
 ## [0.1.6] - 2026-10-20 (CI fix: NumPy compatibility)
 
 ### Fixed

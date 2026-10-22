@@ -23,9 +23,11 @@ produced by ``signatures.compute_flow_stats_camels``: there ``q5`` is the 5% flo
 quantile (low flow) and ``q95`` the 95% quantile (high flow), i.e. CAMELS ``q5``
 equals the exceedance flow ``Q95`` and CAMELS ``q95`` equals ``Q5`` here.
 
-The mid-section ``slope_fdc`` matches the existing convention in
-``signatures.compute_slope_fdc_camels`` (Sawicz et al., 2011): the slope of the
-log-discharge FDC between the 33% and 66% exceedance points.
+The mid-section ``slope_fdc`` matches ``signatures.compute_slope_fdc_camels`` (one kernel,
+defined here): since 0.2.0 it is the CAMELS-US v1.2 distributed definition
+``(Q66 - Q33) / (mean(q) * 0.33)`` (non-exceedance percentiles, type 7, zeros kept, no
+logarithm; naddor/camels@88e7a0d2d2 ``hydro_signatures.R:97``). The log-space value of Sawicz
+et al. (2011), which was ``slope_fdc`` before 0.2.0, is ``slope_fdc_sawicz2011``.
 
 ``7Q10`` is the classic design low flow: the annual minimum 7-day mean discharge
 with a 10-year recurrence interval (i.e. a 10% annual non-exceedance probability).
@@ -67,7 +69,8 @@ def flow_duration_curve(
                             rank / (n + 1).
         sorted_flows      : list[float]  — flows sorted descending (the FDC y-axis).
         percentile_flows  : dict[str, float]  — {"Q5": ..., "Q50": ..., "Q95": ...}.
-        slope_fdc         : float  — log-FDC slope between 33% and 66% exceedance.
+        slope_fdc         : float  — (Q66 - Q33) / (mean(q) * 0.33), the CAMELS-US v1.2 definition.
+        slope_fdc_sawicz2011 : float — log-FDC slope between 33% and 66% exceedance (Sawicz 2011).
         n_days            : int
     """
     arr = np.asarray(q, dtype=float)
@@ -92,28 +95,56 @@ def flow_duration_curve(
         qval = float(np.quantile(arr, 1.0 - p / 100.0))
         percentile_flows[f"Q{int(p)}"] = round(qval, 6)
 
-    # Mid-section slope (matches signatures.compute_slope_fdc_camels convention).
+    # Mid-section slope (same kernels as signatures.compute_slope_fdc_camels).
     slope = _fdc_slope(arr)
+    slope_sawicz = fdc_slope_sawicz2011(arr)
 
     return {
         "exceedance_prob": exceedance.tolist(),
         "sorted_flows": sorted_desc.tolist(),
         "percentile_flows": percentile_flows,
         "slope_fdc": slope,
+        "slope_fdc_sawicz2011": slope_sawicz,
         "n_days": int(n),
     }
 
 
-def _fdc_slope(arr: np.ndarray) -> float:
-    """Log-FDC slope between 33% and 66% exceedance (Sawicz et al., 2011)."""
-    pos = arr[arr > 0]
+def fdc_slope_camels_file(arr: np.ndarray) -> float:
+    """``(Q66 - Q33) / (mean(q) * 0.33)``: CAMELS-US v1.2 distributed ``slope_fdc``.
+
+    Non-exceedance percentiles with linear interpolation (R type 7 / numpy default); zero-flow
+    days kept; NaN unless there are >= 100 finite values and ``mean(q) > 0``.
+    """
+    q = np.asarray(arr, dtype=float)
+    q = q[np.isfinite(q)]
+    if q.size < 100:
+        return float("nan")
+    mean_q = float(np.mean(q))
+    if not mean_q > 0:
+        return float("nan")
+    return float((np.quantile(q, 0.66) - np.quantile(q, 0.33)) / (mean_q * 0.33))
+
+
+def fdc_slope_sawicz2011(arr: np.ndarray) -> float:
+    """Log-space slope between 33% and 66% exceedance (Sawicz et al., 2011); zeros dropped.
+
+    ``(ln Q33exc - ln Q66exc) / 0.33`` with the exceedance points taken as non-exceedance
+    quantiles 0.67 and 0.34 (type 7). NaN unless there are >= 100 positive values.
+    """
+    q = np.asarray(arr, dtype=float)
+    pos = q[np.isfinite(q) & (q > 0)]
     if pos.size < 100:
         return float("nan")
-    q33 = np.quantile(pos, 0.67)   # 33% exceedance
-    q66 = np.quantile(pos, 0.34)   # 66% exceedance
+    q33 = np.quantile(pos, 0.67)   # flow exceeded 33% of the time
+    q66 = np.quantile(pos, 0.34)   # flow exceeded 66% of the time
     if q33 <= 0 or q66 <= 0:
         return float("nan")
     return float((np.log(q33) - np.log(q66)) / (0.66 - 0.33))
+
+
+def _fdc_slope(arr: np.ndarray) -> float:
+    """Kept name: the CAMELS-US v1.2 ``slope_fdc`` (see :func:`fdc_slope_camels_file`)."""
+    return fdc_slope_camels_file(arr)
 
 
 def seven_q10(

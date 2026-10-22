@@ -41,7 +41,6 @@ from __future__ import annotations
 
 import logging
 from typing import Callable, Dict, Optional, Tuple
-import warnings
 
 log = logging.getLogger(__name__)
 

@@ -60,7 +60,6 @@ def _metric_crs_for_geom(geom) -> str:
 # this; above it we stream through CatchmentGridSampler to avoid OOM.
 _SLOPE_CHUNK_TRIGGER = 10_000_000
 
-warnings.filterwarnings('ignore')
 
 
 def _slope_horn_kernel(

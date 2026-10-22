@@ -27,7 +27,6 @@ import logging
 import warnings
 from typing import Optional
 
-warnings.filterwarnings("ignore")
 log = logging.getLogger(__name__)
 
 __all__ = ["delineate_watershed", "validate_gauge_id"]

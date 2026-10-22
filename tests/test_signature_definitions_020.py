@@ -215,8 +215,12 @@ def test_importing_signatures_does_not_touch_global_warning_filters():
     code = (
         "import warnings, importlib\n"
         "import aihydro_watershed.signatures.signatures as s\n"      # first import pulls third-party filters
+        "import aihydro_watershed.characterize.watershed, aihydro_watershed.characterize.geomorphic\n"
+        "import aihydro_watershed.characterize.twi\n"
         "before = list(warnings.filters)\n"
         "importlib.reload(s)\n"                                        # re-runs every module-level statement
+        "for m in ('watershed', 'geomorphic', 'twi'):\n"
+        "    importlib.reload(importlib.import_module('aihydro_watershed.characterize.' + m))\n"
         "assert list(warnings.filters) == before, 'module import altered warnings.filters'\n"
         "assert not any(f[0] == 'ignore' and f[1] is None and f[2] is Warning for f in warnings.filters)\n"
     )

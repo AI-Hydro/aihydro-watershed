@@ -256,7 +256,6 @@ def _series_digest(ser: pd.Series) -> dict:
         "end": f"{idx.max():%Y-%m-%d}",
         "units": "m3/s",
     }
-warnings.filterwarnings('ignore')
 
 __all__ = [
     'extract_hydrological_signatures',

@@ -204,3 +204,33 @@ def test_no_complete_water_year_is_rejected_with_reason(monkeypatch):
     assert d["runoff_ratio"] is None and d["stream_elas"] is None
     assert rec["status"] == "rejected" and "no water year" in rec["reason"]
     assert len(rec["water_years_excluded"]) == 6
+
+
+# ---- warnings hygiene: importing the module must not silence anyone's warnings -------------
+
+def test_importing_signatures_does_not_touch_global_warning_filters():
+    import subprocess
+    import sys
+
+    code = (
+        "import warnings, importlib\n"
+        "import aihydro_watershed.signatures.signatures as s\n"      # first import pulls third-party filters
+        "before = list(warnings.filters)\n"
+        "importlib.reload(s)\n"                                        # re-runs every module-level statement
+        "assert list(warnings.filters) == before, 'module import altered warnings.filters'\n"
+        "assert not any(f[0] == 'ignore' and f[1] is None and f[2] is Warning for f in warnings.filters)\n"
+    )
+    r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr[-800:]
+
+
+def test_warmup_bias_and_deprecation_warnings_survive_importing_signatures():
+    from aihydro_watershed.signatures.baseflow import WarmupBiasWarning
+
+    q = 2.0 + np.random.default_rng(3).gamma(1.0, 1.0, 100)
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        lyne_hollick(q)
+        lyne_hollick_legacy_clamp(q)
+    cats = {x.category for x in w}
+    assert WarmupBiasWarning in cats and DeprecationWarning in cats

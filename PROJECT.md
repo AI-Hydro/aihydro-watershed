@@ -1,11 +1,13 @@
 # aihydro-watershed
 
-**Current state (2026-09-29):** Local pilot hardening preserves a supplied
-pandas streamflow date index and prevents missing days from merging high/low
-flow events. NLDI provenance points to the current USGS API base. 71 offline
-tests passed before this metadata-only URL correction, six live tests deselected. This is
-uncommitted and does not establish global signature validity; see the
-ecosystem [publication triage](../../papers/EVIDENCE_TRIAGE-2026-09-29.md).
+**Current state (2026-10-22):** 0.2.0 on branch `vision2040/w3-watershed` (draft PR #4, not merged,
+not published). `slope_fdc` is the CAMELS-US v1.2 distributed definition (log value kept as
+`slope_fdc_sawicz2011`); one canonical Lyne-Hollick/Ladson 2013 BFI kernel serves signatures and
+`separate_baseflow`; `runoff_ratio`/`stream_elas` use complete water years only; confidence intervals are
+water-year grouped (needs aihydro-core >= 0.2.11 and aihydro-data >= 0.2.5, neither published yet, so CI
+is red until they are). Offline suite green locally against core main. Evidence:
+`docs/vision-2040/evidence/signature-definitions-1`. Not yet done: the tools-side changes (accept
+`used_with_gaps`, port the capsule BFI check, wire `reference_comparison`) and a live check.
 
 ## What it is
 Standalone watershed delineation + characterization package, carved out of

@@ -21,7 +21,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "aihydro-watershed"
-version = "0.1.6"
+version = "0.2.0"
 description = "Watershed delineation + characterization — global pour-point delineation (NLDI + MERIT-Hydro), geomorphics, TWI, and watershed-scale hydrological signatures"
 requires-python = ">=3.10"
 license = "Apache-2.0"
@@ -48,8 +48,8 @@ classifiers = [
 # Kept lean; heavy geo/delineation stacks live behind extras so a user who only
 # needs the data structures / characterization on a supplied DEM stays light.
 dependencies = [
-    "aihydro-core[contracts]>=0.2.3,<0.3",   # HydroResult contract
-    "aihydro-data>=0.2.3,<0.3",              # streamflow (USGS Water Data API adapter) / DEM acquisition
+    "aihydro-core[contracts]>=0.2.11,<0.3",  # HydroResult contract; grouped_bootstrap + water_year (0.2.11)
+    "aihydro-data>=0.2.5,<0.3",              # streamflow (USGS Water Data API adapter) / DEM acquisition; 0.2.5 reports missing_ranges
     "numpy>=1.24.0",
     "pandas>=2.0.0",
     "geopandas>=0.13.0",

@@ -67,7 +67,7 @@ tool path, version, parameters, and data sources.
 | `merit` | MERIT-Hydro data management: regional basin cache, flowdir rasters, map layers, region presets. |
 | `characterize` | Geomorphic parameters (28 indices), watershed attributes, topographic wetness index. |
 | `terrain` | Curve number (TR-55, AMC II), event runoff (SCS-CN), RUSLE erosion. SSURGO soil attributes in CONUS (recorded hydrologic group and erodibility Kw via gNATSGO + Soil Data Access), POLARIS/SoilGrids elsewhere. |
-| `signatures` | Baseflow index (Lyne-Hollick), flow-duration curve, flood frequency (Gumbel/GEV), drought indices (SPI, SPEI, Palmer). |
+| `signatures` | Baseflow index (Lyne-Hollick, Ladson 2013 recipe as used by CAMELS), flow-duration curve, flood frequency (Gumbel/GEV), drought indices (SPI, SPEI, Palmer). |
 
 The flood-inundation suite is **not** part of this package.
 

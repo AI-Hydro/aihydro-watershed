@@ -1,5 +1,91 @@
 # Changelog — aihydro-watershed
 
+## [0.2.0] - 2026-10-22 (Science Wave 3)
+
+Evidence: `docs/vision-2040/evidence/signature-definitions-1` (scripts, CAMELS R sources, sha256, results).
+
+### BREAKING-VALUE
+
+- **`slope_fdc` changes meaning.** It is now `(Q66 - Q33) / (mean(q) * 0.33)`: non-exceedance percentiles (R type 7),
+  zero-flow days kept, defined only when mean(q) > 0, no logarithm. Before 0.2.0 it was the log-space Sawicz et al.
+  (2011) slope (e.g. 2.697 on 01013500; now 1.528). The new value reproduces the CAMELS-US v1.2 file at 8.7e-9
+  (01013500) and 2.3e-7 (01031500) relative. The old value is kept as **`slope_fdc_sawicz2011`**. The same change is
+  made in `flow_duration.flow_duration_curve`. Provenance (carried as `signature_definitions["slope_fdc"]`):
+  "CAMELS-US v1.2 distributed definition. Reproduces the file at <=2.3e-7 relative on 01013500 and 01031500, and
+  9.7e-5 on 01516500. Its zero-structure prediction holds on all 671 basins. Source: naddor/camels@88e7a0d2d2
+  hydro/hydro_signatures.R:97. It contradicts the log-space definition in Addor et al. 2017 (text and Table 3). No
+  erratum or release note found. Not proven to be the script that produced the file." This is not "the CAMELS
+  definition" in general: later naddor/camels code (used for CAMELS-GB) emits the log form under the same name.
+  Consumers that compare `slope_fdc` across datasets or versions must read `signature_definitions`.
+- **Baseflow index kernel replaced; `separate_baseflow` BFI changes (e.g. 0.36 -> 0.445 on 01031500).** One canonical kernel,
+  `baseflow.lyne_hollick_ladson2013` (alpha 0.925, 3 passes forward-backward-forward, 30-day reflection, quick flow
+  subtracted only where positive, final clip at zero; the Ladson et al. 2013 recipe CAMELS used), now serves
+  `extract_hydrological_signatures`, `baseflow.lyne_hollick` (what the `separate_baseflow` tool calls) and the BFI
+  bootstrap. It reproduces CAMELS v1.2 at 1.1e-7 (01013500: 0.585226) and 1.9e-6 (01031500: 0.445091) relative.
+  Replaced: `baseflow.lyne_hollick` clamped the baseflow at every step and fed the clamped value back into the recursion
+  (5-19% low, matches no reference implementation; kept, deprecated, as `lyne_hollick_legacy_clamp`), and the signatures
+  filter lacked the 30-day reflection (+3e-4 relative). The two were the same filter in different algebraic forms; the
+  difference was constraint handling. `BASEFLOW_SEPARATION_METHOD` is now `lyne_hollick_ladson2013`, so the
+  `baseflow_method` param and the `baseflow_method=...` quality flag change with it.
+- **`runoff_ratio` and `stream_elas` use complete water years only.** A water year counts when at least 95% of its days
+  have both streamflow and precipitation (engineering choice, source to verify; `WATER_YEAR_MIN_PAIRED_FRACTION`).
+  Incomplete years no longer enter either signature, so values can change where precipitation had holes.
+- **Confidence intervals are water-year grouped, and the daily block bootstrap is gone.** `_uncertainty` entries now
+  come from aihydro-core `grouped_bootstrap` (percentile, B = 2000, 90%, whole water years resampled), `method`
+  `bootstrap_group` (was `bootstrap_block`); the BFI entry no longer has `block_size`. Fewer than 10 water years: no
+  interval (`ci_refused: true`, `ci_low`/`ci_high` null, reason given) instead of a block-bootstrap number.
+  **Requires aihydro-core >= 0.2.11** (pin raised; CI needs core 0.2.11 on PyPI).
+- **`BFI_BOOTSTRAP_BLOCK_DAYS` is removed** (with the moving-block BFI bootstrap); `_baseflow_index_uncertainty` now takes the
+  daily series and returns the grouped interval.
+- **Group counts are complete water years.** The 10-group minimum and the reported `n_groups` count only water years
+  holding >= 95% of their days (`n_groups_complete`, `n_partial_groups`, `n_groups_all` on every entry); partial edge
+  years stay in the point estimate and the resample. A 2000-01-01..2009-12-31 window has 9 complete years and is
+  refused. Refusals carry the same keys as computed entries (`coverage_note`, `low_n`, `B`, ...).
+- **`stream_elas` anomalies use the day-weighted long-term mean** (exactly CAMELS `e_qp_sanka`; the first 0.2.0 draft used
+  the mean of annual means, ~3e-5 different), in the point estimate and the CI alike.
+- **Short series in `lyne_hollick`:** 30 days or fewer raises `ValueError` (as BFI.R); 31-364 days is computed with a
+  `WarmupBiasWarning` (the index is biased low by the start-up transient; `warmup_bias_disclosure(n)` gives the
+  record-able flag).
+- Leading/trailing water years of the requested window with no paired day are reported in `water_years_excluded`.
+- `reference_comparison` reads the used period and the precipitation completeness from the record, not from the caller:
+  new RR/elasticity blockers `water_years_excluded`, `precipitation_used_with_gaps` (a skipped leap-year Dec 31 --
+  `client_calendar_assumption` -- alone does not block) and `streamflow_period_differs`.
+- **`zero_q_freq` counts days with q <= 0** (was `== 0`; CAMELS `sum(q<=0)/length`).
+
+### Added
+
+- `signature_definitions` (plain key): formula, quantile type, zero handling and source for slope_fdc,
+  slope_fdc_sawicz2011, baseflow_index, q5, q95, high/low/zero_q_freq, runoff_ratio, stream_elas.
+- `_precipitation` gains `n_expected_days`, `completeness`, `missing_ranges` (run-compressed `{start, end, days,
+  reason}`; reason codes are passed through from aihydro-data when it supplies them, otherwise `absent_in_response`),
+  `data_coverage`, `water_year_rule`, `water_years_used`, `water_years_excluded`, `n_paired_days_used`.
+- `precipitation_status` / `_precipitation.status` gains **`used_with_gaps`** (computed, but not from a complete
+  record; the reason lists the gaps and excluded years) and `rejected` for "no water year is complete".
+  Consumers that test `status == "used"` must also accept `used_with_gaps`.
+- `baseflow.lyne_hollick_ladson2013`, `flow_duration.fdc_slope_camels_file`, `flow_duration.fdc_slope_sawicz2011`.
+- Grouped CIs for `q_mean`, `q_median`, `q5`, `q95`, `flow_variability`, `baseflow_index` (every valid streamflow day),
+  `runoff_ratio` (sum q / sum p over the paired days, complete water years) and `stream_elas` (indicative; anomalies
+  recomputed per resample, duplicated years contribute duplicated ratios; `n_years_near_zero_dP` reported and
+  `ci_degraded` set when any year has |dP/mean P| < 0.02, an engineering threshold). The point estimate of each
+  is computed from the same item set as its CI. Each entry carries core's `scope` (`varies` / `assumes` /
+  `excludes`), `ci_degraded`, `ci_reason`, `valid_frac`, `low_n` (< 30 groups), `coverage_note` (percentile intervals
+  under-cover at small group counts), `n_groups`, and `annual_lag1_autocorrelation` (between-year persistence the
+  bootstrap does not capture).
+- `_served_series` (dates, q_cms, qualifier and approval codes) so callers can bind validators to the series used.
+- `qualifier_exposure`: per signature, the share of estimated / other-qualified / provisional days among the days that
+  determine it (named in the output; tail and baseflow sets are engineering definitions). Present for fetched USGS
+  series only.
+- `signatures.comparison.reference_comparison(sigs, ref_row, area_used, area_ref, period_used, period_ref)`: pure
+  function; per signature flags `area_dependent` (with the value rescaled to the reference area), `definition_comparable`,
+  `forcing_differs`, `period_differs`, the resulting `blockers` and `can_claim_difference`; plus `climate_context`
+  (frac_snow, aridity, p_seasonality).
+- Water-year labels use aihydro-core `water_year` everywhere (one convention).
+- Test fixture `served_streamflow_01031500.csv` (USGS NWIS, public domain) with provenance.
+
+### Fixed
+
+- `high_q_freq` / `low_q_freq` are days/year (already so in `SIGNATURE_UNITS`; stale wording removed).
+
 ## [0.1.6] - 2026-10-20 (CI fix: NumPy compatibility)
 
 ### Fixed

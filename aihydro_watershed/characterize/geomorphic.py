@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import logging
 import os
-import warnings
 from typing import Tuple, Dict, Optional, Union
 import numpy as np
 
@@ -60,7 +59,6 @@ def _metric_crs_for_geom(geom) -> str:
 # this; above it we stream through CatchmentGridSampler to avoid OOM.
 _SLOPE_CHUNK_TRIGGER = 10_000_000
 
-warnings.filterwarnings('ignore')
 
 
 def _slope_horn_kernel(

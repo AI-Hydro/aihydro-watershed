@@ -231,11 +231,67 @@ def test_reference_comparison_flags_area_forcing_definition_and_period(run):
 
 
 def test_reference_comparison_period_differs_blocks_everything(run):
-    cmp_ = reference_comparison(_sigs(run), REF_01013500, AREA_GAGES2, AREA_GAGES2,
+    d = _sigs(run, streamflow_start="1999-10-01", streamflow_end="2020-09-30")
+    cmp_ = reference_comparison(d, REF_01013500, AREA_GAGES2, AREA_GAGES2,
                                 ("1999-10-01", "2020-09-30"), ("1989-10-01", "2009-09-30"))
     assert cmp_["context"]["period_differs"] is True
     assert all("period_differs" in r["blockers"] and not r["can_claim_difference"]
                for r in cmp_["table"].values())
+
+
+def test_reference_comparison_reads_the_period_from_the_record_not_the_caller(run):
+    # The caller claims the CAMELS period; the record says a 2000-2020 streamflow was used.
+    d = _sigs(run, streamflow_start="1999-10-01", streamflow_end="2020-09-30")
+    cmp_ = reference_comparison(d, REF_01013500, AREA_GAGES2, AREA_GAGES2,
+                                ("1989-10-01", "2009-09-30"), ("1989-10-01", "2009-09-30"))
+    assert cmp_["context"]["period_used_caller_mismatch"] is True
+    assert cmp_["context"]["period_differs"] is True
+    assert "streamflow_period_differs" in cmp_["table"]["runoff_ratio"]["blockers"]
+    assert not cmp_["table"]["runoff_ratio"]["can_claim_difference"]
+
+
+def _daymet_sigs(run, **prec):
+    d = _sigs(run, precipitation_product="DAYMET", streamflow_start="1989-10-01", streamflow_end="2009-09-30")
+    rec = dict(d["_precipitation"])
+    rec.update(prec)
+    d["_precipitation"] = rec
+    return d
+
+
+def test_daymet_with_missing_water_years_cannot_support_a_claim(run):
+    used = [y for y in range(1990, 2010) if y not in (1999, 2000)]
+    d = _daymet_sigs(
+        run, status="used_with_gaps", water_years_used=used,
+        water_years_excluded=[{"water_year": 1999, "paired_days": 0, "expected_days": 365, "fraction": 0.0},
+                              {"water_year": 2000, "paired_days": 0, "expected_days": 366, "fraction": 0.0}],
+        missing_ranges=[{"start": "1998-10-01", "end": "2000-09-30", "days": 731, "reason": "absent_in_response"}])
+    t = reference_comparison(d, REF_01013500, AREA_GAGES2, AREA_GAGES2,
+                             (START, END), ("1989-10-01", "2009-09-30"))["table"]
+    for k in ("runoff_ratio", "stream_elas"):
+        assert t[k]["forcing_differs"] is False                    # DAYMET: forcing is not the blocker
+        assert "water_years_excluded" in t[k]["blockers"] and "precipitation_used_with_gaps" in t[k]["blockers"]
+        assert t[k]["can_claim_difference"] is False
+    assert t["baseflow_index"]["can_claim_difference"] is True
+
+
+def test_leap_year_dec31_client_gap_alone_does_not_block(run):
+    d = _daymet_sigs(
+        run, status="used_with_gaps", water_years_used=list(range(1990, 2010)), water_years_excluded=[],
+        missing_ranges=[{"start": f"{y}-12-31", "end": f"{y}-12-31", "days": 1,
+                         "reason": "client_calendar_assumption"} for y in (1992, 1996, 2000, 2004, 2008)])
+    t = reference_comparison(d, REF_01013500, AREA_GAGES2, AREA_GAGES2,
+                             (START, END), ("1989-10-01", "2009-09-30"))["table"]
+    assert t["runoff_ratio"]["blockers"] == [] and t["runoff_ratio"]["can_claim_difference"] is True
+
+
+def test_daymet_with_a_short_streamflow_record_cannot_support_a_claim(run):
+    d = _daymet_sigs(run, status="used", water_years_used=list(range(2000, 2010)), water_years_excluded=[])
+    d["streamflow_start"] = "1999-10-01"
+    t = reference_comparison(d, REF_01013500, AREA_GAGES2, AREA_GAGES2,
+                             (START, END), ("1989-10-01", "2009-09-30"))["table"]
+    for k in ("runoff_ratio", "stream_elas"):
+        assert "streamflow_period_differs" in t[k]["blockers"]
+        assert t[k]["can_claim_difference"] is False
 
 
 def test_reference_comparison_unknown_definition_for_pre_020_results(run):
@@ -263,3 +319,90 @@ def test_lag1_low_n_is_passed_through_when_too_few_consecutive_years():
     few = annual_lag1_autocorrelation(np.arange(6.0))
     assert few["low_n"] is True and np.isnan(few["r1"])
     assert gu._clean(few)["r1"] is None and gu._clean(few)["low_n"] is True
+
+
+# ---- complete-group gate, headline behaviours, golden elasticity ---------------------------
+
+def test_min_groups_gate_counts_complete_years_not_stub_years():
+    # 9 complete water years (WY2001-2009) + a 1-day stub (WY2010): 10 groups, only 9 complete
+    idx = pd.date_range("2000-10-01", "2009-10-01", freq="D")
+    q = np.random.default_rng(4).gamma(2.0, 1.0, len(idx))
+    e = gu.flow_statistic_cis(q, idx)["q_mean"]
+    assert e["ci_refused"] and e["ci_low"] is None
+    assert e["n_groups_complete"] == 9 and e["n_partial_groups"] == 1 and e["n_groups"] == 9
+    for key in ("coverage_note", "low_n", "B", "scope", "valid_frac", "ci_reason"):
+        assert key in e                                    # refusals carry the same keys as computed CIs
+
+
+def test_calendar_year_window_has_nine_complete_water_years_and_is_refused():
+    idx = pd.date_range("2000-01-01", "2009-12-31", freq="D")
+    q = np.random.default_rng(5).gamma(2.0, 1.0, len(idx))
+    e = gu.flow_statistic_cis(q, idx)["q_mean"]
+    assert e["n_groups_complete"] == 9 and e["n_partial_groups"] == 2 and e["ci_refused"]
+    assert e["value"] == pytest.approx(q.mean())           # the point estimate still uses every valid day
+
+
+def test_partial_edge_years_stay_in_the_resample_when_enough_complete_years_exist():
+    idx = pd.date_range("1999-01-01", "2011-12-31", freq="D")      # WY2000-2011 complete (12) + 2 partial edges
+    q = np.random.default_rng(6).gamma(2.0, 1.0, len(idx))
+    e = gu.flow_statistic_cis(q, idx)["q_mean"]
+    assert not e.get("ci_refused") and e["n_groups_complete"] == 12 and e["n_partial_groups"] == 2
+    assert e["n"] == len(idx) and e["value"] == pytest.approx(q.mean())
+
+
+def test_a_60_percent_water_year_is_excluded_from_runoff_ratio(run):
+    q = _q()
+    p = _p_for(q)
+    wy = sig._year_series(pd.DatetimeIndex(p.index))
+    in_2005 = np.flatnonzero(wy == 2005)
+    drop = p.index[in_2005[: int(0.4 * len(in_2005))]]            # 40% of WY2005 has no P -> 60% paired
+    p_gap = p.drop(drop)
+    p_gap[sig._year_series(pd.DatetimeIndex(p_gap.index)) == 2005] *= 4.0   # make the bad year matter
+    d = run(p=p_gap)
+    rec = d["_precipitation"]
+    assert [e["water_year"] for e in rec["water_years_excluded"]] == [2005]
+    assert 0.55 < rec["water_years_excluded"][0]["fraction"] < 0.65 and len(rec["water_years_used"]) == 19
+    # hand-computed 19-year value: sum q / sum p over the paired days of the other 19 years
+    q_mm = sig._to_mm_per_day(q, AREA)
+    keep = (wy != 2005) & q_mm.index.isin(p_gap.index)
+    hand = q_mm[keep].sum() / p_gap.reindex(q_mm.index)[keep].sum()
+    all_days = q_mm[q_mm.index.isin(p_gap.index)].sum() / p_gap.sum()
+    assert d["runoff_ratio"] == pytest.approx(hand, rel=1e-12)
+    assert abs(hand - all_days) > 1e-2 and d["runoff_ratio"] != pytest.approx(all_days, rel=1e-9)
+    assert d["_uncertainty"]["runoff_ratio"]["n_groups"] == 19
+
+
+def test_window_edge_water_years_without_paired_days_are_reported():
+    idx = pd.date_range("1999-10-01", "2002-09-30", freq="D")           # WY2000-2002
+    q = pd.Series(np.random.default_rng(7).gamma(2.0, 1.0, len(idx)) + 1, index=idx)
+    p = pd.Series(np.random.default_rng(8).gamma(2.0, 3.0, len(idx)) + 1, index=idx)
+    p = p[(p.index >= "2000-10-01") & (p.index <= "2001-09-30")]          # only WY2001 has P
+    det = sig._water_balance_detail(q, p, window=("1999-10-01", "2002-09-30"))
+    assert sorted(e["water_year"] for e in det["water_years_excluded"]) == [2000, 2002]
+    det2 = sig._water_balance_detail(q, p)          # without the window the empty edge years are invisible
+    assert det2["water_years_excluded"] == []
+
+
+def test_stream_elasticity_golden_four_years():
+    # Four water years of constant daily q and p (WY2001-2004; lengths 365, 365, 365, 366).
+    lens = [365, 365, 365, 366]
+    q_ann = [1.0, 2.0, 1.5, 3.0]
+    p_ann = [10.0, 14.0, 11.0, 18.0]
+    idx = pd.date_range("2000-10-01", "2004-09-30", freq="D")
+    assert len(idx) == sum(lens)
+    q = np.repeat(q_ann, lens).astype(float)
+    p = np.repeat(p_ann, lens).astype(float)
+    # Worked by hand (long-term means are DAY-weighted, as CAMELS e_qp_sanka):
+    #   mq_tot = (1*365 + 2*365 + 1.5*365 + 3*366) / 1461 = 1.875770020533881
+    #   mp_tot = (10*365 + 14*365 + 11*365 + 18*366) / 1461 = 13.25325119780972
+    #   ratios (sorted) = 1.17542444, 1.17829859, 1.67340766, 1.90202103; median = (1.17829859 + 1.67340766)/2
+    golden = 1.4258531221420965
+    assert sig._stream_elasticity(q, p, idx) == pytest.approx(golden, rel=1e-12)
+    # not the mean-of-annual-means variant (that is a different number)
+    mq_alt, mp_alt = np.mean(q_ann), np.mean(p_ann)
+    alt = np.median([((a - mq_alt) / mq_alt) / ((b - mp_alt) / mp_alt) for a, b in zip(q_ann, p_ann)])
+    assert abs(alt - golden) > 5e-5
+    # reversing the annual p order (worked the same way by hand) flips the response
+    assert sig._stream_elasticity(q, np.repeat(p_ann[::-1], lens).astype(float), idx) == pytest.approx(-1.8731380477271897, rel=1e-9)
+    # the CI machinery agrees with the point estimate (10+ groups needed for a CI, so check the value path)
+    assert gu.elasticity_point(q, p, idx) == pytest.approx(golden, rel=1e-12)

@@ -64,15 +64,29 @@ def test_flow_duration_curve_requires_two_valid_values():
         raise AssertionError("too-short FDC input should raise ValueError")
 
 
-def test_lyne_hollick_baseflow_and_bfi_are_bounded():
+def test_lyne_hollick_refuses_series_not_longer_than_the_reflection():
+    # BFI.R stops for a series not longer than n.reflect (30 days); so do we.
     q = np.array([2.0, 3.0, 10.0, 8.0, 4.0, 3.0, 2.0])
+    with pytest.raises(ValueError, match="more than n_reflect"):
+        lyne_hollick(q)
 
-    baseflow = lyne_hollick(q)
-    bfi = compute_bfi(q, baseflow)
 
-    assert np.all(baseflow >= 0)
-    assert np.all(baseflow <= q)
-    assert 0.0 <= bfi <= 1.0
+def test_lyne_hollick_short_series_warns_and_is_bounded():
+    from aihydro_watershed.signatures.baseflow import (
+        WarmupBiasWarning, lyne_hollick_ladson2013, warmup_bias_disclosure)
+
+    rng = np.random.default_rng(0)
+    q = 2.0 + rng.gamma(1.0, 1.0, 100)
+    with pytest.warns(WarmupBiasWarning):
+        baseflow = lyne_hollick(q)
+    assert np.all(baseflow >= 0) and np.all(baseflow <= q)
+    assert 0.0 <= compute_bfi(q, baseflow) <= 1.0
+    # constant flow is all baseflow; at short n the start-up transient pulls the index below 1
+    const = np.full(60, 5.0)
+    with pytest.warns(WarmupBiasWarning):
+        assert compute_bfi(const, lyne_hollick_ladson2013(const)) < 1.0
+    assert warmup_bias_disclosure(100)["warmup_bias"] is True
+    assert warmup_bias_disclosure(30) is None and warmup_bias_disclosure(400) is None
 
 
 def test_extract_signatures_rejects_invalid_area_before_fetching():

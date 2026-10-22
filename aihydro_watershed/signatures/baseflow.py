@@ -22,6 +22,24 @@ LH_PASSES = 3
 LH_N_REFLECT = 30
 
 #: Identity of the canonical kernel; surfaced in result params and quality flags.
+#: Below this many days the filter's start-up transient is a large part of the record.
+WARMUP_BIAS_DAYS = 365
+
+
+class WarmupBiasWarning(UserWarning):
+    """A Lyne-Hollick baseflow computed on a short series (31-364 days) is biased low by the
+    filter's start-up transient (the initial quick flow equals the first flow)."""
+
+
+def warmup_bias_disclosure(n_days: int) -> "dict | None":
+    """``{"warmup_bias": True, ...}`` for a series of 31-364 days, else ``None``; for callers to record."""
+    if LH_N_REFLECT < n_days < WARMUP_BIAS_DAYS:
+        return {"warmup_bias": True, "n_days": int(n_days),
+                "note": f"series shorter than {WARMUP_BIAS_DAYS} days: the baseflow index is biased low by "
+                        "the filter start-up transient (the 30-day reflection only partly absorbs it)"}
+    return None
+
+
 LYNE_HOLLICK_LADSON2013_REFERENCE = (
     "Lyne & Hollick (1979); Nathan & McMahon (1990); Ladson et al. (2013) as implemented in "
     "TonyLadson/BaseflowSeparation_LyneHollick BFI.R and used by naddor/camels comp_i_bf_landson "
@@ -82,6 +100,9 @@ def lyne_hollick_ladson2013(
     ``f(t) = alpha f(t-1) + (1+alpha)/2 (y(t) - y(t-1))`` is subtracted only where ``f > 0``
     and the (unclamped) result feeds the next sweep; the final baseflow is clipped at zero.
 
+    A series of 31-364 days is computed but emits ``WarmupBiasWarning``; a series of 30 days or fewer
+    raises ``ValueError``, as BFI.R does.
+
     NaN handling follows BFI.R: the filter runs on each run of more than ``n_reflect``
     consecutive finite values; days outside such runs return NaN. (BFI.R then averages segment
     BFIs weighted by length; here the caller sums baseflow and flow over the days that have
@@ -100,6 +121,11 @@ def lyne_hollick_ladson2013(
     if q.size <= n_reflect:
         raise ValueError(
             f"lyne_hollick_ladson2013 needs more than n_reflect={n_reflect} days, got {q.size}")
+    if q.size < WARMUP_BIAS_DAYS:
+        warnings.warn(
+            f"lyne_hollick_ladson2013 on {q.size} days (< {WARMUP_BIAS_DAYS}): the result carries a "
+            "warm-up bias (BFI is biased low at short n); see warmup_bias_disclosure()",
+            WarmupBiasWarning, stacklevel=2)
     out = np.full(q.size, np.nan)
     finite = np.isfinite(q)
     if finite.all():
@@ -140,10 +166,7 @@ def lyne_hollick(
     """
     q = np.asarray(streamflow, dtype=float)
     q = np.where(q < 0, 0.0, q)  # guard against negative values
-    # BFI.R refuses a series not longer than the 30-day reflection; this array entry point
-    # shortens the reflection to fit instead (a deviation that only affects series < 32 days).
-    nr = min(LH_N_REFLECT, max(q.size - 1, 1))
-    return lyne_hollick_ladson2013(q, alpha=alpha, passes=n_passes, n_reflect=nr)
+    return lyne_hollick_ladson2013(q, alpha=alpha, passes=n_passes)
 
 
 def lyne_hollick_legacy_clamp(

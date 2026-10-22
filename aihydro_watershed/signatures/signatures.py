@@ -8,7 +8,7 @@ Public Functions
 ----------------
 extract_hydrological_signatures(gauge_id, watershed_geojson, area_km2,
                                 start_date, end_date) -> HydroResult
-    Extract 17 CAMELS-style hydrological signatures
+    Extract 18 CAMELS-style hydrological signatures (17 + slope_fdc_sawicz2011)
 
 compute_flow_stats_camels, compute_water_balance_camels,
 compute_event_stats_camels, compute_timing_stats_camels,
@@ -229,8 +229,8 @@ SIGNATURE_DEFINITIONS: Dict[str, dict] = {
                      "completeness": "a water year counts when >= 95% of its days have paired q and p "
                                      "(engineering choice; source to verify)",
                      "source": "Sankarasubramanian et al. (2001); naddor/camels comp_r_qp"},
-    "stream_elas": {"formula": "median over complete water years of (dQ/mean Q) / (dP/mean P), anomalies "
-                               "against the long-term mean of annual means",
+    "stream_elas": {"formula": "median over complete water years of (dQ/mean Q) / (dP/mean P), annual means "
+                               "minus the long-term day-weighted mean (CAMELS e_qp_sanka)",
                     "completeness": "complete water years only (>= 95% paired days; engineering choice)",
                     "source": "Sankarasubramanian et al. (2001); naddor/camels e_qp_sanka"},
 }
@@ -468,7 +468,7 @@ def extract_hydrological_signatures(
                     p_mm_day, getattr(_PRECIP_DIAG, "d", {}), window=(start_date, end_date))
 
             _wbd = _water_balance_detail(
-                q_mm_day, p_mm_day, _effective_units(_precip_record))
+                q_mm_day, p_mm_day, _effective_units(_precip_record), window=(start_date, end_date))
             _wb, _wb_reason = _wbd["values"], _wbd["reason"]
             sigs = {
                 **compute_flow_stats_camels(q_mm_day),
@@ -734,7 +734,7 @@ def compute_water_balance_camels(
 #: A water year takes part in the water balance when at least this fraction of its days have BOTH
 #: q and p. ENGINEERING CHOICE; SOURCE TO VERIFY: the CAMELS code takes a required `tol` argument
 #: with no default and applies `length(x) > (1 - tol) * 365`; the value used for v1.2 is unverified.
-WATER_YEAR_MIN_PAIRED_FRACTION = 0.95
+WATER_YEAR_MIN_PAIRED_FRACTION = _gu.COMPLETE_GROUP_FRACTION   # 0.95
 
 #: reason_code values of a water-balance refusal that are completeness failures (status "rejected").
 _COMPLETENESS_REASON_CODES = ("overlap", "no_complete_water_year")
@@ -747,6 +747,7 @@ def _water_year_days(label: int) -> int:
 
 def complete_water_years(
     q_aln: pd.Series, p_aln: pd.Series, min_fraction: float = WATER_YEAR_MIN_PAIRED_FRACTION,
+    window=None,
 ) -> Tuple[list, list]:
     """Split the water years of two already-aligned daily series into usable and excluded.
 
@@ -755,13 +756,21 @@ def complete_water_years(
     ``paired days / days in the water year >= min_fraction``. Returns ``(used, excluded)``;
     ``used`` is a sorted list of labels, ``excluded`` a list of
     ``{"water_year", "paired_days", "expected_days", "fraction"}``.
+
+    ``window``: the requested ``(start, end)``. Every water year the window touches is examined,
+    so a leading or trailing year with no paired day at all is reported as excluded rather than
+    silently absent; without it, the span of the paired days is used.
     """
     del p_aln  # the alignment already guarantees one p per q; kept for call-site symmetry
     labels = _year_series(pd.DatetimeIndex(q_aln.index))
     counts = pd.Series(1, index=labels).groupby(level=0).sum()
     # Every water year between the first and last paired day is examined, including one with
     # no paired day at all (a missing year must be reported, not silently absent).
-    counts = counts.reindex(range(int(counts.index.min()), int(counts.index.max()) + 1), fill_value=0)
+    lo, hi = int(counts.index.min()), int(counts.index.max())
+    if window and window[0] and window[1]:
+        lo = min(lo, int(_year_series(pd.DatetimeIndex([pd.Timestamp(window[0])]))[0]))
+        hi = max(hi, int(_year_series(pd.DatetimeIndex([pd.Timestamp(window[1])]))[0]))
+    counts = counts.reindex(range(lo, hi + 1), fill_value=0)
     used, excluded = [], []
     for wy, n in counts.items():
         expected = _water_year_days(int(wy))
@@ -782,7 +791,7 @@ def _water_balance(q_mm_day, p_mm_day, p_units=None):
 
 
 def _water_balance_detail(q_mm_day, p_mm_day, p_units=None,
-                          min_fraction: float = WATER_YEAR_MIN_PAIRED_FRACTION) -> dict:
+                          min_fraction: float = WATER_YEAR_MIN_PAIRED_FRACTION, window=None) -> dict:
     """Water balance on COMPLETE water years only, with the bookkeeping behind it.
 
     Returns a dict: ``values`` (``runoff_ratio``, ``stream_elas``), ``reason`` (None when
@@ -824,7 +833,7 @@ def _water_balance_detail(q_mm_day, p_mm_day, p_units=None,
 
     # Only complete water years take part: a year with a hole in P (or Q) would bias both the
     # ratio and the annual anomalies. The point estimates and any CI use this same set of years.
-    used, excluded = complete_water_years(q_aln, p_aln, min_fraction)
+    used, excluded = complete_water_years(q_aln, p_aln, min_fraction, window)
     det.update(water_years_used=used, water_years_excluded=excluded)
     if not used:
         return _fail(
@@ -858,20 +867,17 @@ def _water_balance_detail(q_mm_day, p_mm_day, p_units=None,
 
 def _stream_elasticity(q: np.ndarray, p: np.ndarray, dates: pd.DatetimeIndex) -> float:
     """Median of (dQ/mean Q)/(dP/mean P) over water years (Sankarasubramanian et al. 2001;
-    CAMELS ``e_qp_sanka``). Anomalies are against the long-term mean of the annual means.
-    NaN with fewer than 3 years."""
+    CAMELS ``e_qp_sanka``). Anomalies are annual means minus the long-term DAY-weighted mean of
+    the paired days (as CAMELS; before this revision it was the mean of the annual means, which
+    differs by at most ~3e-5 in tests). NaN with fewer than 3 years."""
     hy = _year_series(dates)
     mp = pd.Series(p, index=hy).groupby(level=0).mean()
     mq = pd.Series(q, index=hy).groupby(level=0).mean()
     if len(mp) < 3 or len(mq) < 3:
         log.warning("Insufficient years for elasticity calculation")
         return float("nan")
-    mp_tot, mq_tot = float(mp.mean()), float(mq.mean())
-    dp, dq = (mp - mp_tot), (mq - mq_tot)
-    with np.errstate(divide='ignore', invalid='ignore'):
-        ratio = (dq / mq_tot) / (dp / mp_tot)
-    ratio = ratio.replace([np.inf, -np.inf], np.nan).dropna()
-    return float(np.median(ratio)) if len(ratio) > 0 else float("nan")
+    # Same code path as the CI (day-weighted long-term mean, as CAMELS e_qp_sanka).
+    return _gu.elasticity_point(np.asarray(q, dtype=float), np.asarray(p, dtype=float), dates)
 
 
 def compute_event_stats_camels(q_mm_day: pd.Series) -> Dict[str, float]:

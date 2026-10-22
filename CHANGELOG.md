@@ -35,6 +35,21 @@ Evidence: `docs/vision-2040/evidence/signature-definitions-1` (scripts, CAMELS R
   `bootstrap_group` (was `bootstrap_block`); the BFI entry no longer has `block_size`. Fewer than 10 water years: no
   interval (`ci_refused: true`, `ci_low`/`ci_high` null, reason given) instead of a block-bootstrap number.
   **Requires aihydro-core >= 0.2.11** (pin raised; CI needs core 0.2.11 on PyPI).
+- **`BFI_BOOTSTRAP_BLOCK_DAYS` is removed** (with the moving-block BFI bootstrap); `_baseflow_index_uncertainty` now takes the
+  daily series and returns the grouped interval.
+- **Group counts are complete water years.** The 10-group minimum and the reported `n_groups` count only water years
+  holding >= 95% of their days (`n_groups_complete`, `n_partial_groups`, `n_groups_all` on every entry); partial edge
+  years stay in the point estimate and the resample. A 2000-01-01..2009-12-31 window has 9 complete years and is
+  refused. Refusals carry the same keys as computed entries (`coverage_note`, `low_n`, `B`, ...).
+- **`stream_elas` anomalies use the day-weighted long-term mean** (exactly CAMELS `e_qp_sanka`; the first 0.2.0 draft used
+  the mean of annual means, ~3e-5 different), in the point estimate and the CI alike.
+- **Short series in `lyne_hollick`:** 30 days or fewer raises `ValueError` (as BFI.R); 31-364 days is computed with a
+  `WarmupBiasWarning` (the index is biased low by the start-up transient; `warmup_bias_disclosure(n)` gives the
+  record-able flag).
+- Leading/trailing water years of the requested window with no paired day are reported in `water_years_excluded`.
+- `reference_comparison` reads the used period and the precipitation completeness from the record, not from the caller:
+  new RR/elasticity blockers `water_years_excluded`, `precipitation_used_with_gaps` (a skipped leap-year Dec 31 --
+  `client_calendar_assumption` -- alone does not block) and `streamflow_period_differs`.
 - **`zero_q_freq` counts days with q <= 0** (was `== 0`; CAMELS `sum(q<=0)/length`).
 
 ### Added

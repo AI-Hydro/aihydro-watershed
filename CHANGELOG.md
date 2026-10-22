@@ -30,6 +30,11 @@ Evidence: `docs/vision-2040/evidence/signature-definitions-1` (scripts, CAMELS R
 - **`runoff_ratio` and `stream_elas` use complete water years only.** A water year counts when at least 95% of its days
   have both streamflow and precipitation (engineering choice, source to verify; `WATER_YEAR_MIN_PAIRED_FRACTION`).
   Incomplete years no longer enter either signature, so values can change where precipitation had holes.
+- **Confidence intervals are water-year grouped, and the daily block bootstrap is gone.** `_uncertainty` entries now
+  come from aihydro-core `grouped_bootstrap` (percentile, B = 2000, 90%, whole water years resampled), `method`
+  `bootstrap_group` (was `bootstrap_block`); the BFI entry no longer has `block_size`. Fewer than 10 water years: no
+  interval (`ci_refused: true`, `ci_low`/`ci_high` null, reason given) instead of a block-bootstrap number.
+  **Requires aihydro-core >= 0.2.11** (pin raised; CI needs core 0.2.11 on PyPI).
 - **`zero_q_freq` counts days with q <= 0** (was `== 0`; CAMELS `sum(q<=0)/length`).
 
 ### Added
@@ -43,6 +48,23 @@ Evidence: `docs/vision-2040/evidence/signature-definitions-1` (scripts, CAMELS R
   record; the reason lists the gaps and excluded years) and `rejected` for "no water year is complete".
   Consumers that test `status == "used"` must also accept `used_with_gaps`.
 - `baseflow.lyne_hollick_ladson2013`, `flow_duration.fdc_slope_camels_file`, `flow_duration.fdc_slope_sawicz2011`.
+- Grouped CIs for `q_mean`, `q_median`, `q5`, `q95`, `flow_variability`, `baseflow_index` (every valid streamflow day),
+  `runoff_ratio` (sum q / sum p over the paired days, complete water years) and `stream_elas` (indicative; anomalies
+  recomputed per resample, duplicated years contribute duplicated ratios; `n_years_near_zero_dP` reported and
+  `ci_degraded` set when any year has |dP/mean P| < 0.02, an engineering threshold). The point estimate of each
+  is computed from the same item set as its CI. Each entry carries core's `scope` (`varies` / `assumes` /
+  `excludes`), `ci_degraded`, `ci_reason`, `valid_frac`, `low_n` (< 30 groups), `coverage_note` (percentile intervals
+  under-cover at small group counts), `n_groups`, and `annual_lag1_autocorrelation` (between-year persistence the
+  bootstrap does not capture).
+- `_served_series` (dates, q_cms, qualifier and approval codes) so callers can bind validators to the series used.
+- `qualifier_exposure`: per signature, the share of estimated / other-qualified / provisional days among the days that
+  determine it (named in the output; tail and baseflow sets are engineering definitions). Present for fetched USGS
+  series only.
+- `signatures.comparison.reference_comparison(sigs, ref_row, area_used, area_ref, period_used, period_ref)`: pure
+  function; per signature flags `area_dependent` (with the value rescaled to the reference area), `definition_comparable`,
+  `forcing_differs`, `period_differs`, the resulting `blockers` and `can_claim_difference`; plus `climate_context`
+  (frac_snow, aridity, p_seasonality).
+- Water-year labels use aihydro-core `water_year` everywhere (one convention).
 - Test fixture `served_streamflow_01031500.csv` (USGS NWIS, public domain) with provenance.
 
 ### Fixed

@@ -38,7 +38,9 @@ from aihydro_watershed.signatures._streamflow_internal import (
     _fetch_streamflow_internal,
     _to_mm_per_day,
 )
-from aihydro_core.science.uncertainty import bootstrap_dict
+from aihydro_core.science import water_year as _core_water_year
+from aihydro_watershed.signatures import _uncertainty as _gu
+from aihydro_watershed.signatures import qualifiers as _qual
 from aihydro_watershed.signatures.flow_duration import fdc_slope_camels_file, fdc_slope_sawicz2011
 from aihydro_watershed.signatures.baseflow import (
     LH_N_REFLECT,
@@ -412,6 +414,8 @@ def extract_hydrological_signatures(
 
         _uncertainty: dict = {}
         _stream_digest: dict | None = None
+        _qual_exposure: dict | None = None
+        _served: dict | None = None
         if streamflow_result is None or len(streamflow_result.get("q_cms", [])) < 365:
             log.warning("Insufficient streamflow data for gauge %s", gauge_id)
             sigs = _get_default_hydrology()
@@ -498,29 +502,20 @@ def extract_hydrological_signatures(
                 gauge_id or "none",
                 q_cms_series is not None,
             )
-            # Bootstrap CIs for scalar metrics that are IID-bootstrappable.
-            # Uses block bootstrap (temporal autocorrelation in streamflow).
+            # Confidence intervals: whole water years resampled (aihydro-core grouped_bootstrap).
+            # Each carries its machine-readable scope; flow statistics and BFI use every valid
+            # streamflow day, runoff_ratio / stream_elas the paired days of the complete water
+            # years (the very set their point estimates came from).
             try:
-                q_arr = q_mm_day.dropna().values
-                if len(q_arr) >= 30:
-                    def _mean(x): return float(np.mean(x))
-                    def _median(x): return float(np.median(x))
-                    # CAMELS: q5 / q95 are the 5% / 95% flow quantiles (low / high flow).
-                    def _q5(x): return float(np.quantile(x, 0.05))
-                    def _q95(x): return float(np.quantile(x, 0.95))
-                    def _cv(x): return float(np.std(x) / np.mean(x)) if np.mean(x) > 0 else float("nan")
-                    _fns = {
-                        "q_mean": _mean,
-                        "q_median": _median,
-                        "q5": _q5,
-                        "q95": _q95,
-                        "flow_variability": _cv,
-                    }
-                    _u = bootstrap_dict(_fns, q_arr, use_block=True, n=500, ci=0.90)
-                    _uncertainty = {k: dict(v) for k, v in _u.items()}
-                    _uncertainty.update(_baseflow_index_uncertainty(q_arr))
+                _uncertainty = _grouped_cis(q_mm_day, _wbd)
             except Exception as _ue:
                 log.warning("signatures: uncertainty estimation failed (non-fatal): %s", _ue)
+            _flags_df = streamflow_result.get("flags") if isinstance(streamflow_result, dict) else None
+            try:
+                _qual_exposure = _qual.qualifier_exposure(q_mm_day, _flags_df)
+                _served = _qual.served_series(q_cms, _flags_df)
+            except Exception as _qe:
+                log.warning("signatures: qualifier exposure failed (non-fatal): %s", _qe)
 
         # Ensure all values are JSON-serializable Python floats
         clean = {k: (float(v) if v is not None and np.isfinite(float(v)) else None)
@@ -528,6 +523,15 @@ def extract_hydrological_signatures(
         if _uncertainty:
             clean["_uncertainty"] = _uncertainty
         clean["_streamflow_source"] = _source
+        # The served daily series (dates, m3/s, qualifier / approval codes) the signatures were
+        # computed from, so a caller can bind validators to THIS series instead of whatever sits in
+        # a session slot. Underscore key: the tools layer retains it as a file and pops it.
+        if _served is not None:
+            clean["_served_series"] = _served
+        # Share of estimated / ice-affected / provisional days among the days that determine each
+        # signature. Plain key (survives the tools layer's "_" drop).
+        if _qual_exposure is not None:
+            clean["qualifier_exposure"] = _qual_exposure
         # Marks q5/q95 as CAMELS non-exceedance quantiles. Deliberately NOT
         # underscore-prefixed: the tools layer drops "_" keys before sealing, and
         # this one must reach the sealed record. Absent on results computed before
@@ -1430,39 +1434,56 @@ def _baseflow_index(q_series: pd.Series) -> float:
     return float(max(0.0, min(1.0, float(np.sum(bf[ok])) / den)))
 
 
-BFI_BOOTSTRAP_BLOCK_DAYS = 365
+def _bfi_items(q_series: pd.Series):
+    """``(bf, q, dates)``: paired baseflow / flow (mm/day) on the days that have a baseflow value,
+    filter applied once to the observed daily series. ``None`` if there is none."""
+    ser = q_series.sort_index() if isinstance(q_series.index, pd.DatetimeIndex) else q_series
+    if isinstance(ser.index, pd.DatetimeIndex):
+        ser = ser.resample("D").asfreq()
+        dates = pd.DatetimeIndex(ser.index).tz_localize(None) if ser.index.tz is not None else ser.index
+    else:
+        return None
+    x = ser.to_numpy(dtype=float)
+    bf = _lyne_hollick_baseflow(
+        x, alpha=BASEFLOW_SEPARATION_PARAMS["alpha"], passes=BASEFLOW_SEPARATION_PARAMS["passes"])
+    ok = np.isfinite(bf) & np.isfinite(x)
+    if not ok.any():
+        return None
+    return bf[ok], x[ok], dates[ok]
 
 
-def _baseflow_index_uncertainty(q: np.ndarray, n: int = 500, ci: float = 0.90) -> Dict[str, dict]:
-    """Moving-block bootstrap CI for the baseflow index.
+def _baseflow_index_uncertainty(q_series: pd.Series) -> Dict[str, dict]:
+    """Water-year grouped percentile CI for the baseflow index.
 
-    The Lyne-Hollick filter is applied ONCE to the observed series (exactly as
-    for the reported point value). Blocks of paired (baseflow, flow) days are
-    then resampled and the index re-evaluated as ``sum(b) / sum(q)``.
-    Re-running the filter on a spliced resample is deliberately avoided: every
-    splice is an artificial step change that the filter reads as quick flow,
-    which biases bootstrap BFI low. Consequence: the interval reflects
-    sampling variability of the ratio over a ~annual-block dependence
-    structure; it does NOT include filter-state/parameter uncertainty or
-    observation (rating-curve) error.
+    The Lyne-Hollick filter is applied ONCE to the observed series (exactly as for the reported
+    point value); water years of paired (baseflow, flow) days are then resampled and the index
+    re-evaluated as ``sum(b) / sum(q)``. Re-running the filter on a spliced resample is
+    deliberately avoided: every splice is an artificial step that the filter reads as quick flow.
+    The interval excludes filter-state / parameter uncertainty and observation (rating) error.
+    Returns ``{}`` when the series is too short for any interval.
     """
-    if q.size < 2 * BFI_BOOTSTRAP_BLOCK_DAYS:
+    items = _bfi_items(q_series)
+    if items is None or float(np.sum(items[1])) <= 0:
         return {}
-    bf = _lyne_hollick_baseflow(q, alpha=BASEFLOW_SEPARATION_PARAMS["alpha"],
-                                passes=BASEFLOW_SEPARATION_PARAMS["passes"])
-    if not np.isfinite(bf).all() or float(np.sum(q)) <= 0:
-        return {}
+    bf, x, dates = items
+    return _gu.baseflow_index_ci(bf, x, dates)
 
-    def _bfi(idx: np.ndarray) -> float:
-        i = idx.astype(int)
-        return float(np.sum(bf[i]) / np.sum(q[i]))
 
-    res = bootstrap_dict({"baseflow_index": _bfi}, np.arange(q.size, dtype=float),
-                         use_block=True, block_size=BFI_BOOTSTRAP_BLOCK_DAYS, n=n, ci=ci)
-    out = {k: dict(v) for k, v in res.items()}
-    for v in out.values():
-        v.setdefault("block_size", BFI_BOOTSTRAP_BLOCK_DAYS)
-        v["scope"] = "sampling_variability_of_ratio; excludes filter and observation uncertainty"
+def _grouped_cis(q_mm_day: pd.Series, wbd: Optional[dict]) -> Dict[str, dict]:
+    """All grouped CIs of one signatures run (see ``_uncertainty``)."""
+    out: Dict[str, dict] = {}
+    qs = q_mm_day.dropna()
+    if len(qs) < 30 or not isinstance(qs.index, pd.DatetimeIndex):
+        return out
+    dates = pd.DatetimeIndex(qs.index).tz_localize(None) if qs.index.tz is not None else qs.index
+    out.update(_gu.flow_statistic_cis(qs.to_numpy(dtype=float), dates))
+    out.update(_baseflow_index_uncertainty(q_mm_day))
+    if wbd and wbd.get("q_used") is not None and np.isfinite(wbd["values"]["runoff_ratio"]):
+        qu, pu = wbd["q_used"], wbd["p_used"]
+        out.update(_gu.water_balance_cis(
+            qu.to_numpy(dtype=float), pu.to_numpy(dtype=float), pd.DatetimeIndex(qu.index),
+            with_elasticity=bool(np.isfinite(wbd["values"]["stream_elas"]))
+            or len(wbd.get("water_years_used") or []) >= 3))
     return out
 
 
@@ -1491,7 +1512,13 @@ def _align_daily(
 
 
 def _year_series(dti: pd.DatetimeIndex, hydro_year_start_month: int = 10) -> np.ndarray:
-    """Compute hydrologic year ID for each date."""
+    """Hydrologic (water) year label of each date: the calendar year in which the year ends.
+
+    Start month 10 (the default and the only one the signatures use) is aihydro-core's
+    ``water_year``, the platform's single convention (USGS: 1 Oct starts the year; labelled by
+    its end year)."""
+    if hydro_year_start_month == 10:
+        return _core_water_year(dti)
     return dti.year + (dti.month >= hydro_year_start_month).astype(int)
 
 

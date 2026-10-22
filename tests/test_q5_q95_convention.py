@@ -54,8 +54,9 @@ def test_proof1_served_csv_reproduces_camels_orientation():
 
 
 def test_extract_signatures_carries_orientation_marker_and_bootstrap_matches(monkeypatch):
-    days = pd.date_range("2000-01-01", periods=800, freq="D")
-    q_cms = pd.Series(np.random.default_rng(3).lognormal(1.0, 0.8, size=800), index=days)
+    # 12+ water years: the grouped (water-year) bootstrap refuses to report an interval from < 10.
+    days = pd.date_range("2000-10-01", periods=12 * 365, freq="D")
+    q_cms = pd.Series(np.random.default_rng(3).lognormal(1.0, 0.8, size=len(days)), index=days)
     monkeypatch.setattr(
         sig, "_fetch_precipitation_data_bygeom",
         lambda *a, **k: pd.Series(2.0, index=days),

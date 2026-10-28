@@ -25,7 +25,9 @@ AREA = 2258.5163954900077
 POLY = {"type": "Polygon", "coordinates": [[[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]]]}
 
 # proof-1 recorded == pinned recompute (precipitation skipped)
-PROOF1 = {"baseflow_index": 0.5853970180143581, "high_q_freq": 6.1, "q_mean": 1.6947786854267857,
+# baseflow_index: 0.5853970180143581 before watershed 0.2.0; the Ladson 2013 kernel gives 0.5852258906480455
+# (CAMELS v1.2: 0.585225955779508; evidence/signature-definitions-1).
+PROOF1 = {"baseflow_index": 0.5852258906480455, "high_q_freq": 6.1, "q_mean": 1.6947786854267857,
           "high_q_dur": 8.714285714285714, "low_q_freq": 41.35, "hfd_mean": 207.25}
 # proof-1's q came through aihydro-data's rounded constant 0.028316847; the adapter uses the
 # exact 0.028316846592 -> every value scales by exactly this ratio (relative 1.44e-8).

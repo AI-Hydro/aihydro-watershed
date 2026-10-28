@@ -64,15 +64,29 @@ def test_flow_duration_curve_requires_two_valid_values():
         raise AssertionError("too-short FDC input should raise ValueError")
 
 
-def test_lyne_hollick_baseflow_and_bfi_are_bounded():
+def test_lyne_hollick_refuses_series_not_longer_than_the_reflection():
+    # BFI.R stops for a series not longer than n.reflect (30 days); so do we.
     q = np.array([2.0, 3.0, 10.0, 8.0, 4.0, 3.0, 2.0])
+    with pytest.raises(ValueError, match="more than n_reflect"):
+        lyne_hollick(q)
 
-    baseflow = lyne_hollick(q)
-    bfi = compute_bfi(q, baseflow)
 
-    assert np.all(baseflow >= 0)
-    assert np.all(baseflow <= q)
-    assert 0.0 <= bfi <= 1.0
+def test_lyne_hollick_short_series_warns_and_is_bounded():
+    from aihydro_watershed.signatures.baseflow import (
+        WarmupBiasWarning, lyne_hollick_ladson2013, warmup_bias_disclosure)
+
+    rng = np.random.default_rng(0)
+    q = 2.0 + rng.gamma(1.0, 1.0, 100)
+    with pytest.warns(WarmupBiasWarning):
+        baseflow = lyne_hollick(q)
+    assert np.all(baseflow >= 0) and np.all(baseflow <= q)
+    assert 0.0 <= compute_bfi(q, baseflow) <= 1.0
+    # constant flow is all baseflow; at short n the start-up transient pulls the index below 1
+    const = np.full(60, 5.0)
+    with pytest.warns(WarmupBiasWarning):
+        assert compute_bfi(const, lyne_hollick_ladson2013(const)) < 1.0
+    assert warmup_bias_disclosure(100)["warmup_bias"] is True
+    assert warmup_bias_disclosure(30) is None and warmup_bias_disclosure(400) is None
 
 
 def test_extract_signatures_rejects_invalid_area_before_fetching():
@@ -118,18 +132,17 @@ def test_extract_signatures_records_baseflow_method_in_params():
     assert np.isfinite(result.data["baseflow_index"])
 
 
-def test_baseflow_index_has_block_bootstrap_ci_centred_on_reported_value():
+def test_baseflow_index_has_water_year_group_ci_centred_on_reported_value():
     import numpy as np
     import pandas as pd
 
     from aihydro_watershed.signatures.signatures import (
-        BFI_BOOTSTRAP_BLOCK_DAYS,
         _baseflow_index_uncertainty,
         compute_flow_stats_camels,
     )
 
     rng = np.random.default_rng(7)
-    days = 3 * 365
+    days = 12 * 365
     t = np.arange(days)
     seasonal = 2.0 + 1.5 * np.sin(2 * np.pi * t / 365.0)
     storms = rng.gamma(0.3, 4.0, size=days)
@@ -137,19 +150,22 @@ def test_baseflow_index_has_block_bootstrap_ci_centred_on_reported_value():
     q_mm_day = pd.Series(q, index=pd.date_range("2000-10-01", periods=days, freq="D"))
 
     point = compute_flow_stats_camels(q_mm_day)["baseflow_index"]
-    u = _baseflow_index_uncertainty(q_mm_day.dropna().values, n=200)["baseflow_index"]
+    u = _baseflow_index_uncertainty(q_mm_day)["baseflow_index"]
 
     assert u["value"] == pytest.approx(point, abs=1e-12)
     assert u["ci_low"] <= point <= u["ci_high"]
     assert 0.0 < u["ci_low"] < u["ci_high"] < 1.0
-    assert u["method"] == "bootstrap_block" and u["ci_level"] == 0.90
-    assert u["block_size"] == BFI_BOOTSTRAP_BLOCK_DAYS
-    assert "excludes filter" in u["scope"]
+    assert u["method"] == "bootstrap_group" and u["ci_level"] == 0.90
+    assert u["group"] == "water_year" and u["B"] >= 2000
+    assert "filter" in u["scope_note"] or "filter" in u["note"]
 
 
-def test_baseflow_index_ci_requires_two_blocks_of_data():
+def test_baseflow_index_ci_is_refused_with_too_few_water_years():
     import numpy as np
+    import pandas as pd
 
     from aihydro_watershed.signatures.signatures import _baseflow_index_uncertainty
 
-    assert _baseflow_index_uncertainty(np.ones(400)) == {}
+    q = pd.Series(np.ones(400), index=pd.date_range("2000-10-01", periods=400, freq="D"))
+    u = _baseflow_index_uncertainty(q)["baseflow_index"]
+    assert u["ci_refused"] and u["ci_low"] is None and "groups" in u["ci_reason"]

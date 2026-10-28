@@ -8,7 +8,7 @@ Public Functions
 ----------------
 extract_hydrological_signatures(gauge_id, watershed_geojson, area_km2,
                                 start_date, end_date) -> HydroResult
-    Extract 17 CAMELS-style hydrological signatures
+    Extract 18 CAMELS-style hydrological signatures (17 + slope_fdc_sawicz2011)
 
 compute_flow_stats_camels, compute_water_balance_camels,
 compute_event_stats_camels, compute_timing_stats_camels,
@@ -38,7 +38,15 @@ from aihydro_watershed.signatures._streamflow_internal import (
     _fetch_streamflow_internal,
     _to_mm_per_day,
 )
-from aihydro_core.science.uncertainty import bootstrap_dict
+from aihydro_core.science import water_year as _core_water_year
+from aihydro_watershed.signatures import _uncertainty as _gu
+from aihydro_watershed.signatures import qualifiers as _qual
+from aihydro_watershed.signatures.flow_duration import fdc_slope_camels_file, fdc_slope_sawicz2011
+from aihydro_watershed.signatures.baseflow import (
+    LH_N_REFLECT,
+    LYNE_HOLLICK_LADSON2013_REFERENCE,
+    lyne_hollick_ladson2013,
+)
 
 _SOURCES_NWIS = [
     DataSource(
@@ -123,9 +131,11 @@ _TOOL_PATH_SIGNATURES = "aihydro_watershed.signatures.signatures.extract_hydrolo
 # aihydro-lsh's AttrProvenance.quality_flags (see recipes/hydrology.py).
 # A SINGLE source of truth here means both call sites report the params the
 # filter was actually run with, not a second hardcoded copy that can drift.
-BASEFLOW_SEPARATION_METHOD = "lyne_hollick"
-BASEFLOW_SEPARATION_PARAMS = {"alpha": 0.925, "passes": 3}
-BASEFLOW_SEPARATION_REFERENCE = "Nathan & McMahon (1990); Ladson et al. (2013)"
+# Since 0.2.0 the kernel is baseflow.lyne_hollick_ladson2013 (the CAMELS recipe),
+# shared with separate_baseflow; the method name changed with it (BREAKING-VALUE).
+BASEFLOW_SEPARATION_METHOD = "lyne_hollick_ladson2013"
+BASEFLOW_SEPARATION_PARAMS = {"alpha": 0.925, "passes": 3, "n_reflect": LH_N_REFLECT}
+BASEFLOW_SEPARATION_REFERENCE = LYNE_HOLLICK_LADSON2013_REFERENCE
 BASEFLOW_METHOD_QUALITY_FLAG = (
     f"baseflow_method={BASEFLOW_SEPARATION_METHOD}"
     f"_alpha{BASEFLOW_SEPARATION_PARAMS['alpha']}"
@@ -154,14 +164,75 @@ SIGNATURE_UNITS: Dict[str, str] = {
     "high_q_dur": "days",               # mean run length of those days
     "low_q_freq": "days/year",          # days with q <= 0.2*mean, scaled to 365.25
     "low_q_dur": "days",
-    "zero_q_freq": "dimensionless",     # FRACTION of days with q == 0 (not days/year)
+    "zero_q_freq": "dimensionless",     # FRACTION of days with q <= 0 (not days/year)
     "flow_variability": "dimensionless",  # std/mean of q (coefficient of variation)
     "hfd_mean": "day of water year",    # days since 1 Oct (1 = 1 Oct) of the half-flow date
     "half_flow_date_std": "days",
-    # NATURAL log (np.log) over the 33-66% exceedance span, divided by 0.33. CAMELS' published
-    # slope_fdc follows a different convention (log base and/or percentile definition), so this
-    # value is not comparable to the CAMELS column; the reconciliation is tracked separately.
-    "slope_fdc": "dimensionless",       # (ln q33 - ln q66) / 0.33
+    # Since 0.2.0 the bare key is the CAMELS-US v1.2 *distributed* definition (mean-normalised,
+    # linear). The log-space Sawicz et al. (2011) value is slope_fdc_sawicz2011. See
+    # SIGNATURE_DEFINITIONS for the exact formula, quantile type, zero handling and source.
+    "slope_fdc": "dimensionless",       # (Q.66 - Q.33) / (mean(q) * 0.33)
+    "slope_fdc_sawicz2011": "dimensionless",  # (ln Q33exc - ln Q66exc) / 0.33, zeros dropped
+}
+
+# Machine-readable definition of every signature whose meaning is a choice, so a consumer can
+# tell whether two numbers with the same name are the same quantity. Plain key in the output
+# (`signature_definitions`), carried through the tools layer like `units`.
+_SLOPE_FDC_CAMELS_FILE_SOURCE = (
+    "CAMELS-US v1.2 distributed definition. Reproduces the file at <=2.3e-7 relative on 01013500 "
+    "and 01031500, and 9.7e-5 on 01516500. Its zero-structure prediction holds on all 671 basins. "
+    "Source: naddor/camels@88e7a0d2d2 hydro/hydro_signatures.R:97. It contradicts the log-space "
+    "definition in Addor et al. 2017 (text and Table 3). No erratum or release note found. Not "
+    "proven to be the script that produced the file."
+)
+SIGNATURE_DEFINITIONS: Dict[str, dict] = {
+    "slope_fdc": {
+        "formula": "(Q66 - Q33) / (mean(q) * 0.33), Q66 and Q33 the 66th and 33rd percentiles of q",
+        "quantile_type": "non-exceedance, linear interpolation (R type 7; numpy default)",
+        "zero_handling": "zero-flow days kept; defined only when mean(q) > 0",
+        "log_transform": False,
+        "source": _SLOPE_FDC_CAMELS_FILE_SOURCE,
+        "evidence": "docs/vision-2040/evidence/signature-definitions-1",
+        "comparable_to": "CAMELS-US v1.2 slope_fdc column only; not the Sawicz et al. (2011) signature "
+                         "and not necessarily the same quantity as 'slope_fdc' in other CAMELS datasets",
+    },
+    "slope_fdc_sawicz2011": {
+        "formula": "(ln Q33exc - ln Q66exc) / 0.33, Q33exc and Q66exc the flows exceeded 33% and 66% of the time",
+        "quantile_type": "exceedance points as non-exceedance quantiles 0.67 and 0.34, linear interpolation (type 7)",
+        "zero_handling": "zero-flow days dropped; needs >= 100 positive days",
+        "log_transform": True,
+        "source": "Sawicz et al. (2011), Catchment classification, HESS 15:2895 (the slope of the FDC "
+                  "between the 33rd and 66th exceedance percentiles, log space). This is the pre-0.2.0 "
+                  "aihydro 'slope_fdc' value. The Addor et al. (2017) text variant (ln, non-exceedance "
+                  ".66/.33, zeros kept) is a different number.",
+    },
+    "baseflow_index": {
+        "formula": "sum(baseflow) / sum(q)",
+        "method": BASEFLOW_SEPARATION_METHOD,
+        "parameters": dict(BASEFLOW_SEPARATION_PARAMS),
+        "zero_handling": "baseflow clipped at zero; quick flow subtracted only where positive; "
+                         "30-day reflection at both ends",
+        "source": BASEFLOW_SEPARATION_REFERENCE,
+        "evidence": "docs/vision-2040/evidence/signature-definitions-1 (CAMELS v1.2 reproduced to <=2e-6 relative)",
+    },
+    "q5": {"formula": "5% quantile of daily q (mm/day)", "quantile_type": "non-exceedance, type 7",
+           "source": "Addor et al. (2017) Table 3 (low flow)"},
+    "q95": {"formula": "95% quantile of daily q (mm/day)", "quantile_type": "non-exceedance, type 7",
+            "source": "Addor et al. (2017) Table 3 (high flow)"},
+    "high_q_freq": {"formula": "days with q > 9 * median(q), divided by available days, times 365.25",
+                    "units": "days/year", "source": "Addor et al. (2017) Table 3; naddor/camels"},
+    "low_q_freq": {"formula": "days with q <= 0.2 * mean(q), divided by available days, times 365.25",
+                   "units": "days/year", "source": "Addor et al. (2017) Table 3; naddor/camels"},
+    "zero_q_freq": {"formula": "days with q <= 0, divided by available days", "units": "fraction",
+                    "source": "naddor/camels compute_no_flow (sum(q<=0)/length)"},
+    "runoff_ratio": {"formula": "sum(q) / sum(p) over paired days of complete water years",
+                     "completeness": "a water year counts when >= 95% of its days have paired q and p "
+                                     "(engineering choice; source to verify)",
+                     "source": "Sankarasubramanian et al. (2001); naddor/camels comp_r_qp"},
+    "stream_elas": {"formula": "median over complete water years of (dQ/mean Q) / (dP/mean P), annual means "
+                               "minus the long-term day-weighted mean (CAMELS e_qp_sanka)",
+                    "completeness": "complete water years only (>= 95% paired days; engineering choice)",
+                    "source": "Sankarasubramanian et al. (2001); naddor/camels e_qp_sanka"},
 }
 
 STREAMFLOW_DIGEST_SCHEME = (
@@ -185,7 +256,6 @@ def _series_digest(ser: pd.Series) -> dict:
         "end": f"{idx.max():%Y-%m-%d}",
         "units": "m3/s",
     }
-warnings.filterwarnings('ignore')
 
 __all__ = [
     'extract_hydrological_signatures',
@@ -195,6 +265,8 @@ __all__ = [
     'compute_timing_stats_camels',
     'compute_slope_fdc_camels',
     'SIGNATURE_UNITS',
+    'SIGNATURE_DEFINITIONS',
+    'WATER_YEAR_MIN_PAIRED_FRACTION',
     'precipitation_problem',
     'RUNOFF_RATIO_PLAUSIBLE',
     'BASEFLOW_SEPARATION_METHOD',
@@ -221,7 +293,7 @@ def extract_hydrological_signatures(
     precipitation: str = "auto",
 ) -> HydroResult:
     """
-    Extract 17 CAMELS-style hydrological signatures for a watershed.
+    Extract 18 CAMELS-style hydrological signatures for a watershed (17 + ``slope_fdc_sawicz2011``).
 
     Parameters
     ----------
@@ -260,7 +332,8 @@ def extract_hydrological_signatures(
         (q5 / q95 = 5% / 95% flow quantiles, low / high flow, as in CAMELS),
         runoff_ratio, stream_elas, high_q_freq, high_q_dur,
         low_q_freq, low_q_dur, zero_q_freq, flow_variability,
-        hfd_mean, half_flow_date_std, slope_fdc
+        hfd_mean, half_flow_date_std, slope_fdc (CAMELS-US v1.2 definition since 0.2.0),
+        slope_fdc_sawicz2011 (log-space, the pre-0.2.0 slope_fdc)
 
     Raises
     ------
@@ -340,6 +413,8 @@ def extract_hydrological_signatures(
 
         _uncertainty: dict = {}
         _stream_digest: dict | None = None
+        _qual_exposure: dict | None = None
+        _served: dict | None = None
         if streamflow_result is None or len(streamflow_result.get("q_cms", [])) < 365:
             log.warning("Insufficient streamflow data for gauge %s", gauge_id)
             sigs = _get_default_hydrology()
@@ -388,10 +463,12 @@ def extract_hydrological_signatures(
             else:
                 _PRECIP_DIAG.d = {}
                 p_mm_day = _fetch_precipitation_data_bygeom(watershed_geom, start_date, end_date)
-                _precip_record = _precipitation_record(p_mm_day, getattr(_PRECIP_DIAG, "d", {}))
+                _precip_record = _precipitation_record(
+                    p_mm_day, getattr(_PRECIP_DIAG, "d", {}), window=(start_date, end_date))
 
-            _wb, _wb_reason = _water_balance(
-                q_mm_day, p_mm_day, _effective_units(_precip_record))
+            _wbd = _water_balance_detail(
+                q_mm_day, p_mm_day, _effective_units(_precip_record), window=(start_date, end_date))
+            _wb, _wb_reason = _wbd["values"], _wbd["reason"]
             sigs = {
                 **compute_flow_stats_camels(q_mm_day),
                 **_wb,
@@ -399,40 +476,45 @@ def extract_hydrological_signatures(
                 **compute_timing_stats_camels(q_mm_day),
                 **compute_slope_fdc_camels(q_mm_day),
             }
-            if _precip_record["status"] == "used" and _wb_reason:
+            if _precip_record["status"] == "used":
                 _precip_record.update(
-                    status="unusable",
-                    reason=f"water balance not computable: {_wb_reason}",
+                    water_years_used=_wbd["water_years_used"],
+                    water_years_excluded=_wbd["water_years_excluded"],
+                    n_paired_days_used=_wbd["n_paired_days_used"],
                 )
+                if _wb_reason and _wbd["reason_code"] in _COMPLETENESS_REASON_CODES:
+                    # Too little paired data to compute anything: refused, with the reason.
+                    _precip_record.update(status="rejected", reason=_wb_reason)
+                elif _wb_reason:
+                    _precip_record.update(
+                        status="unusable",
+                        reason=f"water balance not computable: {_wb_reason}",
+                    )
+                else:
+                    _note = _gap_note(_precip_record)
+                    if _note:
+                        # Computed, but not from a complete record: say so rather than "used".
+                        _precip_record.update(status="used_with_gaps", reason=_note)
             log.info(
                 "Extracted %d signatures (gauge=%s, preloaded_q=%s)",
                 len(sigs),
                 gauge_id or "none",
                 q_cms_series is not None,
             )
-            # Bootstrap CIs for scalar metrics that are IID-bootstrappable.
-            # Uses block bootstrap (temporal autocorrelation in streamflow).
+            # Confidence intervals: whole water years resampled (aihydro-core grouped_bootstrap).
+            # Each carries its machine-readable scope; flow statistics and BFI use every valid
+            # streamflow day, runoff_ratio / stream_elas the paired days of the complete water
+            # years (the very set their point estimates came from).
             try:
-                q_arr = q_mm_day.dropna().values
-                if len(q_arr) >= 30:
-                    def _mean(x): return float(np.mean(x))
-                    def _median(x): return float(np.median(x))
-                    # CAMELS: q5 / q95 are the 5% / 95% flow quantiles (low / high flow).
-                    def _q5(x): return float(np.quantile(x, 0.05))
-                    def _q95(x): return float(np.quantile(x, 0.95))
-                    def _cv(x): return float(np.std(x) / np.mean(x)) if np.mean(x) > 0 else float("nan")
-                    _fns = {
-                        "q_mean": _mean,
-                        "q_median": _median,
-                        "q5": _q5,
-                        "q95": _q95,
-                        "flow_variability": _cv,
-                    }
-                    _u = bootstrap_dict(_fns, q_arr, use_block=True, n=500, ci=0.90)
-                    _uncertainty = {k: dict(v) for k, v in _u.items()}
-                    _uncertainty.update(_baseflow_index_uncertainty(q_arr))
+                _uncertainty = _grouped_cis(q_mm_day, _wbd)
             except Exception as _ue:
                 log.warning("signatures: uncertainty estimation failed (non-fatal): %s", _ue)
+            _flags_df = streamflow_result.get("flags") if isinstance(streamflow_result, dict) else None
+            try:
+                _qual_exposure = _qual.qualifier_exposure(q_mm_day, _flags_df)
+                _served = _qual.served_series(q_cms, _flags_df)
+            except Exception as _qe:
+                log.warning("signatures: qualifier exposure failed (non-fatal): %s", _qe)
 
         # Ensure all values are JSON-serializable Python floats
         clean = {k: (float(v) if v is not None and np.isfinite(float(v)) else None)
@@ -440,6 +522,15 @@ def extract_hydrological_signatures(
         if _uncertainty:
             clean["_uncertainty"] = _uncertainty
         clean["_streamflow_source"] = _source
+        # The served daily series (dates, m3/s, qualifier / approval codes) the signatures were
+        # computed from, so a caller can bind validators to THIS series instead of whatever sits in
+        # a session slot. Underscore key: the tools layer retains it as a file and pops it.
+        if _served is not None:
+            clean["_served_series"] = _served
+        # Share of estimated / ice-affected / provisional days among the days that determine each
+        # signature. Plain key (survives the tools layer's "_" drop).
+        if _qual_exposure is not None:
+            clean["qualifier_exposure"] = _qual_exposure
         # Marks q5/q95 as CAMELS non-exceedance quantiles. Deliberately NOT
         # underscore-prefixed: the tools layer drops "_" keys before sealing, and
         # this one must reach the sealed record. Absent on results computed before
@@ -451,6 +542,10 @@ def extract_hydrological_signatures(
         # not underscore-prefixed: the tools layer drops "_" keys before sealing, and the
         # unit must reach the sealed record the model and the auditor read.
         clean["units"] = {k: SIGNATURE_UNITS[k] for k in clean if k in SIGNATURE_UNITS}
+        # What each signature MEANS (formula, quantile type, zero handling, source), for the
+        # signatures whose definition is a choice. Plain key, same reason as `units`.
+        clean["signature_definitions"] = {
+            k: SIGNATURE_DEFINITIONS[k] for k in clean if k in SIGNATURE_DEFINITIONS}
         # Digest of the streamflow series used (precipitation already carries one).
         if _stream_digest:
             clean["streamflow_digest"] = _stream_digest["digest"]
@@ -517,6 +612,7 @@ def extract_hydrological_signatures(
             data={
                 **_get_default_hydrology(),
                 "units": dict(SIGNATURE_UNITS),
+                "signature_definitions": dict(SIGNATURE_DEFINITIONS),
                 "_streamflow_source": {"product": None, "observation": "none"},
                 "_precipitation": _precipitation_record(
                     None, {"reason": "not attempted: signature extraction failed"},
@@ -601,10 +697,9 @@ def compute_flow_stats_camels(q_mm_day: pd.Series) -> Dict[str, float]:
     q95 = float(np.quantile(q, 0.95))
     q_med = float(np.median(q))
 
-    # Baseflow index using Lyne-Hollick filter
-    bf = _lyne_hollick_baseflow(q, alpha=0.925, passes=3)
-    bfi = float(np.nansum(bf) / np.nansum(q)) if np.nansum(q) > 0 else np.nan
-    bfi = max(0.0, min(1.0, bfi)) if np.isfinite(bfi) else np.nan
+    # Baseflow index: canonical Lyne-Hollick / Ladson (2013) kernel, run on the daily axis so
+    # calendar gaps are segment boundaries (not spliced).
+    bfi = _baseflow_index(q_mm_day)
 
     log.debug(f"Flow stats: mean={q_mean:.2f}, BFI={bfi:.2f}")
 
@@ -635,10 +730,84 @@ def compute_water_balance_camels(
     return _water_balance(q_mm_day, p_mm_day, p_units)[0]
 
 
+#: A water year takes part in the water balance when at least this fraction of its days have BOTH
+#: q and p. ENGINEERING CHOICE; SOURCE TO VERIFY: the CAMELS code takes a required `tol` argument
+#: with no default and applies `length(x) > (1 - tol) * 365`; the value used for v1.2 is unverified.
+WATER_YEAR_MIN_PAIRED_FRACTION = _gu.COMPLETE_GROUP_FRACTION   # 0.95
+
+#: reason_code values of a water-balance refusal that are completeness failures (status "rejected").
+_COMPLETENESS_REASON_CODES = ("overlap", "no_complete_water_year")
+
+
+def _water_year_days(label: int) -> int:
+    """Days in the water year labelled ``label`` (1 Oct label-1 .. 30 Sep label)."""
+    return int((pd.Timestamp(year=label, month=10, day=1) - pd.Timestamp(year=label - 1, month=10, day=1)).days)
+
+
+def complete_water_years(
+    q_aln: pd.Series, p_aln: pd.Series, min_fraction: float = WATER_YEAR_MIN_PAIRED_FRACTION,
+    window=None,
+) -> Tuple[list, list]:
+    """Split the water years of two already-aligned daily series into usable and excluded.
+
+    Both series must share an index of days on which q AND p are finite (see :func:`_align_daily`).
+    A water year (1 Oct - 30 Sep, labelled by the calendar year in which it ends) is usable when
+    ``paired days / days in the water year >= min_fraction``. Returns ``(used, excluded)``;
+    ``used`` is a sorted list of labels, ``excluded`` a list of
+    ``{"water_year", "paired_days", "expected_days", "fraction"}``.
+
+    ``window``: the requested ``(start, end)``. Every water year the window touches is examined,
+    so a leading or trailing year with no paired day at all is reported as excluded rather than
+    silently absent; without it, the span of the paired days is used.
+    """
+    del p_aln  # the alignment already guarantees one p per q; kept for call-site symmetry
+    labels = _year_series(pd.DatetimeIndex(q_aln.index))
+    counts = pd.Series(1, index=labels).groupby(level=0).sum()
+    # Every water year between the first and last paired day is examined, including one with
+    # no paired day at all (a missing year must be reported, not silently absent).
+    lo, hi = int(counts.index.min()), int(counts.index.max())
+    if window and window[0] and window[1]:
+        lo = min(lo, int(_year_series(pd.DatetimeIndex([pd.Timestamp(window[0])]))[0]))
+        hi = max(hi, int(_year_series(pd.DatetimeIndex([pd.Timestamp(window[1])]))[0]))
+    counts = counts.reindex(range(lo, hi + 1), fill_value=0)
+    used, excluded = [], []
+    for wy, n in counts.items():
+        expected = _water_year_days(int(wy))
+        frac = float(n) / expected
+        if frac >= min_fraction - 1e-12:
+            used.append(int(wy))
+        else:
+            excluded.append({"water_year": int(wy), "paired_days": int(n),
+                             "expected_days": expected, "fraction": round(frac, 4)})
+    return used, excluded
+
+
 def _water_balance(q_mm_day, p_mm_day, p_units=None):
     """``(signatures dict, reason | None)``; reason is set when NaN was returned
     because an input or the result was unusable."""
+    det = _water_balance_detail(q_mm_day, p_mm_day, p_units)
+    return det["values"], det["reason"]
+
+
+def _water_balance_detail(q_mm_day, p_mm_day, p_units=None,
+                          min_fraction: float = WATER_YEAR_MIN_PAIRED_FRACTION, window=None) -> dict:
+    """Water balance on COMPLETE water years only, with the bookkeeping behind it.
+
+    Returns a dict: ``values`` (``runoff_ratio``, ``stream_elas``), ``reason`` (None when
+    computed), ``reason_code`` (``precipitation_unusable`` | ``overlap`` |
+    ``no_complete_water_year`` | ``not_finite`` | ``implausible`` | None), ``water_years_used``,
+    ``water_years_excluded`` (see :func:`complete_water_years`), ``n_paired_days_used``,
+    and ``q_used`` / ``p_used`` (the paired series restricted to the usable years; what the point
+    estimates were computed from, and what any CI must resample).
+    """
     nan = {'runoff_ratio': np.nan, 'stream_elas': np.nan}
+    det: dict = {"values": nan, "reason": None, "reason_code": None, "water_years_used": [],
+                 "water_years_excluded": [], "n_paired_days_used": 0, "q_used": None, "p_used": None,
+                 "min_paired_fraction": min_fraction}
+
+    def _fail(reason: str, code: str) -> dict:
+        det.update(reason=reason, reason_code=code)
+        return det
 
     # A precipitation series that is absent, empty, all-zero, negative,
     # non-finite, in the wrong unit or outside physical bounds is never
@@ -648,23 +817,37 @@ def _water_balance(q_mm_day, p_mm_day, p_units=None):
     problem = precipitation_problem(p_mm_day, p_units)
     if problem is not None:
         log.warning("Precipitation unusable for water balance (%s)", problem)
-        return nan, problem
+        return _fail(problem, "precipitation_unusable")
 
     q_aln, p_aln = _align_daily(q_mm_day, p_mm_day, min_days=365)
 
     if q_aln is None:
         log.warning("Failed to align Q and P time series")
-        return nan, "precipitation and streamflow overlap < 365 days"
+        return _fail("precipitation and streamflow overlap < 365 days", "overlap")
 
     problem = precipitation_problem(p_aln, p_units)
     if problem is not None:
         log.warning("Aligned precipitation unusable for water balance (%s)", problem)
-        return nan, problem
+        return _fail(problem, "precipitation_unusable")
+
+    # Only complete water years take part: a year with a hole in P (or Q) would bias both the
+    # ratio and the annual anomalies. The point estimates and any CI use this same set of years.
+    used, excluded = complete_water_years(q_aln, p_aln, min_fraction, window)
+    det.update(water_years_used=used, water_years_excluded=excluded)
+    if not used:
+        return _fail(
+            f"no water year has >= {min_fraction:.0%} of its days with both streamflow and "
+            f"precipitation ({len(excluded)} water years examined; engineering choice, source to verify)",
+            "no_complete_water_year")
+    hy_all = _year_series(pd.DatetimeIndex(q_aln.index))
+    keep = np.isin(hy_all, used)
+    q_aln, p_aln = q_aln[keep], p_aln[keep]
+    det.update(q_used=q_aln, p_used=p_aln, n_paired_days_used=int(len(q_aln)))
 
     mean_q, mean_p = float(q_aln.mean()), float(p_aln.mean())
     rr = mean_q / mean_p
     if not np.isfinite(rr):
-        return nan, "runoff ratio is not finite"
+        return _fail("runoff ratio is not finite", "not_finite")
     # An impossible Q/P is never sealed, whatever produced it (wrong unit,
     # fill value, broken streamflow). Same bound the water-balance validator uses.
     if not (RUNOFF_RATIO_PLAUSIBLE[0] <= rr <= RUNOFF_RATIO_PLAUSIBLE[1]):
@@ -672,29 +855,28 @@ def _water_balance(q_mm_day, p_mm_day, p_units=None):
                   f"[{RUNOFF_RATIO_PLAUSIBLE[0]:g}, {RUNOFF_RATIO_PLAUSIBLE[1]:g}] "
                   "(engineering bound; source to verify)")
         log.warning("Water balance rejected: %s", reason)
-        return nan, reason
+        return _fail(reason, "implausible")
 
     # Streamflow elasticity
-    hy = _year_series(q_aln.index, hydro_year_start_month=10)
-    mp = pd.Series(p_aln.values, index=hy).groupby(level=0).mean()
-    mq = pd.Series(q_aln.values, index=hy).groupby(level=0).mean()
+    elas = _stream_elasticity(q_aln.values, p_aln.values, pd.DatetimeIndex(q_aln.index))
+    det["values"] = {'runoff_ratio': rr, 'stream_elas': elas}
+    log.debug("Water balance: RR=%.2f, elasticity=%s", rr, elas)
+    return det
 
+
+def _stream_elasticity(q: np.ndarray, p: np.ndarray, dates: pd.DatetimeIndex) -> float:
+    """Median of (dQ/mean Q)/(dP/mean P) over water years (Sankarasubramanian et al. 2001;
+    CAMELS ``e_qp_sanka``). Anomalies are annual means minus the long-term DAY-weighted mean of
+    the paired days (as CAMELS; before this revision it was the mean of the annual means, which
+    differs by at most ~3e-5 in tests). NaN with fewer than 3 years."""
+    hy = _year_series(dates)
+    mp = pd.Series(p, index=hy).groupby(level=0).mean()
+    mq = pd.Series(q, index=hy).groupby(level=0).mean()
     if len(mp) < 3 or len(mq) < 3:
         log.warning("Insufficient years for elasticity calculation")
-        return {'runoff_ratio': rr, 'stream_elas': np.nan}, None
-
-    mp_tot, mq_tot = float(mp.mean()), float(mq.mean())
-    dp, dq = (mp - mp_tot), (mq - mq_tot)
-
-    with np.errstate(divide='ignore', invalid='ignore'):
-        ratio = (dq / mq_tot) / (dp / mp_tot)
-
-    ratio = ratio.replace([np.inf, -np.inf], np.nan).dropna()
-    elas = float(np.median(ratio)) if len(ratio) > 0 else np.nan
-
-    log.debug(f"Water balance: RR={rr:.2f}, elasticity={elas:.2f}")
-
-    return {'runoff_ratio': rr, 'stream_elas': elas}, None
+        return float("nan")
+    # Same code path as the CI (day-weighted long-term mean, as CAMELS e_qp_sanka).
+    return _gu.elasticity_point(np.asarray(q, dtype=float), np.asarray(p, dtype=float), dates)
 
 
 def compute_event_stats_camels(q_mm_day: pd.Series) -> Dict[str, float]:
@@ -745,8 +927,8 @@ def compute_event_stats_camels(q_mm_day: pd.Series) -> Dict[str, float]:
     low_dur = _consecutive_event_lengths(low_mask)
     low_dur_mean = float(np.mean(low_dur)) if low_dur else np.nan
 
-    # Zero flow frequency
-    zero_freq = float(np.sum(q == 0) / len(q))
+    # Zero flow frequency (fraction of days with q <= 0)
+    zero_freq = float(np.sum(q <= 0) / len(q))   # CAMELS compute_no_flow: sum(q<=0)/length
 
     # Flow variability (coefficient of variation)
     flow_var = float(np.std(q) / mean_q)
@@ -801,31 +983,35 @@ def compute_timing_stats_camels(q_mm_day: pd.Series) -> Dict[str, float]:
 
 def compute_slope_fdc_camels(q_mm_day: pd.Series) -> Dict[str, float]:
     """
-    Compute slope of flow duration curve between 33% and 66% exceedance.
+    Slope of the mid-section of the flow duration curve, in two definitions.
 
-    Following Sawicz et al. (2011).
-    Returns: slope_fdc
+    ``slope_fdc`` (CAMELS-US v1.2 distributed definition, since 0.2.0)::
+
+        (Q66 - Q33) / (mean(q) * 0.33)
+
+    with Q33, Q66 the 33rd / 66th percentiles (non-exceedance, type 7), zero-flow days
+    kept, defined only when ``mean(q) > 0``. No logarithm. See ``SIGNATURE_DEFINITIONS``
+    for the source and what it does and does not establish.
+
+    ``slope_fdc_sawicz2011``: the log-space value ``(ln Q33exc - ln Q66exc) / 0.33`` of
+    Sawicz et al. (2011) (zeros dropped), which was this function's ``slope_fdc`` before 0.2.0.
+
+    Returns: slope_fdc, slope_fdc_sawicz2011
     """
 
-    q = q_mm_day.dropna().values
-    q = q[q > 0]
+    q = q_mm_day.dropna().values.astype(float)
+    out = {'slope_fdc': np.nan, 'slope_fdc_sawicz2011': np.nan}
 
     if len(q) < 100:
-        log.warning(f"Insufficient positive discharge values for FDC: {len(q)}")
-        return {'slope_fdc': np.nan}
+        log.warning(f"Insufficient discharge values for FDC: {len(q)}")
+        return out
 
-    q33 = np.quantile(q, 0.67)  # 33% exceedance
-    q66 = np.quantile(q, 0.34)  # 66% exceedance
-
-    if q66 <= 0 or q33 <= 0:
-        log.warning("Invalid quantiles for FDC slope")
-        return {'slope_fdc': np.nan}
-
-    slope = (np.log(q33) - np.log(q66)) / (0.66 - 0.33)
-
-    log.debug(f"FDC slope: {slope:.3f}")
-
-    return {'slope_fdc': float(slope)}
+    if not float(np.mean(q)) > 0:
+        log.warning("Mean discharge <= 0: slope_fdc undefined")
+    out['slope_fdc'] = fdc_slope_camels_file(q)
+    out['slope_fdc_sawicz2011'] = fdc_slope_sawicz2011(q)
+    log.debug("FDC slope: %s", out)
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -959,6 +1145,7 @@ def _fetch_precipitation_data_bygeom(
         diag["product"] = getattr(result, "product", None)
         diag["units"] = getattr(result, "units", None) or None
         diag["units_declared"] = getattr(result, "units_declared", None) or None
+        diag["data_coverage"] = _data_coverage(result)
         s.attrs["product"] = diag["product"]
         log.info(
             "Retrieved %d days of precipitation (product=%s)",
@@ -969,6 +1156,28 @@ def _fetch_precipitation_data_bygeom(
         log.warning("Precipitation fetch skipped (runoff_ratio/stream_elas will be NaN): %s", e)
         diag["reason"] = f"no precipitation source returned data: {type(e).__name__}: {e}"
         return None
+
+
+def _data_coverage(result) -> Optional[dict]:
+    """Coverage fields the data layer reported for the fetch, when it reports them.
+
+    aihydro-data >= 0.2.5 sets ``missing_ranges`` (run-compressed ``{start, end, days, reason}``
+    with reason codes such as ``client_calendar_assumption``, ``chunk_mismatch``,
+    ``absent_in_response``) and ``days_missing_internal``. Older versions only know the head and
+    tail. Only well-formed values are taken; anything else is ignored, never guessed.
+    """
+    cov: dict = {}
+    for k in ("coverage_complete", "days_missing_head", "days_missing_tail", "days_missing_internal"):
+        v = getattr(result, k, None)
+        if isinstance(v, (bool, int)):
+            cov[k] = v
+    mr = getattr(result, "missing_ranges", None)
+    if isinstance(mr, (list, tuple)):
+        ok = [dict(r) for r in mr
+              if isinstance(r, dict) and r.get("start") and r.get("end") and r.get("reason")]
+        if ok:
+            cov["missing_ranges"] = ok
+    return cov or None
 
 
 # ---------------------------------------------------------------------------
@@ -1058,9 +1267,68 @@ def _finite_or_none(x) -> Optional[float]:
     return x if np.isfinite(x) else None
 
 
-def _precipitation_record(p, diag: dict, attempted: bool = True) -> dict:
+#: Longest ``missing_ranges`` list recorded; beyond it the list is cut and flagged.
+MISSING_RANGES_CAP = 100
+ABSENT_IN_RESPONSE = "absent_in_response"
+
+
+def _runs(days: pd.DatetimeIndex, reasons: list) -> list:
+    """Run-compress per-day ``(day, reason)`` into ``{start, end, days, reason}`` ranges."""
+    out: list = []
+    for d, r in zip(days, reasons):
+        if out and out[-1]["reason"] == r and (d - pd.Timestamp(out[-1]["end"])).days == 1:
+            out[-1]["end"] = f"{d:%Y-%m-%d}"
+            out[-1]["days"] += 1
+        else:
+            out.append({"start": f"{d:%Y-%m-%d}", "end": f"{d:%Y-%m-%d}", "days": 1, "reason": r})
+    return out
+
+
+def _completeness(valid_days: pd.DatetimeIndex, window, data_cov: Optional[dict]) -> dict:
+    """``n_expected_days``, ``completeness`` and ``missing_ranges`` of a daily series.
+
+    ``window`` is the requested ``(start, end)`` (inclusive); when absent, the span of the series
+    itself, so internal gaps are still found. Reason codes come from the data layer when it
+    supplied a range covering the day (``data_coverage.missing_ranges``); a gap it did not
+    explain is ``absent_in_response``. This function never names a cause it was not told.
+    """
+    vd = pd.DatetimeIndex(valid_days).normalize()
+    if window and window[0] and window[1]:
+        lo, hi = pd.Timestamp(window[0]), pd.Timestamp(window[1])
+    else:
+        lo, hi = vd.min(), vd.max()
+    expected = pd.date_range(lo, hi, freq="D")
+    present = expected.intersection(vd.unique())
+    missing = expected.difference(present)
+    given = (data_cov or {}).get("missing_ranges") or []
+
+    def _why(d: pd.Timestamp) -> str:
+        for r in given:
+            try:
+                if pd.Timestamp(r["start"]) <= d <= pd.Timestamp(r["end"]):
+                    return str(r["reason"])
+            except Exception:  # noqa: BLE001  (a malformed range from upstream is ignored)
+                continue
+        return ABSENT_IN_RESPONSE
+
+    ranges = _runs(missing, [_why(d) for d in missing])
+    return {
+        "n_expected_days": int(len(expected)),
+        "n_valid_expected_days": int(len(present)),
+        "completeness": round(len(present) / len(expected), 6) if len(expected) else None,
+        "missing_ranges": ranges[:MISSING_RANGES_CAP],
+        "missing_ranges_truncated": len(ranges) > MISSING_RANGES_CAP,
+        "missing_range_reasons_from": "aihydro-data" if given else "aihydro-watershed (computed from the series; cause unknown)",
+    }
+
+
+def _precipitation_record(p, diag: dict, attempted: bool = True, window=None) -> dict:
     """Provenance of the precipitation the water-balance signatures used (or
-    did not use). ``status``: used | rejected | unavailable | not_attempted."""
+    did not use). ``status``: used | used_with_gaps | rejected | unavailable | not_attempted
+    (| unusable, set by the caller when the water balance itself was not computable).
+
+    ``window``: the requested ``(start, end)``; completeness is measured against it
+    (``n_expected_days``, ``completeness``, ``missing_ranges``)."""
     import hashlib
     rec: dict = {
         "status": "not_attempted", "product": diag.get("product"),
@@ -1070,6 +1338,14 @@ def _precipitation_record(p, diag: dict, attempted: bool = True) -> dict:
         "mean_mm_day": None, "min_mm_day": None, "max_mm_day": None,
         "reason": diag.get("reason"),
         "dependent_signatures": list(PRECIP_DEPENDENT_SIGNATURES),
+        "n_expected_days": None, "completeness": None, "missing_ranges": [],
+        "data_coverage": diag.get("data_coverage"),
+        "water_year_rule": {
+            "min_paired_fraction": WATER_YEAR_MIN_PAIRED_FRACTION,
+            "basis": "engineering choice; source to verify",
+            "applies_to": list(PRECIP_DEPENDENT_SIGNATURES),
+        },
+        "water_years_used": [], "water_years_excluded": [], "n_paired_days_used": 0,
     }
     if not attempted:
         return rec
@@ -1092,6 +1368,9 @@ def _precipitation_record(p, diag: dict, attempted: bool = True) -> dict:
         max_mm_day=_finite_or_none(finite.max()) if len(finite) else None,
         product=rec["product"] or (getattr(p, "attrs", None) or {}).get("product"),
     )
+    valid_idx = pd.DatetimeIndex(idx[np.isfinite(vals)])
+    if len(valid_idx):
+        rec.update(_completeness(valid_idx, window, rec["data_coverage"]))
     problem = precipitation_problem(p, _effective_units(rec))
     if problem is None:
         rec["status"], rec["reason"] = "used", None
@@ -1100,87 +1379,116 @@ def _precipitation_record(p, diag: dict, attempted: bool = True) -> dict:
     return rec
 
 
+def _gap_note(rec: dict) -> Optional[str]:
+    """One-line disclosure of the gaps in a usable precipitation record, or None when there are none."""
+    ex = rec.get("water_years_excluded") or []
+    rngs = rec.get("missing_ranges") or []
+    comp = rec.get("completeness")
+    if not ex and not rngs and (comp is None or comp >= 1.0):
+        return None
+    parts = []
+    if comp is not None and comp < 1.0:
+        parts.append(f"precipitation covers {comp:.1%} of the {rec.get('n_expected_days')} requested days "
+                     f"({sum(r['days'] for r in rngs)} days in {len(rngs)} missing range(s)"
+                     + (", list truncated" if rec.get("missing_ranges_truncated") else "") + ")")
+    if ex:
+        parts.append("water years excluded as incomplete: "
+                     + ", ".join(f"WY{e['water_year']} ({e['fraction']:.0%})" for e in ex))
+    return "; ".join(parts) + (f"; runoff_ratio and stream_elas use {len(rec.get('water_years_used') or [])}"
+                               " complete water years only")
+
+
 def _lyne_hollick_baseflow(
     q: np.ndarray,
     alpha: float = 0.925,
     passes: int = 3,
 ) -> np.ndarray:
-    """Lyne-Hollick recursive digital filter for baseflow separation.
+    """Baseflow series of ``q`` by the canonical Lyne-Hollick kernel.
 
-    Each sweep estimates the quick-flow (high-frequency) component
+    Since 0.2.0 this is :func:`aihydro_watershed.signatures.baseflow.lyne_hollick_ladson2013`
+    (alpha 0.925, forward-backward-forward, 30-day reflection, quick flow subtracted only where
+    positive, final clip at zero), i.e. the filter CAMELS applied (``comp_i_bf_landson``). The
+    baseflow index is ``sum(baseflow) / sum(q)``.
 
-        f(t) = alpha * f(t-1) + (1 + alpha) / 2 * (y(t) - y(t-1))
-
-    and the baseflow is the residual ``b(t) = y(t) - f(t)``, clamped to
-    ``0 <= b <= y``. Following Nathan and McMahon (1990) and Ladson et al.
-    (2013, Australian Journal of Water Resources 17(1)), the filter is applied
-    in ``passes`` alternating single-direction sweeps (forward, backward,
-    forward, ...), with the baseflow output of each sweep used as the input to
-    the next. The function returns the BASEFLOW series, so the baseflow index
-    is ``sum(baseflow) / sum(q)``.
-
-    Note: a previous implementation returned the quick-flow component ``f``
-    rather than the baseflow ``q - f``, which inverted the baseflow index
-    (reporting the quick-flow fraction). This version returns baseflow.
+    Before 0.2.0 each sweep clamped ``0 <= b <= y`` and there was no reflection; that variant
+    read +3e-4 relative to CAMELS on the verified basins, this one reproduces them to <= 2e-6
+    (docs/vision-2040/evidence/signature-definitions-1).
     """
-
+    q = np.asarray(q, dtype=float)
     if q.size == 0 or np.all(~np.isfinite(q)):
         return np.full_like(q, np.nan, dtype=float)
-
-    def _sweep(y: np.ndarray, forward: bool) -> np.ndarray:
-        n = len(y)
-        f = np.zeros(n, dtype=float)        # quick-flow component
-        b = y.copy().astype(float)          # baseflow component (boundary: b = y)
-        order = range(1, n) if forward else range(n - 2, -1, -1)
-        prev = 0 if forward else n - 1
-        for t in order:
-            f[t] = alpha * f[prev] + (1.0 + alpha) / 2.0 * (y[t] - y[prev])
-            b[t] = y[t] - f[t] if f[t] > 0.0 else y[t]
-            # baseflow cannot be negative or exceed total flow
-            b[t] = min(max(b[t], 0.0), y[t])
-            prev = t
-        return b
-
-    bf = q.copy().astype(float)
-    for i in range(passes):
-        bf = _sweep(bf, forward=(i % 2 == 0))
-
-    return np.clip(bf, 0, q)
+    return np.clip(lyne_hollick_ladson2013(q, alpha=alpha, passes=passes), 0, q)
 
 
-BFI_BOOTSTRAP_BLOCK_DAYS = 365
+def _daily_values(q_series: pd.Series) -> np.ndarray:
+    """Values on the full daily axis (NaN for calendar gaps) when the index is a DatetimeIndex."""
+    if isinstance(q_series.index, pd.DatetimeIndex):
+        return q_series.sort_index().resample("D").asfreq().to_numpy(dtype=float)
+    return q_series.to_numpy(dtype=float)
 
 
-def _baseflow_index_uncertainty(q: np.ndarray, n: int = 500, ci: float = 0.90) -> Dict[str, dict]:
-    """Moving-block bootstrap CI for the baseflow index.
+def _baseflow_index(q_series: pd.Series) -> float:
+    """Baseflow index of a daily series; calendar gaps are segment boundaries, not spliced."""
+    x = _daily_values(q_series)
+    bf = _lyne_hollick_baseflow(
+        x, alpha=BASEFLOW_SEPARATION_PARAMS["alpha"], passes=BASEFLOW_SEPARATION_PARAMS["passes"])
+    ok = np.isfinite(bf) & np.isfinite(x)
+    den = float(np.sum(x[ok]))
+    if not ok.any() or den <= 0:
+        return float("nan")
+    return float(max(0.0, min(1.0, float(np.sum(bf[ok])) / den)))
 
-    The Lyne-Hollick filter is applied ONCE to the observed series (exactly as
-    for the reported point value). Blocks of paired (baseflow, flow) days are
-    then resampled and the index re-evaluated as ``sum(b) / sum(q)``.
-    Re-running the filter on a spliced resample is deliberately avoided: every
-    splice is an artificial step change that the filter reads as quick flow,
-    which biases bootstrap BFI low. Consequence: the interval reflects
-    sampling variability of the ratio over a ~annual-block dependence
-    structure; it does NOT include filter-state/parameter uncertainty or
-    observation (rating-curve) error.
+
+def _bfi_items(q_series: pd.Series):
+    """``(bf, q, dates)``: paired baseflow / flow (mm/day) on the days that have a baseflow value,
+    filter applied once to the observed daily series. ``None`` if there is none."""
+    ser = q_series.sort_index() if isinstance(q_series.index, pd.DatetimeIndex) else q_series
+    if isinstance(ser.index, pd.DatetimeIndex):
+        ser = ser.resample("D").asfreq()
+        dates = pd.DatetimeIndex(ser.index).tz_localize(None) if ser.index.tz is not None else ser.index
+    else:
+        return None
+    x = ser.to_numpy(dtype=float)
+    bf = _lyne_hollick_baseflow(
+        x, alpha=BASEFLOW_SEPARATION_PARAMS["alpha"], passes=BASEFLOW_SEPARATION_PARAMS["passes"])
+    ok = np.isfinite(bf) & np.isfinite(x)
+    if not ok.any():
+        return None
+    return bf[ok], x[ok], dates[ok]
+
+
+def _baseflow_index_uncertainty(q_series: pd.Series) -> Dict[str, dict]:
+    """Water-year grouped percentile CI for the baseflow index.
+
+    The Lyne-Hollick filter is applied ONCE to the observed series (exactly as for the reported
+    point value); water years of paired (baseflow, flow) days are then resampled and the index
+    re-evaluated as ``sum(b) / sum(q)``. Re-running the filter on a spliced resample is
+    deliberately avoided: every splice is an artificial step that the filter reads as quick flow.
+    The interval excludes filter-state / parameter uncertainty and observation (rating) error.
+    Returns ``{}`` when the series is too short for any interval.
     """
-    if q.size < 2 * BFI_BOOTSTRAP_BLOCK_DAYS:
+    items = _bfi_items(q_series)
+    if items is None or float(np.sum(items[1])) <= 0:
         return {}
-    bf = _lyne_hollick_baseflow(q, alpha=BASEFLOW_SEPARATION_PARAMS["alpha"],
-                                passes=BASEFLOW_SEPARATION_PARAMS["passes"])
-    if not np.isfinite(bf).all() or float(np.sum(q)) <= 0:
-        return {}
+    bf, x, dates = items
+    return _gu.baseflow_index_ci(bf, x, dates)
 
-    def _bfi(idx: np.ndarray) -> float:
-        i = idx.astype(int)
-        return float(np.sum(bf[i]) / np.sum(q[i]))
 
-    res = bootstrap_dict({"baseflow_index": _bfi}, np.arange(q.size, dtype=float),
-                         use_block=True, block_size=BFI_BOOTSTRAP_BLOCK_DAYS, n=n, ci=ci)
-    out = {k: dict(v) for k, v in res.items()}
-    for v in out.values():
-        v.setdefault("block_size", BFI_BOOTSTRAP_BLOCK_DAYS)
-        v["scope"] = "sampling_variability_of_ratio; excludes filter and observation uncertainty"
+def _grouped_cis(q_mm_day: pd.Series, wbd: Optional[dict]) -> Dict[str, dict]:
+    """All grouped CIs of one signatures run (see ``_uncertainty``)."""
+    out: Dict[str, dict] = {}
+    qs = q_mm_day.dropna()
+    if len(qs) < 30 or not isinstance(qs.index, pd.DatetimeIndex):
+        return out
+    dates = pd.DatetimeIndex(qs.index).tz_localize(None) if qs.index.tz is not None else qs.index
+    out.update(_gu.flow_statistic_cis(qs.to_numpy(dtype=float), dates))
+    out.update(_baseflow_index_uncertainty(q_mm_day))
+    if wbd and wbd.get("q_used") is not None and np.isfinite(wbd["values"]["runoff_ratio"]):
+        qu, pu = wbd["q_used"], wbd["p_used"]
+        out.update(_gu.water_balance_cis(
+            qu.to_numpy(dtype=float), pu.to_numpy(dtype=float), pd.DatetimeIndex(qu.index),
+            with_elasticity=bool(np.isfinite(wbd["values"]["stream_elas"]))
+            or len(wbd.get("water_years_used") or []) >= 3))
     return out
 
 
@@ -1209,7 +1517,13 @@ def _align_daily(
 
 
 def _year_series(dti: pd.DatetimeIndex, hydro_year_start_month: int = 10) -> np.ndarray:
-    """Compute hydrologic year ID for each date."""
+    """Hydrologic (water) year label of each date: the calendar year in which the year ends.
+
+    Start month 10 (the default and the only one the signatures use) is aihydro-core's
+    ``water_year``, the platform's single convention (USGS: 1 Oct starts the year; labelled by
+    its end year)."""
+    if hydro_year_start_month == 10:
+        return _core_water_year(dti)
     return dti.year + (dti.month >= hydro_year_start_month).astype(int)
 
 
@@ -1248,4 +1562,5 @@ def _get_default_hydrology() -> Dict[str, float]:
         'hfd_mean': np.nan,
         'half_flow_date_std': np.nan,
         'slope_fdc': np.nan,
+        'slope_fdc_sawicz2011': np.nan,
     }

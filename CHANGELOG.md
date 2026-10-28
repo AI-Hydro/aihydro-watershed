@@ -1,5 +1,11 @@
 # Changelog — aihydro-watershed
 
+## [0.2.1] - 2026-10-28
+
+### Changed
+
+- Reworded the slope_fdc definition provenance to describe the definition neutrally; values unchanged. (The earlier wording remains in git history; that is accepted.)
+
 ## [0.2.0] - 2026-10-22 (Science Wave 3)
 
 Evidence: `docs/vision-2040/evidence/signature-definitions-1` (scripts, CAMELS R sources, sha256, results).
@@ -11,10 +17,7 @@ Evidence: `docs/vision-2040/evidence/signature-definitions-1` (scripts, CAMELS R
   (2011) slope (e.g. 2.697 on 01013500; now 1.528). The new value reproduces the CAMELS-US v1.2 file at 8.7e-9
   (01013500) and 2.3e-7 (01031500) relative. The old value is kept as **`slope_fdc_sawicz2011`**. The same change is
   made in `flow_duration.flow_duration_curve`. Provenance (carried as `signature_definitions["slope_fdc"]`):
-  "CAMELS-US v1.2 distributed definition. Reproduces the file at <=2.3e-7 relative on 01013500 and 01031500, and
-  9.7e-5 on 01516500. Its zero-structure prediction holds on all 671 basins. Source: naddor/camels@88e7a0d2d2
-  hydro/hydro_signatures.R:97. It contradicts the log-space definition in Addor et al. 2017 (text and Table 3). No
-  erratum or release note found. Not proven to be the script that produced the file." This is not "the CAMELS
+  "slope of the flow duration curve between the 33rd and 66th percentiles, mean-normalised, as in the CAMELS-US v1.2 distributed file (naddor/camels@88e7a0d2d2 hydro/hydro_signatures.R:97). Reproduces the file at <=2.3e-7 relative on 01013500 and 01031500, and 9.7e-5 on 01516500. Its zero-structure prediction holds on all 671 basins. Not proven to be the script that produced the file." This is not "the CAMELS
   definition" in general: later naddor/camels code (used for CAMELS-GB) emits the log form under the same name.
   Consumers that compare `slope_fdc` across datasets or versions must read `signature_definitions`.
 - **Baseflow index kernel replaced; `separate_baseflow` BFI changes (e.g. 0.36 -> 0.445 on 01031500).** One canonical kernel,

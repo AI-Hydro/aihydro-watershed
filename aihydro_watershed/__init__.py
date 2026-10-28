@@ -35,7 +35,7 @@ from __future__ import annotations
 
 from aihydro_watershed._numpy_compat import ensure_in1d as ensure_numpy_compat
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 
 # pysheds (<= 0.5) calls np.in1d, missing from NumPy 2.4+. Applying the idempotent
 # shim at import time covers every process that imports this package, including

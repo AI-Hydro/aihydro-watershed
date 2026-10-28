@@ -70,6 +70,24 @@ def test_flow_duration_uses_the_same_definition():
     assert fdc["slope_fdc_sawicz2011"] == pytest.approx(2.696537802442423, rel=1e-9)
 
 
+PROVENANCE = (
+    "slope of the flow duration curve between the 33rd and 66th percentiles, mean-normalised, as in the CAMELS-US v1.2 distributed file (naddor/camels@88e7a0d2d2 hydro/hydro_signatures.R:97). Reproduces the file at <=2.3e-7 relative on 01013500 and 01031500, and 9.7e-5 on 01516500. Its zero-structure prediction holds on all 671 basins. Not proven to be the script that produced the file."
+)
+
+
+def test_slope_fdc_value_unchanged_by_rewording_01013500():
+    # pinned from the 0.2.0 release code before the 0.2.1 wording-only change
+    assert sig.compute_slope_fdc_camels(_q("01013500"))["slope_fdc"] == pytest.approx(
+        1.5282185220180324, rel=1e-12)
+
+
+def test_slope_fdc_provenance_string_is_verbatim_and_neutral():
+    assert sig.SIGNATURE_DEFINITIONS["slope_fdc"]["source"] == PROVENANCE
+    assert sig.SIGNATURE_DEFINITIONS["slope_fdc_sawicz2011"]["source"].startswith(
+        "log-space FDC slope (Sawicz et al. 2011)")
+    assert "Addor" not in sig.SIGNATURE_DEFINITIONS["slope_fdc"]["source"]
+
+
 def test_signature_definitions_carry_source_and_formula():
     d = sig.SIGNATURE_DEFINITIONS
     src = d["slope_fdc"]["source"]

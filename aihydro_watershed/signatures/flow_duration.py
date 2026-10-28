@@ -24,7 +24,7 @@ quantile (low flow) and ``q95`` the 95% quantile (high flow), i.e. CAMELS ``q5``
 equals the exceedance flow ``Q95`` and CAMELS ``q95`` equals ``Q5`` here.
 
 The mid-section ``slope_fdc`` matches ``signatures.compute_slope_fdc_camels`` (one kernel,
-defined here): since 0.2.0 it is the CAMELS-US v1.2 distributed definition
+defined here): since 0.2.0 it is the CAMELS attributes v2.0 distributed definition
 ``(Q66 - Q33) / (mean(q) * 0.33)`` (non-exceedance percentiles, type 7, zeros kept, no
 logarithm; naddor/camels@88e7a0d2d2 ``hydro_signatures.R:97``). The log-space value of Sawicz
 et al. (2011), which was ``slope_fdc`` before 0.2.0, is ``slope_fdc_sawicz2011``.
@@ -69,7 +69,7 @@ def flow_duration_curve(
                             rank / (n + 1).
         sorted_flows      : list[float]  — flows sorted descending (the FDC y-axis).
         percentile_flows  : dict[str, float]  — {"Q5": ..., "Q50": ..., "Q95": ...}.
-        slope_fdc         : float  — (Q66 - Q33) / (mean(q) * 0.33), the CAMELS-US v1.2 definition.
+        slope_fdc         : float  — (Q66 - Q33) / (mean(q) * 0.33), the CAMELS attributes v2.0 definition.
         slope_fdc_sawicz2011 : float — log-FDC slope between 33% and 66% exceedance (Sawicz 2011).
         n_days            : int
     """
@@ -110,7 +110,7 @@ def flow_duration_curve(
 
 
 def fdc_slope_camels_file(arr: np.ndarray) -> float:
-    """``(Q66 - Q33) / (mean(q) * 0.33)``: CAMELS-US v1.2 distributed ``slope_fdc``.
+    """``(Q66 - Q33) / (mean(q) * 0.33)``: CAMELS attributes v2.0 distributed ``slope_fdc``.
 
     Non-exceedance percentiles with linear interpolation (R type 7 / numpy default); zero-flow
     days kept; NaN unless there are >= 100 finite values and ``mean(q) > 0``.
@@ -143,7 +143,7 @@ def fdc_slope_sawicz2011(arr: np.ndarray) -> float:
 
 
 def _fdc_slope(arr: np.ndarray) -> float:
-    """Kept name: the CAMELS-US v1.2 ``slope_fdc`` (see :func:`fdc_slope_camels_file`)."""
+    """Kept name: the CAMELS attributes v2.0 ``slope_fdc`` (see :func:`fdc_slope_camels_file`)."""
     return fdc_slope_camels_file(arr)
 
 

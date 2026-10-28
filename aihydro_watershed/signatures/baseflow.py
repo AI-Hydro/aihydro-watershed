@@ -92,7 +92,7 @@ def lyne_hollick_ladson2013(
 ) -> np.ndarray:
     """Canonical Lyne-Hollick baseflow filter (Ladson et al. 2013; CAMELS ``comp_i_bf_landson``).
 
-    Reproduces the CAMELS v1.2 baseflow index to <= 2e-6 relative on 01013500 and 01031500
+    Reproduces the CAMELS attributes v2.0 baseflow index to <= 2e-6 relative on 01013500 and 01031500
     (docs/vision-2040/evidence/signature-definitions-1).
 
     Recipe: alpha 0.925; ``passes`` alternating sweeps forward, backward, forward, ...; the

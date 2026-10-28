@@ -1,6 +1,6 @@
 """watershed 0.2.0: slope_fdc definition, canonical BFI kernel, precipitation completeness.
 
-Locked references: CAMELS v1.2 ``camels_hydro.txt`` (Zenodo 15529996, md5-verified; values quoted
+Locked references: CAMELS attributes v2.0 ``camels_hydro.txt`` (Zenodo 15529996, md5-verified; values quoted
 in docs/vision-2040/evidence/signature-definitions-1). Streamflow fixtures are USGS NWIS daily
 series, WY1990-2009, 7305 days. Offline.
 """
@@ -71,7 +71,7 @@ def test_flow_duration_uses_the_same_definition():
 
 
 PROVENANCE = (
-    "slope of the flow duration curve between the 33rd and 66th percentiles, mean-normalised, as in the CAMELS-US v1.2 distributed file (naddor/camels@88e7a0d2d2 hydro/hydro_signatures.R:97). Reproduces the file at <=2.3e-7 relative on 01013500 and 01031500, and 9.7e-5 on 01516500. Its zero-structure prediction holds on all 671 basins. Not proven to be the script that produced the file."
+    "slope of the flow duration curve between the 33rd and 66th percentiles, mean-normalised, as in the CAMELS attributes v2.0 distributed file `camels_hydro.txt` (naddor/camels@88e7a0d2d2 hydro/hydro_signatures.R:97). Reproduces the file at <=2.3e-7 relative on 01013500 and 01031500, and 9.7e-5 on 01516500. Its zero-structure prediction holds on all 671 basins. Not proven to be the script that produced the file."
 )
 
 
@@ -96,7 +96,7 @@ def test_signature_definitions_carry_source_and_formula():
     assert d["slope_fdc"]["log_transform"] is False and d["slope_fdc_sawicz2011"]["log_transform"] is True
     for k in ("formula", "quantile_type", "zero_handling"):
         assert d["slope_fdc"][k]
-    assert "CAMELS-US v1.2 slope_fdc column only" in d["slope_fdc"]["comparable_to"]
+    assert "CAMELS attributes v2.0 slope_fdc column only" in d["slope_fdc"]["comparable_to"]
     assert sig.SIGNATURE_UNITS["high_q_freq"] == sig.SIGNATURE_UNITS["low_q_freq"] == "days/year"
 
 

@@ -22,7 +22,7 @@ SQUARE = {"type": "Polygon", "coordinates": [[[-77.5, 39.2], [-77.4, 39.2], [-77
                                                [-77.5, 39.3], [-77.5, 39.2]]]}
 START, END = "1989-10-01", "2009-09-30"
 
-# camels_hydro.txt / camels_clim.txt / camels_topo.txt rows (CAMELS v1.2, Zenodo 15529996)
+# camels_hydro.txt / camels_clim.txt / camels_topo.txt rows (CAMELS attributes v2.0, Zenodo 15529996)
 REF_01013500 = {"q_mean": 1.69915450753356, "runoff_ratio": 0.543437466590222, "slope_fdc": 1.52821853538976,
                 "baseflow_index": 0.585225955779508, "stream_elas": 1.84532416164806,
                 "q5": 0.241106126475711, "q95": 6.37302139711473, "high_q_freq": 6.1,

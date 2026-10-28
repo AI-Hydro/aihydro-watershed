@@ -168,7 +168,7 @@ SIGNATURE_UNITS: Dict[str, str] = {
     "flow_variability": "dimensionless",  # std/mean of q (coefficient of variation)
     "hfd_mean": "day of water year",    # days since 1 Oct (1 = 1 Oct) of the half-flow date
     "half_flow_date_std": "days",
-    # Since 0.2.0 the bare key is the CAMELS-US v1.2 *distributed* definition (mean-normalised,
+    # Since 0.2.0 the bare key is the CAMELS attributes v2.0 *distributed* definition (mean-normalised,
     # linear). The log-space Sawicz et al. (2011) value is slope_fdc_sawicz2011. See
     # SIGNATURE_DEFINITIONS for the exact formula, quantile type, zero handling and source.
     "slope_fdc": "dimensionless",       # (Q.66 - Q.33) / (mean(q) * 0.33)
@@ -180,7 +180,7 @@ SIGNATURE_UNITS: Dict[str, str] = {
 # (`signature_definitions`), carried through the tools layer like `units`.
 _SLOPE_FDC_CAMELS_FILE_SOURCE = (
     "slope of the flow duration curve between the 33rd and 66th percentiles, mean-normalised, as in "
-    "the CAMELS-US v1.2 distributed file (naddor/camels@88e7a0d2d2 hydro/hydro_signatures.R:97). "
+    "the CAMELS attributes v2.0 distributed file `camels_hydro.txt` (naddor/camels@88e7a0d2d2 hydro/hydro_signatures.R:97). "
     "Reproduces the file at <=2.3e-7 relative on 01013500 and 01031500, and 9.7e-5 on 01516500. "
     "Its zero-structure prediction holds on all 671 basins. Not proven to be the script that "
     "produced the file."
@@ -193,7 +193,7 @@ SIGNATURE_DEFINITIONS: Dict[str, dict] = {
         "log_transform": False,
         "source": _SLOPE_FDC_CAMELS_FILE_SOURCE,
         "evidence": "docs/vision-2040/evidence/signature-definitions-1",
-        "comparable_to": "CAMELS-US v1.2 slope_fdc column only; not the Sawicz et al. (2011) signature "
+        "comparable_to": "CAMELS attributes v2.0 slope_fdc column only; not the Sawicz et al. (2011) signature "
                          "and not necessarily the same quantity as 'slope_fdc' in other CAMELS datasets",
     },
     "slope_fdc_sawicz2011": {
@@ -210,7 +210,7 @@ SIGNATURE_DEFINITIONS: Dict[str, dict] = {
         "zero_handling": "baseflow clipped at zero; quick flow subtracted only where positive; "
                          "30-day reflection at both ends",
         "source": BASEFLOW_SEPARATION_REFERENCE,
-        "evidence": "docs/vision-2040/evidence/signature-definitions-1 (CAMELS v1.2 reproduced to <=2e-6 relative)",
+        "evidence": "docs/vision-2040/evidence/signature-definitions-1 (CAMELS attributes v2.0 reproduced to <=2e-6 relative)",
     },
     "q5": {"formula": "5% quantile of daily q (mm/day)", "quantile_type": "non-exceedance, type 7",
            "source": "Addor et al. (2017) Table 3 (low flow)"},
@@ -329,7 +329,7 @@ def extract_hydrological_signatures(
         (q5 / q95 = 5% / 95% flow quantiles, low / high flow, as in CAMELS),
         runoff_ratio, stream_elas, high_q_freq, high_q_dur,
         low_q_freq, low_q_dur, zero_q_freq, flow_variability,
-        hfd_mean, half_flow_date_std, slope_fdc (CAMELS-US v1.2 definition since 0.2.0),
+        hfd_mean, half_flow_date_std, slope_fdc (CAMELS attributes v2.0 definition since 0.2.0),
         slope_fdc_sawicz2011 (log-space, the pre-0.2.0 slope_fdc)
 
     Raises
@@ -982,7 +982,7 @@ def compute_slope_fdc_camels(q_mm_day: pd.Series) -> Dict[str, float]:
     """
     Slope of the mid-section of the flow duration curve, in two definitions.
 
-    ``slope_fdc`` (CAMELS-US v1.2 distributed definition, since 0.2.0)::
+    ``slope_fdc`` (CAMELS attributes v2.0 distributed definition, since 0.2.0)::
 
         (Q66 - Q33) / (mean(q) * 0.33)
 

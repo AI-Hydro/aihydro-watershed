@@ -12,5 +12,5 @@
   cache entry `b9d1de8bf04e2bf6f8b463ac` (NWIS_STREAMFLOW, fetched 2026-06-17); byte-identical copy of
   `docs/vision-2040/evidence/signature-definitions-1/data/q_01031500_wy1990_2009.csv`
   (sha256 `e01921cdd60e1750e3d27323aea4f8dc32632976c68fd0e961a3b64a444cbccc`, provenance JSON beside it).
-  Used by `tests/test_signature_definitions_020.py`; CAMELS v1.2 values for this gauge are
+  Used by `tests/test_signature_definitions_020.py`; CAMELS attributes v2.0 values for this gauge are
   slope_fdc = 1.49401920331253 and baseflow_index = 0.445090526012048.

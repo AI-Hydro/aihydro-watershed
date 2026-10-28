@@ -10,7 +10,7 @@ other than the catchment:
 * ``definition_comparable`` - ``slope_fdc`` and ``baseflow_index`` changed definition in 0.2.0;
   a result without ``signature_definitions`` predates that and is not known to be comparable.
 * ``forcing_differs`` - ``runoff_ratio`` and ``stream_elas`` depend on the precipitation product;
-  CAMELS-US v1.2 uses Daymet.
+  CAMELS attributes v2.0 uses Daymet.
 * ``period_differs`` - CAMELS signatures are WY1990-2009. The period actually used is READ FROM THE
   RECORD (``streamflow_start`` / ``streamflow_end``); a caller's ``period_used`` is only a fallback
   and a disagreement with the record is reported, never trusted.
@@ -56,11 +56,11 @@ def _definition_status(sigs: Mapping, name: str) -> tuple:
     defs = sigs.get("signature_definitions")
     if not isinstance(defs, Mapping) or name not in defs:
         return None, ("no signature_definitions in this result (computed before watershed 0.2.0 or "
-                      "by another tool): comparability with the CAMELS-US v1.2 definition is unknown")
+                      "by another tool): comparability with the CAMELS attributes v2.0 definition is unknown")
     if name == "slope_fdc":
         comp = isinstance(defs["slope_fdc"], Mapping) and not defs["slope_fdc"].get("log_transform", True)
-        return comp, ("CAMELS-US v1.2 distributed definition (mean-normalised linear)" if comp
-                      else "slope_fdc here is a log-space definition; the CAMELS-US v1.2 column is not")
+        return comp, ("CAMELS attributes v2.0 distributed definition (mean-normalised linear)" if comp
+                      else "slope_fdc here is a log-space definition; the CAMELS attributes v2.0 column is not")
     if name == "baseflow_index":
         method = (defs["baseflow_index"] or {}).get("method") if isinstance(defs["baseflow_index"], Mapping) else None
         comp = method == "lyne_hollick_ladson2013"
@@ -181,7 +181,7 @@ def reference_comparison(
             "period_used_caller_mismatch": caller_mismatch,
             "period_ref": list(period_ref) if period_ref else None, "period_differs": period_differs,
             "precipitation_product": product, "forcing_ref": forcing_ref, "forcing_differs": forcing_differs,
-            "note": ("CAMELS-US v1.2 signatures are WY1990-2009 from Daymet forcing and area_gages2. "
+            "note": ("CAMELS attributes v2.0 signatures are WY1990-2009 from Daymet forcing and area_gages2. "
                      "A signature with blockers cannot support a 'differs from CAMELS' (or 'agrees with "
                      "CAMELS') claim: the sampling-only confidence intervals exclude forcing product, "
                      "area, definition and period."),

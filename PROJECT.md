@@ -1,7 +1,7 @@
 # aihydro-watershed
 
 **Current state (2026-10-22):** 0.2.0 on branch `vision2040/w3-watershed` (draft PR #4, not merged,
-not published). `slope_fdc` is the CAMELS-US v1.2 distributed definition (log value kept as
+not published). `slope_fdc` is the CAMELS attributes v2.0 distributed definition (log value kept as
 `slope_fdc_sawicz2011`); one canonical Lyne-Hollick/Ladson 2013 BFI kernel serves signatures and
 `separate_baseflow`; `runoff_ratio`/`stream_elas` use complete water years only; confidence intervals are
 water-year grouped (needs aihydro-core >= 0.2.11 and aihydro-data >= 0.2.5, neither published yet, so CI

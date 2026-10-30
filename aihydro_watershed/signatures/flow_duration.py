@@ -151,20 +151,34 @@ def seven_q10(
     q: Sequence[float],
     dates: Optional[Sequence] = None,
     min_years: int = 10,
+    year_type: str = "climatic_year",
+    min_fraction: Optional[float] = None,
 ) -> Dict[str, object]:
     """Compute the 7Q10 design low flow (annual 7-day min, 10-yr recurrence).
+
+    The year is the **climatic year** (1 Apr - 31 Mar) by default, the USGS
+    convention for annual low flows (SIR 2008-5126 section 3); it is labelled by
+    the calendar year in which it BEGINS (our labelling choice). A low-flow
+    season that straddles 31 Dec is therefore one year, as it would not be in a
+    calendar or water year. ``year_type`` may be 'water_year' or 'calendar_year'.
+
+    The 7-day mean is trailing and is formed on the calendar-day axis: a window
+    that contains a missing day is NOT evaluated (no splicing across a gap). A
+    year with less than ``min_fraction`` (default 0.95) of its days observed is
+    excluded and listed in ``excluded_years``.
 
     Parameters
     ----------
     q : sequence of float
         Daily mean discharge (m³/s).
     dates : sequence of datetime-like, optional
-        One date per discharge value. Required to group into water years. If
-        omitted, the series is chunked into consecutive 365-day blocks as a
-        fallback (less accurate; a warning is logged).
+        One date per discharge value. Required to group into years; if omitted,
+        the series is chunked into consecutive 365-day blocks as a fallback
+        (a warning is logged; no gap or completeness handling is possible).
     min_years : int
         Minimum number of annual minima required to fit (default 10). Below this,
         7Q10 is returned as None with a reason.
+    year_type, min_fraction : see above.
 
     Returns
     -------
@@ -172,40 +186,52 @@ def seven_q10(
         seven_q10        : float | None  — the 7-day low flow with 10-yr recurrence.
         n_years          : int
         annual_7day_min  : list[float]
+        years            : list[int] | None — label of each annual minimum
         method           : str
         note             : str | None
+        year_type, year_convention, min_fraction, excluded_years
     """
     arr = np.asarray(q, dtype=float)
+    meta: Dict[str, object] = {"year_type": year_type, "year_convention": None,
+                               "min_fraction": None, "excluded_years": [], "years": None}
     if arr.size < 7:
         return {"seven_q10": None, "n_years": 0, "annual_7day_min": [],
-                "method": "log_pearson3", "note": "Fewer than 7 days of data."}
+                "method": "log_pearson3", "note": "Fewer than 7 days of data.", **meta}
 
-    # 7-day trailing mean (centred would leak across year boundaries).
-    kernel = np.ones(7) / 7.0
-    rolling7 = np.convolve(arr, kernel, mode="valid")   # length n-6
-    # Align rolling window end-date with the 7th day of each window.
-    aligned_dates = None
     if dates is not None:
         import pandas as pd
-        d = pd.to_datetime(pd.Series(list(dates)))
-        aligned_dates = d.iloc[6:].reset_index(drop=True)
-
-    # Group into years → annual 7-day minima.
-    if aligned_dates is not None:
-        import pandas as pd
-        df = pd.DataFrame({"r7": rolling7, "year": aligned_dates.dt.year.values})
-        annual_min = df.groupby("year")["r7"].min().values
+        from aihydro_watershed.signatures.periods import complete_periods, _labels
+        comp = complete_periods(dates, arr, year_type, min_fraction)
+        meta.update(year_convention=comp["convention"], min_fraction=comp["min_fraction"],
+                    excluded_years=comp["excluded"])
+        s = pd.Series(arr, index=pd.to_datetime(pd.Series(list(dates)).values).normalize())
+        s = s[~s.index.duplicated(keep="first")]
+        full = s.reindex(pd.date_range(s.index.min(), s.index.max(), freq="D"))
+        # trailing 7-day mean on the calendar axis; a window with a missing day is NaN
+        r7 = full.rolling(7, min_periods=7).mean().dropna()
+        yr = pd.Series(_labels(pd.DatetimeIndex(r7.index), year_type), index=r7.index)
+        ok = yr.isin(comp["complete"])
+        grp = r7[ok].groupby(yr[ok]).min()
+        years = [int(y) for y in grp.index]
+        annual_min = grp.values.astype(float)
+        meta["years"] = years
     else:
         log.warning("seven_q10: no dates supplied — chunking into 365-day blocks.")
+        kernel = np.ones(7) / 7.0
+        rolling7 = np.convolve(arr, kernel, mode="valid")
         n_full = rolling7.size // 365
         if n_full == 0:
             return {"seven_q10": None, "n_years": 0, "annual_7day_min": [],
-                    "method": "log_pearson3", "note": "Less than one year of data."}
+                    "method": "log_pearson3", "note": "Less than one year of data.", **meta}
         annual_min = np.array([
             rolling7[i * 365:(i + 1) * 365].min() for i in range(n_full)
         ])
+        meta["year_convention"] = "consecutive 365-day blocks (no dates supplied)"
 
-    annual_min = annual_min[~np.isnan(annual_min)]
+    keep = ~np.isnan(annual_min)
+    if meta["years"] is not None:
+        meta["years"] = [y for y, k in zip(meta["years"], keep) if k]
+    annual_min = annual_min[keep]
     n_years = annual_min.size
     if n_years < min_years:
         return {
@@ -213,6 +239,7 @@ def seven_q10(
             "annual_7day_min": [round(float(x), 6) for x in annual_min],
             "method": "log_pearson3",
             "note": f"Need ≥{min_years} years of annual minima for 7Q10; have {n_years}.",
+            **meta,
         }
 
     val = _log_pearson3_low(annual_min, non_exceed_prob=0.10)
@@ -222,6 +249,7 @@ def seven_q10(
         "annual_7day_min": [round(float(x), 6) for x in annual_min],
         "method": "log_pearson3",
         "note": None,
+        **meta,
     }
 
 

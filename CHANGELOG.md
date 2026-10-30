@@ -1,5 +1,34 @@
 # Changelog — aihydro-watershed
 
+## [Unreleased]
+
+Tool audit T1-P (D08, D09, D26 part): period statistics over incomplete periods.
+
+### Added
+
+- `signatures.periods.complete_periods(dates, values, freq, min_fraction, window)`: the one period-completeness rule.
+  It returns the complete periods, the excluded ones with their observed/expected day counts, and a mask over the
+  input. Conventions: `month`, `calendar_year`, `water_year` (1 Oct-30 Sep, labelled by the year it ends; USGS, Bulletin
+  17C), `climatic_year` (1 Apr-31 Mar, labelled by the year it begins; USGS SIR 2008-5126 uses the climatic year for
+  annual 7-day lows, the labelling is ours). Default minimum observed fraction: 1.0 for months, 0.95 for years
+  (engineering choices, not taken from the SPI User Guide or Bulletin 17C; exposed and echoed in every result).
+
+### Changed (BREAKING-VALUE)
+
+- `spi` / `spei`: a month is used only if complete. A record ending on the 3rd of a month no longer reads that month as
+  drought (SPI-1 -3.09 on the audit series; the month is now excluded); an interior gap or NaN day gives NaN months,
+  not zero precipitation (2010-07 SPI-1 -1.83 on the audit series; now None), and an accumulation window containing
+  an incomplete month is not evaluated. New keys: `months_excluded`, `n_months_complete`, `min_month_fraction`,
+  `month_convention`. New argument `min_month_fraction`. No complete month raises `ValueError`.
+- `annual_maxima`: groups by water year (was calendar year), excludes years with < 95% of days observed, and reports
+  `excluded_years`, `year_type`, `year_convention`, `min_fraction`, and `statistic` ("annual maximum of daily mean
+  discharge, not the instantaneous peak"). On the audit series the partial first and last years no longer enter the
+  fit (Q100 988 -> 688, Q2 292 -> 335). `year_type="calendar_year"` restores calendar grouping (still completeness
+  checked).
+- `seven_q10`: climatic year by default (the docstring said water year; the code used calendar year), 7-day mean formed
+  on the calendar axis so a window with a missing day is not evaluated (no splicing across gaps), incomplete years
+  excluded and listed. New keys `years`, `year_type`, `year_convention`, `min_fraction`, `excluded_years`.
+
 ## [0.2.1] - 2026-10-28
 
 ### Changed

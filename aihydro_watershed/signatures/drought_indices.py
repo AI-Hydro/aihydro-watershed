@@ -50,12 +50,17 @@ log = logging.getLogger(__name__)
 # Clip to p ∈ [0.001, 0.999] → index ∈ [-3.09, +3.09], standard SPI practice.
 _P_FLOOR, _P_CEIL = 0.001, 0.999
 
+#: A calendar month is fitted only with at least this many accumulation windows (years). ENGINEERING
+#: CHOICE carried over from the earlier code; the SPI User Guide (WMO-No. 1090) asks for 20-30 years.
+_MIN_PER_CALENDAR_MONTH = 5
+
 
 def spi(
     precip: Sequence[float],
     dates: Sequence,
     scale_months: int = 3,
     min_month_fraction: Optional[float] = None,
+    calendar: Optional[str] = None,
 ) -> Dict[str, object]:
     """Standardised Precipitation Index.
 
@@ -70,17 +75,20 @@ def spi(
         Accumulation window in months (1, 3, 6, 12, …).
     min_month_fraction : float, optional
         Smallest fraction of a month's days that must be observed for the month
-        to be used. Default 1.0 (every day) - an engineering choice, see
-        ``periods``.
+        to be used. Default 1.0 (every day; WMO-No. 1203 section 4.4.1(c), see ``periods``).
+    calendar : str, optional
+        ``"no_leap_dec31"`` for a source that never holds 31 Dec of a leap year (GridMET via
+        pygridmet, Daymet): that day leaves the month's expected days instead of making
+        every leap December incomplete. Reported in ``months_calendar_adjusted``.
 
     Returns
     -------
     dict: index, index_months (YYYY-MM), scale_months, index_name, mean, std,
-    n_months (all months in the span), n_months_complete, months_excluded
-    (list of {period, observed_days, expected_days, fraction}),
-    min_month_fraction, month_convention.
+    n_months (months with an index value), n_months_in_span, n_months_complete, months_excluded
+    (list of {period, observed_days, expected_days, fraction}), months_calendar_adjusted,
+    n_per_calendar_month (index values per calendar month), min_month_fraction, month_convention.
     """
-    monthly, comp = _to_monthly(precip, dates, min_month_fraction)
+    monthly, comp = _to_monthly(precip, dates, min_month_fraction, calendar)
     return _standardise(monthly, scale_months, "SPI", kind="gamma", comp=comp)
 
 
@@ -90,6 +98,7 @@ def spei(
     dates: Sequence,
     scale_months: int = 3,
     min_month_fraction: Optional[float] = None,
+    calendar: Optional[str] = None,
 ) -> Dict[str, object]:
     """Standardised Precipitation-Evapotranspiration Index.
 
@@ -111,23 +120,24 @@ def spei(
     if len(p) != len(e):
         raise ValueError("precip and pet must be the same length for SPEI.")
     balance = (p - e).values                       # NaN if either is missing
-    monthly, comp = _to_monthly(balance, dates, min_month_fraction)
+    monthly, comp = _to_monthly(balance, dates, min_month_fraction, calendar)
     return _standardise(monthly, scale_months, "SPEI", kind="loglogistic", comp=comp)
 
 
 # ── Internals ───────────────────────────────────────────────────────────────
 
-def _to_monthly(values: Sequence[float], dates: Sequence, min_month_fraction: Optional[float] = None):
+def _to_monthly(values: Sequence[float], dates: Sequence, min_month_fraction: Optional[float] = None,
+                calendar: Optional[str] = None):
     """Aggregate a daily series to monthly totals over COMPLETE months only.
 
     Returns ``(monthly, completeness)``: a pandas Series indexed by month-end
     Timestamp over every month from the first to the last day present (NaN for an
     incomplete or absent month), and the ``periods.complete_periods`` record."""
     import pandas as pd
-    from aihydro_watershed.signatures.periods import complete_periods
+    from aihydro_watershed.signatures.periods import complete_periods, day_index
     vals = np.asarray(values, dtype=float)
-    idx = pd.to_datetime(pd.Series(list(dates)).values)
-    comp = complete_periods(idx, vals, "month", min_month_fraction)
+    idx = day_index(dates)
+    comp = complete_periods(idx, vals, "month", min_month_fraction, calendar=calendar)
     s = pd.Series(np.where(comp["keep"], vals, np.nan), index=idx)
     s = s[~s.index.duplicated(keep="first")]
     tot = s.resample("ME").sum(min_count=1)
@@ -156,11 +166,18 @@ def _standardise(monthly, scale_months: int, name: str, kind: str, comp=None) ->
     vals = acc.values.astype(float)
 
     out = np.full(vals.size, np.nan)
+    per_cal = {m: int(((months == m) & np.isfinite(vals)).sum()) for m in range(1, 13)}
     for m in range(1, 13):
         mask = (months == m) & np.isfinite(vals)
-        if mask.sum() < 5:
+        if mask.sum() < _MIN_PER_CALENDAR_MONTH:
             continue
         out[mask] = _to_standard_normal(vals[mask], kind)
+    if not np.isfinite(out).any():
+        raise ValueError(
+            f"{name}-{scale_months}: no month could be standardised. Each calendar month needs at least "
+            f"{_MIN_PER_CALENDAR_MONTH} complete accumulation windows; this record has {per_cal} "
+            f"({n_complete} complete months, {len((comp or {}).get('excluded', []))} excluded)."
+        )
 
     valid = out[~np.isnan(out)]
     return {
@@ -168,8 +185,11 @@ def _standardise(monthly, scale_months: int, name: str, kind: str, comp=None) ->
         "index_months": [d.strftime("%Y-%m") for d in acc.index],
         "scale_months": int(scale_months),
         "index_name": name,
-        "n_months": int(out.size),
+        "n_months": int(np.isfinite(out).sum()),
+        "n_months_in_span": int(out.size),
         "n_months_complete": n_complete,
+        "n_per_calendar_month": per_cal,
+        "months_calendar_adjusted": (comp or {}).get("calendar_adjusted", []),
         "months_excluded": (comp or {}).get("excluded", []),
         "min_month_fraction": (comp or {}).get("min_fraction"),
         "month_convention": (comp or {}).get("convention"),

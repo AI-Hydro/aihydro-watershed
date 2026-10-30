@@ -153,19 +153,29 @@ def seven_q10(
     min_years: int = 10,
     year_type: str = "climatic_year",
     min_fraction: Optional[float] = None,
+    min_window_fraction: Optional[float] = None,
+    calendar: Optional[str] = None,
+    year_start_month: Optional[int] = None,
 ) -> Dict[str, object]:
     """Compute the 7Q10 design low flow (annual 7-day min, 10-yr recurrence).
 
     The year is the **climatic year** (1 Apr - 31 Mar) by default, the USGS
-    convention for annual low flows (SIR 2008-5126 section 3); it is labelled by
-    the calendar year in which it BEGINS (our labelling choice). A low-flow
-    season that straddles 31 Dec is therefore one year, as it would not be in a
-    calendar or water year. ``year_type`` may be 'water_year' or 'calendar_year'.
+    convention for annual low flows (USGS SIR 2008-5126 and 2006-5035, section 3);
+    it is labelled by the calendar year in which it BEGINS. A low-flow season that
+    straddles 31 Dec is therefore one year, as it would not be in a calendar or
+    water year. ``year_type`` may be 'water_year', 'calendar_year' or 'custom_year'
+    (with ``year_start_month``, e.g. for Southern Hemisphere or monsoon regimes).
 
     The 7-day mean is trailing and is formed on the calendar-day axis: a window
     that contains a missing day is NOT evaluated (no splicing across a gap). A
-    year with less than ``min_fraction`` (default 0.95) of its days observed is
-    excluded and listed in ``excluded_years``.
+    year is used only if BOTH (a) at least ``min_fraction`` (default 0.95) of its
+    days are observed AND (b) at least ``min_window_fraction`` (default 0.95) of
+    the 7-day windows ending in it were evaluable. (b) matters because one missing
+    day removes 7 windows: 18 scattered missing days pass (a) yet can leave a third
+    of the windows, and the annual minimum of what is left is biased HIGH (7Q10 read
+    +108% in the methods review's test). Excluded years are listed with the reason;
+    ``windows_per_year`` reports evaluated/possible windows for every year.
+    ``calendar='no_leap_dec31'`` is for GridMET/Daymet-type calendars.
 
     Parameters
     ----------
@@ -189,29 +199,60 @@ def seven_q10(
         years            : list[int] | None — label of each annual minimum
         method           : str
         note             : str | None
-        year_type, year_convention, min_fraction, excluded_years
+        year_type, year_convention, min_fraction, min_window_fraction, excluded_years,
+        windows_per_year ({year: {evaluated, possible, fraction}})
     """
     arr = np.asarray(q, dtype=float)
     meta: Dict[str, object] = {"year_type": year_type, "year_convention": None,
-                               "min_fraction": None, "excluded_years": [], "years": None}
+                               "min_fraction": None, "min_window_fraction": None,
+                               "excluded_years": [], "years": None, "windows_per_year": None}
     if arr.size < 7:
         return {"seven_q10": None, "n_years": 0, "annual_7day_min": [],
                 "method": "log_pearson3", "note": "Fewer than 7 days of data.", **meta}
 
     if dates is not None:
         import pandas as pd
-        from aihydro_watershed.signatures.periods import complete_periods, _labels
-        comp = complete_periods(dates, arr, year_type, min_fraction)
+        from aihydro_watershed.signatures.periods import (
+            complete_periods, _labels, day_index, absent_days, DEFAULT_MIN_FRACTION)
+        comp = complete_periods(dates, arr, year_type, min_fraction, calendar=calendar,
+                                year_start_month=year_start_month)
+        wfrac = DEFAULT_MIN_FRACTION[year_type] if min_window_fraction is None else float(min_window_fraction)
         meta.update(year_convention=comp["convention"], min_fraction=comp["min_fraction"],
-                    excluded_years=comp["excluded"])
-        s = pd.Series(arr, index=pd.to_datetime(pd.Series(list(dates)).values).normalize())
+                    min_window_fraction=wfrac, excluded_years=[
+                        {**e, "reason": "day_fraction"} for e in comp["excluded"]],
+                    years_calendar_adjusted=comp["calendar_adjusted"], windows_per_year={})
+        idx = day_index(dates)
+        s = pd.Series(arr, index=idx)
         s = s[~s.index.duplicated(keep="first")]
-        full = s.reindex(pd.date_range(s.index.min(), s.index.max(), freq="D"))
+        axis = pd.date_range(s.index.min(), s.index.max(), freq="D")
+        ab = absent_days(axis[0], axis[-1], calendar)
+        if len(ab):
+            axis = axis.difference(ab)             # days the source never holds are not on the axis
+        full = s.reindex(axis)
         # trailing 7-day mean on the calendar axis; a window with a missing day is NaN
-        r7 = full.rolling(7, min_periods=7).mean().dropna()
-        yr = pd.Series(_labels(pd.DatetimeIndex(r7.index), year_type), index=r7.index)
-        ok = yr.isin(comp["complete"])
-        grp = r7[ok].groupby(yr[ok]).min()
+        r7_all = full.rolling(7, min_periods=7).mean()
+        r7_all = r7_all.iloc[6:]                   # windows with 6 predecessors on the axis
+        yr = pd.Series(_labels(pd.DatetimeIndex(r7_all.index), year_type, year_start_month), index=r7_all.index)
+        possible = yr.groupby(yr).size()
+        evaluated = r7_all.notna().groupby(yr).sum()
+        for y in possible.index:
+            meta["windows_per_year"][int(y)] = {
+                "evaluated": int(evaluated.get(y, 0)), "possible": int(possible[y]),
+                "fraction": round(float(evaluated.get(y, 0)) / float(possible[y]), 4)}
+        good = []
+        for y in comp["complete"]:
+            w = meta["windows_per_year"].get(int(y))
+            if w is None or w["fraction"] < wfrac - 1e-12:
+                meta["excluded_years"].append({
+                    "period": int(y), "reason": "window_fraction",
+                    "windows_evaluated": (w or {}).get("evaluated", 0),
+                    "windows_possible": (w or {}).get("possible", 0),
+                    "fraction": (w or {}).get("fraction", 0.0)})
+            else:
+                good.append(int(y))
+        r7 = r7_all.dropna()
+        ok = yr.reindex(r7.index).isin(good)
+        grp = r7[ok].groupby(yr.reindex(r7.index)[ok]).min()
         years = [int(y) for y in grp.index]
         annual_min = grp.values.astype(float)
         meta["years"] = years

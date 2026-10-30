@@ -190,3 +190,119 @@ def test_7q10_excludes_a_year_with_a_long_gap_and_does_not_splice():
     assert [e["period"] for e in r["excluded_years"]] == [2005]
     assert r["excluded_years"][0]["observed_days"] == 365 - 122
     assert 2005 not in r["years"] and r["n_years"] == 14
+
+
+# --- methods-review revisions ------------------------------------------------
+
+def _no_leap_dec31(d):
+    return ~((d.month == 12) & (d.day == 31) & d.is_leap_year)
+
+
+def test_w1_leap_dec31_missing_is_not_a_gap_when_the_source_calendar_says_so():
+    d = pd.date_range("1989-10-01", "2019-09-30", freq="D")
+    p = np.random.default_rng(1).gamma(0.5, 6, d.size)
+    k = _no_leap_dec31(d)
+    dd, pp = d[k], p[k]
+    # without the calendar every leap December is dropped (the review's finding)
+    naive = spi(pp, _iso(dd), scale_months=12)
+    assert any(e["period"].endswith("-12") and e["observed_days"] == 30 for e in naive["months_excluded"])
+    r = spi(pp, _iso(dd), scale_months=12, calendar="no_leap_dec31")
+    assert r["months_excluded"] == []
+    adj = r["months_calendar_adjusted"]
+    assert [a["period"] for a in adj] == [f"{y}-12" for y in (1992, 1996, 2000, 2004, 2008, 2012, 2016)]
+    assert all(a["days_removed"] == 1 and a["expected_days"] == 30 for a in adj)
+    full = spi(p, _iso(d), scale_months=12)
+    assert sum(v is None for v in r["index"]) == sum(v is None for v in full["index"])
+
+
+def test_w1_a_real_gap_still_excludes_under_the_calendar_adjustment():
+    d = pd.date_range("2001-01-01", "2001-01-31", freq="D")
+    v = np.ones(d.size); v[4] = np.nan
+    assert complete_periods(d, v, "month", calendar="no_leap_dec31")["complete"] == []
+    # a leap-year December with one genuinely missing day besides 31 Dec is still incomplete
+    dd = pd.date_range("2000-12-01", "2000-12-30", freq="D").delete(9)
+    assert complete_periods(dd, np.ones(dd.size), "month", calendar="no_leap_dec31")["complete"] == []
+    full = pd.date_range("2000-12-01", "2000-12-30", freq="D")
+    assert complete_periods(full, np.ones(full.size), "month", calendar="no_leap_dec31")["complete"] == ["2000-12"]
+
+
+def test_known_absent_dates_leave_expected_days():
+    d = pd.date_range("2001-03-01", "2001-03-31", freq="D").delete([9, 10])
+    r = complete_periods(d, np.ones(d.size), "month", known_absent=["2001-03-10", "2001-03-11"])
+    assert r["complete"] == ["2001-03"] and r["calendar_adjusted"][0]["days_removed"] == 2
+
+
+def test_7q10_scattered_missing_days_cannot_pass_on_the_day_fraction_alone():
+    d = pd.date_range("1999-04-01", "2014-03-31", freq="D")
+    q = 10.0 + 5.0 * np.sin(2 * np.pi * (d.dayofyear.values - 100) / 365.0)
+    q = q + 0.0
+    bad = pd.date_range("2005-07-01", periods=18, freq="9D")        # 18 isolated missing days, 5.0% of 365
+    keep = ~d.isin(bad)
+    r = seven_q10(q[keep], dates=_iso(d[keep]))
+    ex = {e["period"]: e for e in r["excluded_years"]}
+    assert ex[2005]["reason"] == "window_fraction"                  # day fraction is 347/365 = 0.951: passes (a)
+    assert ex[2005]["windows_evaluated"] < 0.95 * ex[2005]["windows_possible"]
+    assert 2005 not in r["years"] and r["windows_per_year"][2004]["fraction"] == 1.0
+    assert r["min_window_fraction"] == 0.95
+
+
+def test_7q10_on_a_365_day_calendar_does_not_lose_windows_at_the_leap_dec31():
+    d = pd.date_range("1999-04-01", "2014-03-31", freq="D")
+    k = _no_leap_dec31(d)
+    r = seven_q10(np.full(k.sum(), 10.0), dates=_iso(d[k]), calendar="no_leap_dec31")
+    assert r["excluded_years"] == [] and r["n_years"] == 15
+    assert all(w["fraction"] == 1.0 for w in r["windows_per_year"].values())
+
+
+def test_timezone_aware_dates_keep_their_local_calendar_day():
+    t = pd.date_range("2001-01-01", "2001-01-31 23:00", freq="h", tz="Australia/Sydney")
+    daily = pd.date_range("2001-01-01", "2001-01-31", freq="D", tz="Australia/Sydney")
+    r = complete_periods(daily, np.ones(daily.size), "month")
+    assert r["complete"] == ["2001-01"] and r["excluded"] == []
+    mid = pd.date_range("2001-01-01 00:30", "2001-01-31 00:30", freq="D", tz="Australia/Sydney")
+    assert complete_periods(mid, np.ones(mid.size), "month")["complete"] == ["2001-01"]
+    m, comp = _to_monthly(np.ones(daily.size), daily)
+    assert m.iloc[0] == 31 and comp["excluded"] == []
+
+def test_custom_year_start_month():
+    d = pd.date_range("2000-07-01", "2010-06-30", freq="D")
+    q = np.full(d.size, 5.0)
+    am = annual_maxima(q, dates=_iso(d), year_type="custom_year", year_start_month=7)
+    assert am["years"] == list(range(2000, 2010)) and am["excluded_years"] == []
+    assert "month 7" in am["year_convention"]
+    with pytest.raises(ValueError):
+        annual_maxima(q, dates=_iso(d), year_type="custom_year")
+
+
+def test_all_nan_input_with_a_window_lists_the_periods_instead_of_raising():
+    d = pd.date_range("2001-01-01", "2001-03-31", freq="D")
+    r = complete_periods(d, np.full(d.size, np.nan), "month", window=("2001-01-01", "2001-03-31"))
+    assert r["complete"] == [] and [e["period"] for e in r["excluded"]] == ["2001-01", "2001-02", "2001-03"]
+    assert complete_periods([], [], "month", window=("2001-01-01", "2001-02-28"))["n_periods"] == 2
+
+
+def test_spi_counts_only_evaluated_months_and_reports_n_per_calendar_month():
+    d = pd.date_range("1990-01-01", "2019-12-31", freq="D")
+    p = np.random.default_rng(1).gamma(0.5, 6, d.size)
+    r = spi(p, _iso(d), scale_months=1)
+    assert r["n_months"] == sum(v is not None for v in r["index"]) == 360
+    assert r["n_per_calendar_month"] == {m: 30 for m in range(1, 13)}
+    p2 = p.copy(); p2[(d >= "2010-06-01") & (d <= "2010-08-31")] = np.nan
+    r2 = spi(p2, _iso(d), scale_months=3)
+    assert r2["n_months"] == sum(v is not None for v in r2["index"]) < r2["n_months_in_span"]
+
+
+def test_spi_with_too_few_complete_months_is_a_clear_refusal():
+    d = pd.date_range("2018-01-01", "2019-12-31", freq="D")
+    with pytest.raises(ValueError, match="no month could be standardised") as e:
+        spi(np.random.default_rng(0).gamma(0.5, 6, d.size), _iso(d), scale_months=1)
+    assert "at least 5" in str(e.value)
+
+
+def test_7q10_and_spi_accept_tz_aware_dates():
+    dd = pd.date_range("1999-04-01", "2014-03-31", freq="D", tz="Australia/Sydney")
+    r = seven_q10(np.full(dd.size, 10.0), dates=dd)
+    assert r["n_years"] == 15 and r["excluded_years"] == []
+    d = pd.date_range("1990-01-01", "2019-12-31", freq="D", tz="Australia/Sydney")
+    s = spi(np.random.default_rng(1).gamma(0.5, 6, d.size), d, scale_months=1)
+    assert s["months_excluded"] == []

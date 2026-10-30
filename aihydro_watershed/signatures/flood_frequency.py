@@ -17,9 +17,11 @@ Distributions supported
                 annual maximum floods. Fitted by MLE (default) or method of
                 moments (closed form, textbook-reproducible).
 - ``gev``     — Generalised Extreme Value (EV1/EV2/EV3 unified). Fitted by MLE.
-- ``lp3``     — Log-Pearson Type III. The US federal standard (Bulletin 17B/17C):
-                a Pearson-III distribution fitted to log10 of the annual maxima
-                by method of moments (mean, std, skew of the logs).
+- ``lp3``     — Log-Pearson Type III: a Pearson-III distribution fitted to log10 of the
+                annual maxima by method of moments (mean, std, skew of the logs). This is
+                the distribution family of Bulletin 17B/17C but NOT their procedure: there
+                is no Expected Moments Algorithm, no regional/weighted skew, no PILF
+                (low-outlier) screening and no historical or censored information.
 
 Return period convention
 ------------------------
@@ -50,6 +52,8 @@ def annual_maxima(
     year_type: str = "water_year",
     min_fraction: Optional[float] = None,
     window: Optional[tuple] = None,
+    calendar: Optional[str] = None,
+    year_start_month: Optional[int] = None,
 ) -> Dict[str, object]:
     """Extract the annual maximum of DAILY MEAN discharge, over complete years.
 
@@ -70,13 +74,17 @@ def annual_maxima(
     year_type : str
         'water_year' (default; 1 Oct - 30 Sep, labelled by the year it ends -
         the USGS / Bulletin 17C convention, and it keeps a winter flood across
-        31 Dec / 1 Jan in one year) | 'calendar_year'.
+        31 Dec / 1 Jan in one year) | 'calendar_year' | 'custom_year' (with
+        ``year_start_month``, labelled by the year it begins; Southern Hemisphere
+        and other regimes).
     min_fraction : float, optional
         Smallest fraction of a year's days that must have a finite value for the
         year to count (default 0.95; an engineering choice, see ``periods``).
         A year below it is EXCLUDED, not entered with the maximum of what is there.
     window : (start, end), optional
         The requested window; a year it touches with no data is reported as excluded.
+    calendar : str, optional
+        'no_leap_dec31' for GridMET/Daymet-type calendars (see ``periods``).
 
     Returns
     -------
@@ -89,7 +97,8 @@ def annual_maxima(
     if dates is not None:
         import pandas as pd
         from aihydro_watershed.signatures.periods import complete_periods
-        comp = complete_periods(dates, arr, year_type, min_fraction, window)
+        comp = complete_periods(dates, arr, year_type, min_fraction, window, calendar=calendar,
+                                year_start_month=year_start_month)
         df = pd.DataFrame({"q": arr, "year": comp["labels"]})[comp["keep"]]
         grp = df.groupby("year")["q"].max()
         return {"annual_max": [float(x) for x in grp.values],
@@ -97,7 +106,8 @@ def annual_maxima(
                 "n_years": int(grp.size),
                 "year_type": year_type, "year_convention": comp["convention"],
                 "statistic": stat, "min_fraction": comp["min_fraction"],
-                "excluded_years": comp["excluded"]}
+                "excluded_years": comp["excluded"],
+                "years_calendar_adjusted": comp["calendar_adjusted"]}
     log.warning("annual_maxima: no dates supplied — chunking into 365-day blocks.")
     arr = arr[~np.isnan(arr)]
     n_full = arr.size // 365

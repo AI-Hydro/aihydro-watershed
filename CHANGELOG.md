@@ -1,33 +1,43 @@
 # Changelog — aihydro-watershed
 
-## [Unreleased]
+## [0.3.0] - unreleased (2026-10-30) BREAKING-VALUE
 
-Tool audit T1-P (D08, D09, D26 part): period statistics over incomplete periods.
+Version 0.3.0, not 0.2.2: a `<0.3` pin on an installed 2.8.4 would otherwise take these changed values.
+
+Tool audit T1-P (D08, D09, D26) and the methods review: period statistics over incomplete periods.
 
 ### Added
 
-- `signatures.periods.complete_periods(dates, values, freq, min_fraction, window)`: the one period-completeness rule.
-  It returns the complete periods, the excluded ones with their observed/expected day counts, and a mask over the
-  input. Conventions: `month`, `calendar_year`, `water_year` (1 Oct-30 Sep, labelled by the year it ends; USGS, Bulletin
-  17C), `climatic_year` (1 Apr-31 Mar, labelled by the year it begins; USGS SIR 2008-5126 uses the climatic year for
-  annual 7-day lows, the labelling is ours). Default minimum observed fraction: 1.0 for months, 0.95 for years
-  (engineering choices, not taken from the SPI User Guide or Bulletin 17C; exposed and echoed in every result).
+- `signatures.periods.complete_periods(dates, values, freq, min_fraction, window, calendar, known_absent, year_start_month)`:
+  the one period-completeness rule. It returns the complete periods, the excluded ones (observed/expected days), the periods whose
+  expected days were reduced (`calendar_adjusted`) and a mask over the input. Conventions: `month`, `calendar_year`, `water_year`
+  (1 Oct-30 Sep, labelled by the year it ends; Bulletin 17C Appendix 10, p. 104), `climatic_year` (1 Apr-31 Mar, labelled by the year it
+  begins; USGS SIR 2008-5126 and 2006-5035 section 3 give the dates, the begin-year label is the methods review's citation of SIR
+  2006-5035), `custom_year` (+ `year_start_month`, for Southern Hemisphere and other regimes).
+- **Days a source never holds.** `calendar="no_leap_dec31"` (GridMET via pygridmet, Daymet have no 31 Dec in leap years) or an explicit
+  `known_absent` list takes those days out of a period's expected days, so a leap-year December is not dropped (without it SPI-12 lost
+  24% of its values). Reported as `months_calendar_adjusted` / `years_calendar_adjusted`; a day absent for any other reason still excludes.
+- Thresholds: months 1.0 (every day) is SOURCED (WMO-No. 1203 (2017) section 4.4.1(c): "can only be calculated if there are complete data
+  over the month"; WMO-TD 341; the SPI User Guide WMO-No. 1090 marks missing as -99, asks for 20-30 years and has no within-month rule).
+  Years 0.95 is an engineering choice (the package's water-balance fraction), not sourced. Both are arguments.
 
-### Changed (BREAKING-VALUE)
+### Changed
 
-- `spi` / `spei`: a month is used only if complete. A record ending on the 3rd of a month no longer reads that month as
-  drought (SPI-1 -3.09 on the audit series; the month is now excluded); an interior gap or NaN day gives NaN months,
-  not zero precipitation (2010-07 SPI-1 -1.83 on the audit series; now None), and an accumulation window containing
-  an incomplete month is not evaluated. New keys: `months_excluded`, `n_months_complete`, `min_month_fraction`,
-  `month_convention`. New argument `min_month_fraction`. No complete month raises `ValueError`.
-- `annual_maxima`: groups by water year (was calendar year), excludes years with < 95% of days observed, and reports
-  `excluded_years`, `year_type`, `year_convention`, `min_fraction`, and `statistic` ("annual maximum of daily mean
-  discharge, not the instantaneous peak"). On the audit series the partial first and last years no longer enter the
-  fit (Q100 988 -> 688, Q2 292 -> 335). `year_type="calendar_year"` restores calendar grouping (still completeness
-  checked).
-- `seven_q10`: climatic year by default (the docstring said water year; the code used calendar year), 7-day mean formed
-  on the calendar axis so a window with a missing day is not evaluated (no splicing across gaps), incomplete years
-  excluded and listed. New keys `years`, `year_type`, `year_convention`, `min_fraction`, `excluded_years`.
+- `spi` / `spei`: a month is used only if complete. A record ending on the 3rd no longer reads that month as drought (SPI-1 -3.09 on the
+  audit series); an interior gap or NaN day gives NaN months, not zero precipitation (2010-07 -1.83 -> None); a window containing an
+  incomplete month is not evaluated. `n_months` now counts months WITH an index value (`n_months_in_span` is the old count);
+  `n_per_calendar_month` reports the windows behind each calendar month; a record in which no month can be standardised (fewer than 5
+  complete windows per calendar month) raises a `ValueError` that says so. New: `months_excluded`, `n_months_complete`,
+  `min_month_fraction`, `month_convention`, arguments `min_month_fraction` and `calendar`.
+- `annual_maxima`: water year (was calendar year), years under 95% of days excluded and listed (`excluded_years`), `statistic` states
+  "annual maximum of daily mean discharge (not the instantaneous peak)". Arguments `year_type`, `min_fraction`, `window`, `calendar`,
+  `year_start_month`. On the audit series Q100 988 -> 688 and Q2 292 -> 335 (probe `p7`).
+- `seven_q10`: climatic year by default (the docstring said water year; the code used calendar year); 7-day mean formed on the
+  calendar axis (no splicing across a gap). A year is used only if at least 95% of its days AND 95% of its 7-day windows are
+  evaluable: one missing day removes 7 windows, and 18 scattered missing days left a third of the windows and read +108% high.
+  New keys `years`, `year_type`, `year_convention`, `min_fraction`, `min_window_fraction`, `excluded_years` (with `reason`),
+  `windows_per_year`. The 0.95 window fraction is an engineering choice, flagged.
+- Timezone-aware dates keep their local calendar day (`tz_localize(None)`), in all three statistics.
 
 ## [0.2.1] - 2026-10-28
 

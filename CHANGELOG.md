@@ -1,5 +1,45 @@
 # Changelog — aihydro-watershed
 
+## [0.3.0] - unreleased (2026-10-30) BREAKING-VALUE
+
+Version 0.3.0, not 0.2.2: a `<0.3` pin on an installed 2.8.4 would otherwise take these changed values.
+
+Tool audit T1-P (D08, D09, D26 part) and the methods review: period statistics over incomplete periods.
+
+### Added
+
+- `signatures.periods.complete_periods(dates, values, freq, min_fraction, window, calendar, known_absent, year_start_month)`:
+  the one period-completeness rule. It returns the complete periods, the excluded ones (observed/expected days), the periods whose
+  expected days were reduced (`calendar_adjusted`) and a mask over the input. Conventions: `month`, `calendar_year`, `water_year`
+  (1 Oct-30 Sep, labelled by the year it ends; Bulletin 17C Appendix 10, p. 104), `climatic_year` (1 Apr-31 Mar, label = the calendar year in which it BEGINS;
+  USGS SIR 2006-5035: a climatic year is "designated by the calendar year in which it begins"; SIR 2008-5126 section 3 uses April 1 to
+  March 31 for 7-day minimums), `custom_year` (+ `year_start_month`, for Southern Hemisphere and other regimes).
+- **Days a source never holds.** `calendar="no_leap_dec31"` (GridMET via pygridmet, Daymet have no 31 Dec in leap years) or an explicit
+  `known_absent` list takes those days out of a period's expected days, so a leap-year December is not dropped (without it SPI-12 lost
+  24% of its values). Reported as `months_calendar_adjusted` / `years_calendar_adjusted`; a day absent for any other reason still excludes.
+- Thresholds: months 1.0 (every day) is SOURCED (WMO-No. 1203 (2017) s4.4.1(c), p.7: "A monthly value for a sum parameter (for example, total precipitation) can only be
+  calculated if there are complete data over the month", with exceptions for estimated or accumulated data within the 11-day and
+  5-consecutive-day limits; WMO-TD 341 (1989), PDF p.6: "Monthly totals should be based on a full month's data"; the SPI User Guide WMO-No. 1090 marks missing as -99, asks for 20-30 years and has no within-month rule).
+  Years 0.95 is an engineering choice (the package's water-balance fraction), not sourced. Both are arguments.
+
+### Changed
+
+- `spi` / `spei`: a month is used only if complete. A record ending on the 3rd no longer reads that month as drought (SPI-1 -3.09 on the
+  audit series); an interior gap or NaN day gives NaN months, not zero precipitation (2010-07 -1.83 -> None); a window containing an
+  incomplete month is not evaluated. `n_months` now counts months WITH an index value (`n_months_in_span` is the old count);
+  `n_per_calendar_month` reports the windows behind each calendar month; a record in which no month can be standardised (fewer than 5
+  complete windows per calendar month) raises a `ValueError` that says so. New: `months_excluded`, `n_months_complete`,
+  `min_month_fraction`, `month_convention`, arguments `min_month_fraction` and `calendar`.
+- `annual_maxima`: water year (was calendar year), years under 95% of days excluded and listed (`excluded_years`), `statistic` states
+  "annual maximum of daily mean discharge (not the instantaneous peak)". Arguments `year_type`, `min_fraction`, `window`, `calendar`,
+  `year_start_month`. On the audit series Q100 988 -> 688 and Q2 292 -> 335 (locked fixture: `test_locked_q100_fixture_partial_years_inflate_the_design_flood` in aihydro-tools).
+- `seven_q10`: climatic year by default (the docstring said water year; the code used calendar year); 7-day mean formed on the
+  calendar axis (no splicing across a gap). A year is used only if at least 95% of its days AND 95% of its 7-day windows are
+  evaluable: one missing day removes 7 windows, and 18 scattered missing days left a third of the windows and read +108% high.
+  New keys `years`, `year_type`, `year_convention`, `min_fraction`, `min_window_fraction`, `excluded_years` (with `reason`),
+  `windows_per_year`. The 0.95 window fraction is an engineering choice, flagged.
+- Timezone-aware dates keep their local calendar day (`tz_localize(None)`), in all three statistics.
+
 ## [0.2.1] - 2026-10-28
 
 ### Changed

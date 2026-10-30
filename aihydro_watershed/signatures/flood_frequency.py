@@ -17,9 +17,11 @@ Distributions supported
                 annual maximum floods. Fitted by MLE (default) or method of
                 moments (closed form, textbook-reproducible).
 - ``gev``     — Generalised Extreme Value (EV1/EV2/EV3 unified). Fitted by MLE.
-- ``lp3``     — Log-Pearson Type III. The US federal standard (Bulletin 17B/17C):
-                a Pearson-III distribution fitted to log10 of the annual maxima
-                by method of moments (mean, std, skew of the logs).
+- ``lp3``     — Log-Pearson Type III: a Pearson-III distribution fitted to log10 of the
+                annual maxima by method of moments (mean, std, skew of the logs). This is
+                the distribution family of Bulletin 17B/17C but NOT their procedure: there
+                is no Expected Moments Algorithm, no regional/weighted skew, no PILF
+                (low-outlier) screening and no historical or censored information.
 
 Return period convention
 ------------------------
@@ -47,37 +49,72 @@ _DEFAULT_RETURN_PERIODS = (2, 5, 10, 25, 50, 100, 200, 500)
 def annual_maxima(
     q: Sequence[float],
     dates: Optional[Sequence] = None,
+    year_type: str = "water_year",
+    min_fraction: Optional[float] = None,
+    window: Optional[tuple] = None,
+    calendar: Optional[str] = None,
+    year_start_month: Optional[int] = None,
 ) -> Dict[str, object]:
-    """Extract the annual maximum discharge series.
+    """Extract the annual maximum of DAILY MEAN discharge, over complete years.
+
+    The series is a maximum of daily means, not of instantaneous peaks. Bulletin
+    17C defines the annual maximum series from the instantaneous peak and allows
+    the maximum daily mean as an alternative (e.g. on large rivers); a daily-mean
+    maximum is lower than the instantaneous peak, most for flashy small basins.
+    Return levels from this series are daily-mean return levels.
 
     Parameters
     ----------
     q : sequence of float
         Daily mean discharge (m³/s).
     dates : sequence of datetime-like, optional
-        One date per discharge value. Required to group into calendar years; if
-        omitted, the series is chunked into consecutive 365-day blocks (a warning
-        is logged).
+        One date per discharge value. Required to group into years; if omitted,
+        the series is chunked into consecutive 365-day blocks (a warning is
+        logged, and no completeness check is possible).
+    year_type : str
+        'water_year' (default; 1 Oct - 30 Sep, labelled by the year it ends -
+        the USGS / Bulletin 17C convention, and it keeps a winter flood across
+        31 Dec / 1 Jan in one year) | 'calendar_year' | 'custom_year' (with
+        ``year_start_month``, labelled by the year it begins; Southern Hemisphere
+        and other regimes).
+    min_fraction : float, optional
+        Smallest fraction of a year's days that must have a finite value for the
+        year to count (default 0.95; an engineering choice, see ``periods``).
+        A year below it is EXCLUDED, not entered with the maximum of what is there.
+    window : (start, end), optional
+        The requested window; a year it touches with no data is reported as excluded.
+    calendar : str, optional
+        'no_leap_dec31' for GridMET/Daymet-type calendars (see ``periods``).
 
     Returns
     -------
     dict with keys: annual_max (list[float]), years (list[int] | None),
-                    n_years (int).
+    n_years (int), year_type, year_convention, statistic, min_fraction,
+    excluded_years (list of {period, observed_days, expected_days, fraction}).
     """
     arr = np.asarray(q, dtype=float)
+    stat = "annual maximum of daily mean discharge (not the instantaneous peak)"
     if dates is not None:
         import pandas as pd
-        d = pd.to_datetime(pd.Series(list(dates)))
-        df = pd.DataFrame({"q": arr, "year": d.dt.year.values}).dropna(subset=["q"])
+        from aihydro_watershed.signatures.periods import complete_periods
+        comp = complete_periods(dates, arr, year_type, min_fraction, window, calendar=calendar,
+                                year_start_month=year_start_month)
+        df = pd.DataFrame({"q": arr, "year": comp["labels"]})[comp["keep"]]
         grp = df.groupby("year")["q"].max()
         return {"annual_max": [float(x) for x in grp.values],
                 "years": [int(y) for y in grp.index.values],
-                "n_years": int(grp.size)}
+                "n_years": int(grp.size),
+                "year_type": year_type, "year_convention": comp["convention"],
+                "statistic": stat, "min_fraction": comp["min_fraction"],
+                "excluded_years": comp["excluded"],
+                "years_calendar_adjusted": comp["calendar_adjusted"]}
     log.warning("annual_maxima: no dates supplied — chunking into 365-day blocks.")
     arr = arr[~np.isnan(arr)]
     n_full = arr.size // 365
     maxima = [float(arr[i * 365:(i + 1) * 365].max()) for i in range(n_full)]
-    return {"annual_max": maxima, "years": None, "n_years": len(maxima)}
+    return {"annual_max": maxima, "years": None, "n_years": len(maxima),
+            "year_type": None, "year_convention": "consecutive 365-day blocks (no dates supplied)",
+            "statistic": stat, "min_fraction": None, "excluded_years": []}
 
 
 def flood_frequency(

@@ -160,7 +160,7 @@ def seven_q10(
     """Compute the 7Q10 design low flow (annual 7-day min, 10-yr recurrence).
 
     The year is the **climatic year** (1 Apr - 31 Mar) by default, the USGS
-    convention for annual low flows (USGS SIR 2008-5126 and 2006-5035, section 3);
+    convention for annual low flows (USGS SIR 2008-5126 section 3; SIR 2006-5035);
     it is labelled by the calendar year in which it BEGINS. A low-flow season that
     straddles 31 Dec is therefore one year, as it would not be in a calendar or
     water year. ``year_type`` may be 'water_year', 'calendar_year' or 'custom_year'
@@ -175,6 +175,9 @@ def seven_q10(
     of the windows, and the annual minimum of what is left is biased HIGH (7Q10 read
     +108% in the methods review's test). Excluded years are listed with the reason;
     ``windows_per_year`` reports evaluated/possible windows for every year.
+    ``min_window_fraction=0.95`` bounds COVERAGE, not bias: a year that passes can still have its minimum
+    taken from the evaluable windows only, so it is an upper bound where windows are missing. 0.95 is an
+    engineering choice, not a sourced threshold.
     ``calendar='no_leap_dec31'`` is for GridMET/Daymet-type calendars.
 
     Parameters

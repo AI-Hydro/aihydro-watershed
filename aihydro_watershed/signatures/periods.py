@@ -30,11 +30,10 @@ Conventions (``PERIOD_CONVENTIONS``)
 - ``water_year``     1 Oct - 30 Sep, label = the calendar year in which it ENDS
                      (USGS convention; Bulletin 17C, Appendix 10, p. 104: "The water
                      year is designated by the calendar year in which it ends").
-- ``climatic_year``  1 Apr - 31 Mar, label = the calendar year in which it BEGINS
-                     (USGS SIR 2008-5126 section 3 and SIR 2006-5035 section 3 use the
-                     climatic year for annual 7-day lows; the methods review reports the
-                     begin-year labelling from SIR 2006-5035; the section-3 pages
-                     themselves state the dates only).
+- ``climatic_year``  1 Apr - 31 Mar, label = the calendar year in which it BEGINS.
+                     USGS SIR 2006-5035: a climatic year is "designated by the calendar
+                     year in which it begins" (https://pubs.usgs.gov/sir/2006/5035/section.html).
+                     SIR 2008-5126 section 3 uses April 1 to March 31 for 7-day minimums.
 - ``custom_year``    a year starting on ``year_start_month`` (1-12), 12 months long,
                      labelled by the calendar year in which it BEGINS. For basins whose
                      low-flow or flood season does not fit the October or April starts
@@ -43,14 +42,18 @@ Conventions (``PERIOD_CONVENTIONS``)
 
 Thresholds (``DEFAULT_MIN_FRACTION``)
 -------------------------------------
-- ``month``: 1.0 (every day present). SOURCED: WMO-No. 1203 (2017) section 4.4.1(c)
-  ("can only be calculated if there are complete data over the month") and WMO-TD 341,
-  as cited by the methods review. The SPI User Guide (WMO-No. 1090) itself marks a
-  missing value -99, asks for 20-30 years and gives no within-month rule.
+- ``month``: 1.0 (every day present). SOURCED: WMO-No. 1203 (2017) s4.4.1(c), p.7: "A monthly
+  value for a sum parameter (for example, total precipitation) can only be calculated if there
+  are complete data over the month"; the exceptions are estimated or accumulated data within
+  the 11-day and 5-consecutive-day limits. WMO-TD 341 (1989), PDF p.6: "Monthly totals should
+  be based on a full month's data". The SPI User Guide, WMO-No. 1090: missing months are -99
+  (PDF p.16), "at least 20-30 years" (PDF p.9), and no within-month rule; tolerance is "a
+  subjective decision" (PDF p.9).
 - years: 0.95 (>= 95% of days present). ENGINEERING CHOICE, not sourced: the fraction the
   package already uses for the water-balance and grouped-CI years
-  (``signatures.WATER_YEAR_MIN_PAIRED_FRACTION``); one rule, not two. Bulletin 17C states
-  no daily-coverage threshold (it treats missing years by censoring, EMA).
+  (``signatures.WATER_YEAR_MIN_PAIRED_FRACTION``); one rule, not two. Bulletin 17C treats
+  missing years as broken or incomplete records (pp.11-12) and represents them with flow
+  intervals and perception thresholds in EMA (Appendix 3); it states no daily-coverage threshold.
 Both are arguments and are echoed in every result.
 """
 from __future__ import annotations

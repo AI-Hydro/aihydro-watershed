@@ -7,6 +7,9 @@
 - `delineate_from_point`: a `ToolError` raised after one or more tiers were tried now carries `details["fallback_history"]`, the same
   list a successful result returns (it reaches `to_dict()` and so the error envelope). Before, a total failure kept only the last
   tier's message. A history already set on the error is not overwritten; a failure before any tier ran (invalid coordinates) is unchanged.
+  The NLDI tier now appends a row for failed, skipped and served, and the raw-DEM tier a `served` (or `rejected`/`failed`) row, so a result
+  names the tier that served it; a result returned early by NLDI carries the history. An unexpected (non-`ToolError`) exception escaping the
+  body keeps the trail as `exc.fallback_history`.
   The body moved into a private `_delineate_from_point`; the public signature and behaviour on success are unchanged.
 
 ## [0.3.0] - unreleased (2026-10-30) BREAKING-VALUE

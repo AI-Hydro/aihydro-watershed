@@ -422,6 +422,16 @@ def _attach_workflow_steps(
     return result
 
 
+def _with_trail(result: HydroResult, history: list[dict[str, Any]], method: str, outcome: str, reason: str) -> HydroResult:
+    """Append the winning tier's row to ``history`` and carry the whole history on a result that returns early."""
+    history.append({"method": method, "outcome": outcome, "reason": reason})
+    try:
+        result.data["fallback_history"] = list(history)
+    except Exception:  # pragma: no cover - data is a dict on every tier
+        pass
+    return result
+
+
 def delineate_from_point(
     lat: float,
     lon: float,
@@ -463,6 +473,15 @@ def delineate_from_point(
         # carried in ``details`` so it reaches the error envelope. Never overwrites a history already set.
         if trail and "fallback_history" not in exc.details:
             exc.details = {**exc.details, "fallback_history": list(trail)}
+        raise
+    except Exception as exc:
+        # An unexpected exception keeps the trail too, as an attribute a consumer can read
+        # (``exc.fallback_history``); the exception type and message are untouched.
+        if trail:
+            try:
+                exc.fallback_history = list(trail)  # type: ignore[attr-defined]
+            except Exception:  # pragma: no cover - an exception type that refuses attributes
+                pass
         raise
 
 
@@ -665,6 +684,7 @@ def _delineate_from_point(
                     <= _AREA_MISMATCH_FRAC
                 )
             if nldi_ok:
+                nldi_result = _with_trail(nldi_result, fallback_history, "nldi_comid", "served", "")
                 return _attach_workflow_steps(
                     nldi_result,
                     method_used="nldi_comid",
@@ -680,9 +700,13 @@ def _delineate_from_point(
                 else f"NLDI COMID area {nldi_area:.0f} km² too small"
             )
             log.info("NLDI COMID tier skipped: %s", escalation_reason)
+            fallback_history.append(
+                {"method": "nldi_comid", "outcome": "skipped", "reason": escalation_reason}
+            )
         except Exception as e:
             log.info("NLDI COMID tier unavailable: %s", e)
             escalation_reason = str(e)
+            fallback_history.append({"method": "nldi_comid", "outcome": "failed", "reason": str(e)})
             if method == "nldi":
                 raise ToolError(
                     code="DELINEATION_FAILED",
@@ -703,6 +727,7 @@ def _delineate_from_point(
             nldi_result = delineate_nldi_at_point(lat, lon)
             nldi_area = float(nldi_result.data.get("area_km2", 0))
             if _NLDI_QUICK_MIN_KM2 <= nldi_area <= _NLDI_QUICK_MAX_KM2:
+                nldi_result = _with_trail(nldi_result, fallback_history, "nldi_comid", "served", "")
                 return _attach_workflow_steps(
                     nldi_result,
                     method_used="nldi_comid",
@@ -716,11 +741,15 @@ def _delineate_from_point(
                 f"{_NLDI_QUICK_MIN_KM2:.0f}–{_NLDI_QUICK_MAX_KM2:.0f} km²"
             )
             log.info("NLDI quick tier skipped: %s", escalation_reason)
+            fallback_history.append(
+                {"method": "nldi_comid", "outcome": "skipped", "reason": escalation_reason}
+            )
             if method == "auto" and nldi_area < _NLDI_QUICK_MIN_KM2:
                 _try_small_catchment(escalation_reason)
         except Exception as e:
             log.info("NLDI quick tier unavailable: %s", e)
             escalation_reason = str(e)
+            fallback_history.append({"method": "nldi_comid", "outcome": "failed", "reason": str(e)})
             if method == "nldi":
                 raise ToolError(
                     code="DELINEATION_FAILED",
@@ -1190,11 +1219,18 @@ def _delineate_from_point(
                 routing_dataset = "raw DEM (NASADEM/Copernicus)"
                 routing_resolution_m = 30.0
                 quality_flags.append("RAW_DEM_EXPERIMENTAL_FALLBACK")
+                fallback_history.append(
+                    {"method": "dem_raw_fallback", "outcome": "served", "reason": "requested" if method == "dem_raw_fallback" else "no better tier served"}
+                )
             elif method == "auto":
                 log.info("Escalating to merit_basins: %s", escalation_reason)
+                fallback_history.append(
+                    {"method": "dem_raw_fallback", "outcome": "rejected", "reason": str(escalation_reason)}
+                )
                 run_merit = True
         except Exception as e:
             log.warning("Fast tier failed: %s", e)
+            fallback_history.append({"method": "dem_raw_fallback", "outcome": "failed", "reason": str(e)})
             if method == "dem_raw_fallback":
                 raise ToolError(
                     code="DELINEATION_FAILED",

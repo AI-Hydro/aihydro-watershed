@@ -80,8 +80,20 @@ class BasinsStore:
             topo = _adjacency_cache[key] = _Topology(arr[:, 0], arr[:, 1])
         return topo
 
+    def _rank(self, comids: list[int], dist: dict[int, float] | None = None) -> int:
+        """Deterministic choice among several candidate unit catchments: nearest, then max ``uparea``, then lowest comid."""
+        def key(c: int):
+            up = self.river_uparea_km2(c)
+            return ((dist or {}).get(c, 0.0), -(up if up is not None else -1.0), c)
+
+        return min(comids, key=key)
+
     def locate(self, lon: float, lat: float) -> int:
-        """comid of the unit catchment containing the point (nearest within ~5 km if none does)."""
+        """comid of the unit catchment containing the point.
+
+        Several hits (a point on a shared edge or overlapping slivers) resolve to the largest ``uparea``
+        (rivers db), then the lowest comid. With no hit, the nearest catchment within ~5 km is used.
+        """
         pt = Point(lon, lat)
         eps = _NEAREST_DEG
         cand = gpd.read_file(
@@ -89,15 +101,14 @@ class BasinsStore:
         )
         if cand.empty:
             raise ValueError("The point is not in any unit catchment (is it over land?).")
-        hit = cand[cand.geometry.contains(pt)]
-        if hit.empty:
-            hit = cand[cand.geometry.intersects(pt)]
-        if hit.empty:
-            d = cand.geometry.distance(pt)
-            if float(d.min()) > eps:
-                raise ValueError("The point is not in any unit catchment (is it over land?).")
-            hit = cand.loc[[d.idxmin()]]
-        return int(hit.iloc[0]["comid"])
+        for hit in (cand[cand.geometry.contains(pt)], cand[cand.geometry.intersects(pt)]):
+            if not hit.empty:
+                return self._rank([int(c) for c in hit["comid"]])
+        d = cand.geometry.distance(pt)
+        if float(d.min()) > eps:
+            raise ValueError("The point is not in any unit catchment (is it over land?).")
+        near = cand[d <= float(d.min()) + 1e-12]
+        return self._rank([int(c) for c in near["comid"]])
 
     def upstream_ids(self, comid: int) -> list[int]:
         """``comid`` first, then every unit catchment draining to it."""
@@ -107,7 +118,11 @@ class BasinsStore:
         return ids
 
     def geometries(self, ids: list[int]) -> gpd.GeoDataFrame:
-        """Unit-catchment polygons (EPSG:4326) with ``comid`` and ``area_km2``."""
+        """Unit-catchment polygons (EPSG:4326) with ``comid`` and ``area_km2``.
+
+        Every requested id should come back with a non-empty polygon. Ids that did not are listed in
+        ``result.attrs["missing_comids"]`` so the caller can flag an incomplete assembly.
+        """
         parts = []
         for i in range(0, len(ids), _CHUNK_IDS):
             chunk = ", ".join(str(int(c)) for c in ids[i : i + _CHUNK_IDS])
@@ -119,7 +134,11 @@ class BasinsStore:
         )
         if gdf.crs is None:
             gdf = gdf.set_crs(4326)
-        return gdf.to_crs(4326)
+        gdf = gdf.to_crs(4326)
+        has_poly = gdf.geometry.notna() & ~gdf.geometry.is_empty
+        gdf = gdf[has_poly].copy()
+        gdf.attrs["missing_comids"] = sorted(set(int(c) for c in ids) - set(int(c) for c in gdf["comid"]))
+        return gdf
 
     def river_uparea_km2(self, comid: int) -> float | None:
         """MERIT-Basins cumulative drainage area at the downstream end of ``comid`` (km2)."""

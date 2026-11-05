@@ -9,7 +9,7 @@
   (alias `merit_basins`) forces it anywhere, including CONUS, so the CAMELS evaluation can score it; in CONUS `auto` still starts with NLDI.
   The tier is attempted once per call; the trail row is `merit_basins_hybrid` (`succeeded` / `failed`) and `method_used` reads `merit_basins_hybrid`.
 - Data source replaced: the unhashed Google Drive download, the runtime `pip install gdown` and the `git clone` of delineator into `/tmp` are gone
-  (`merit/merit_download.py` removed). Per-region files come from mghydro.com's `delineator` 2.2.4 / data v3 set, pinned by SHA-256 and size in
+  (`merit/merit_download.py` reduced to a deprecated shim). Per-region files come from mghydro.com's `delineator` 2.2.4 / data v3 set, pinned by SHA-256 and size in
   `merit/delineator_data_manifest.json`, streamed to `.part` and installed only if the digest matches. A mismatch raises
   `MERIT_ASSET_INTEGRITY_FAILED` (fail closed); an on-disk file that no longer matches is refused. `megabasins.db` (not served by mghydro.com) is pinned by
   the git blob SHA-1 at the v2.2.4 tag, and its SHA-256 is recorded on first verification and enforced afterwards.
@@ -25,12 +25,35 @@
 - `AIHYDRO_HOME` is honoured for the MERIT data root and the auto-stage config (`config.json`); `AIHYDRO_MERIT_AUTO_STAGE` overrides the policy.
   The Earth Engine window cache path in `merit_flowdir_pipeline` is unchanged here.
 
+### Changed (review round 1 of PR #11)
+
+- **Disclosure.** A call that downloads data flags `MERIT_AUTO_STAGED` and lists `data_provenance.downloaded` (`name`, `bytes`, `url`, `sha256`) and
+  `acquisition_policy`. First-call cost per region (basins + rivers, pinned sizes): min 14 MB, median 530 MB, max 2015 MB over 60 regions
+  (North America: 60 / 502 / 916 MB); +52.9 MB for the level-2 index on the first call ever. The default policy is the single constant
+  `merit_manager.DEFAULT_AUTO_STAGE_POLICY = "tiered"` (`"never"` = confirm-first). Vector staging checks for 2x the pending bytes free on disk.
+- **Download robustness.** An integrity mismatch writes a negative-cache marker (file, observed digest, time) and refuses automatic retry for 24 h
+  with `MERIT_ASSET_INTEGRITY_FAILED` (surfaced through staging, never as `MERIT_BASINS_NOT_STAGED`; `force_retry=True` overrides). `.part` files are
+  resumed with HTTP Range when the server answers 206. Each destination has a lock file and a `mkstemp` partial file so concurrent first downloads cannot interleave.
+- **Pins.** `scripts/gen_delineator_manifest.py` regenerates the manifest deterministically from `constants.py` at the v2.2.4 tag commit
+  (`c56095e8625d1ee3534217b0462a8ed43027c77c`; `source.tag_commit`, `source.constants_blob_sha1`, `source.hashes_file` is the commit URL). An unmodified
+  copy of that file (MIT, with its LICENSE) is vendored under `tests/fixtures/delineator_v2.2.4/`; a test checks the manifest against it.
+- **Sidecar.** The provenance fast path also checks `st_ino` and `ctime_ns`; `megabasins.db` and every `.db` under 200 MB are always re-hashed.
+  A tamper that restores size and mtime is caught.
+- `BasinsStore.locate` resolves several hits deterministically (nearest, then max `uparea`, then lowest comid). `geometries()` reports ids without a polygon
+  (`VECTOR_ASSEMBLY_INCOMPLETE`).
+- The licence string and `data_provenance.share_alike` state "share-alike" explicitly.
+- `basins_region_cache` says "legacy layout found, not read; re-stage with ..." when the shapefile layout exists. `configure_delineator_env` is removed;
+  `delineator_ready` now means verified `basins##.db` + `rivers##.db` (aihydro-tools `merit_ensure_basin` still calls it).
+  `merit/merit_download.py` is kept only as a deprecated shim (`ensure_level2_index`, `download_river_shapefile`, `download_catchment_shapefile`) because
+  aihydro-tools `scripts/install_merit_minimal.py` and a tools test import it; it stages the verified files.
+- `tests/nonet.py`: a `-p nonet` pytest plugin that blocks non-loopback network access (`PYTHONPATH=tests pytest -p nonet ...`).
+
 ### Added
 
 - `merit/verified_fetch.py`, `merit/basins_store.py`, `delineation/merit_hybrid.py`; `MeritDataManager.auto_stage_vectors`, `ensure_level2_index`, `verified_asset`.
 - Result field `data_provenance` (file name, SHA-256, size, URL of every file used; licence; pinned manifest version; version consistency).
   The result `license` is now the non-commercial MERIT-Basins/mghydro/MERIT Hydro statement.
-- `tests/test_merit_hybrid_default.py` (21 offline tests on a synthetic fixture); `tests/conftest.py` sends `HOME`/`AIHYDRO_HOME` to a temp dir and blocks downloads.
+- `tests/test_merit_hybrid_default.py` (35 offline tests on a synthetic fixture); `tests/conftest.py` sends `HOME`/`AIHYDRO_HOME` to a temp dir and blocks downloads.
 
 ## [0.3.0] - unreleased (2026-10-30) BREAKING-VALUE
 

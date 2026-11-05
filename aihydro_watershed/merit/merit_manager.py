@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -37,6 +38,13 @@ _MANIFEST_PATH = Path(__file__).parent / "merit_manifest.yaml"
 #   merit_auto_stage_max_gb: float                     (default 2.0)
 # ---------------------------------------------------------------------------
 
+# Default for on-demand staging of MERIT files when nothing is configured:
+#   "tiered" - download automatically when the pinned size is within merit_auto_stage_max_gb (2 GB), else ask;
+#   "never"  - confirm-first: never download implicitly; staging needs an explicit merit_ensure_* call.
+# This is the single switch for the first-call download behaviour of the default global tier.
+DEFAULT_AUTO_STAGE_POLICY = "tiered"
+
+
 def _merit_auto_stage_policy() -> tuple[str, float]:
     """Return (policy, max_gb) from ``AIHYDRO_MERIT_AUTO_STAGE`` or $AIHYDRO_HOME/config.json."""
     import json as _json
@@ -45,12 +53,12 @@ def _merit_auto_stage_policy() -> tuple[str, float]:
     try:
         if cfg_path.exists():
             cfg = _json.loads(cfg_path.read_text())
-            policy = str(cfg.get("merit_auto_stage", "tiered"))
+            policy = str(cfg.get("merit_auto_stage", DEFAULT_AUTO_STAGE_POLICY))
             max_gb = float(cfg.get("merit_auto_stage_max_gb", 2.0))
             return (env_policy or policy), max_gb
     except Exception:
         pass
-    return (env_policy or "tiered"), 2.0
+    return (env_policy or DEFAULT_AUTO_STAGE_POLICY), 2.0
 
 
 @dataclass
@@ -99,8 +107,8 @@ class BasinsRegionStatus:
     message: str
     downloaded: list[str] | None = None
     integrity_error: str | None = None
-    rivers_db_path: str | None = None
     megabasins_ready: bool = False
+    legacy_layout_found: bool = False
 
 
 class MeritDataManager:
@@ -229,11 +237,12 @@ class MeritDataManager:
     def verified_megabasins(self) -> Path | None:
         return vf.verified_path(self.megabasins_path(), vf.asset_spec("megabasins.db"))
 
-    def _stage(self, spec: "vf.AssetSpec", dest: Path, progress_cb=None) -> Path:
+    def _stage(self, spec: "vf.AssetSpec", dest: Path, progress_cb=None, *, force: bool = False) -> Path:
         return vf.fetch_verified(
             spec,
             dest,
             opener=self._opener,
+            force=force,
             progress_cb=(lambda done, tot: progress_cb(f"Downloading {spec.name}", done, tot))
             if progress_cb
             else None,
@@ -281,35 +290,59 @@ class MeritDataManager:
             ),
         )
 
+    def _legacy_layout(self, pfaf: str) -> bool:
+        return self.catchment_shapefile_path(pfaf).exists() or self.river_shapefile_path(pfaf).exists()
+
     def basins_region_cache(self, pfaf_region: str) -> BasinsRegionStatus:
         """Report regional MERIT-Basins vector readiness (hash-verified, never trusts an unpinned file)."""
         pfaf = pfaf_region.zfill(2)
         meta = self._basins_metadata_path(pfaf)
         err: str | None = None
         found: dict[str, Path | None] = {}
+        targets = {
+            "basins": self.basins_db_path(pfaf),
+            "rivers": self.rivers_db_path(pfaf),
+        }
         for kind in ("basins", "rivers"):
             try:
                 found[kind] = self.verified_asset(kind, pfaf)
             except vf.AssetIntegrityError as exc:
                 found[kind] = None
                 err = err or str(exc)
+            if found[kind] is None and err is None:
+                marker = vf.active_integrity_marker(targets[kind])
+                if marker:
+                    err = f"{vf.AssetIntegrityError.code}: {vf.marker_message(marker)}"
         try:
             mega = self.verified_megabasins()
         except vf.AssetIntegrityError as exc:
             mega = None
             err = err or str(exc)
+        if mega is None and err is None:
+            marker = vf.active_integrity_marker(self.megabasins_path())
+            if marker:
+                err = f"{vf.AssetIntegrityError.code}: {vf.marker_message(marker)}"
         need = sum(
             vf.region_asset_spec(k, pfaf).size_bytes or 0 for k in ("basins", "rivers") if found[k] is None
         )
         if mega is None:
             need += vf.asset_spec("megabasins.db").size_bytes or 0
         basins_ok, rivers_ok = found["basins"] is not None, found["rivers"] is not None
+        legacy = self._legacy_layout(pfaf)
         if err:
             message = f"{err} The file was not used."
         elif basins_ok and rivers_ok:
             message = f"MERIT-Basins vectors verified for Pfaf {pfaf}."
         else:
             message = f"MERIT-Basins vectors missing for Pfaf {pfaf}; staging required."
+        if legacy:
+            note = (
+                f"Legacy shapefile layout found for Pfaf {pfaf} under {self.root / 'shp'}: not read. Re-stage with "
+                f"merit_ensure_basins_region(pfaf_region='{pfaf}', acquisition_policy='download')."
+            )
+            message = f"{message} {note}"
+            if not (basins_ok and rivers_ok):
+                log.warning(note)
         return BasinsRegionStatus(
             pfaf_region=pfaf,
             catchments_ready=basins_ok,
@@ -326,6 +359,7 @@ class MeritDataManager:
             message=message,
             integrity_error=err,
             megabasins_ready=mega is not None,
+            legacy_layout_found=legacy,
         )
 
     def ensure_basins_region(
@@ -334,16 +368,19 @@ class MeritDataManager:
         *,
         acquisition_policy: str = "check_only",
         progress_cb: "Callable[[str, int, int], None] | None" = None,
+        force_retry: bool = False,
     ) -> BasinsRegionStatus:
         """Ensure/report regional MERIT-Basins vectors (``basins##.db``, ``rivers##.db``, ``megabasins.db``).
 
         ``check_only`` never downloads. ``download`` fetches only what is missing, installing a file
-        only if its SHA-256 and size match the pinned manifest (a mismatch is reported, never used).
+        only if its SHA-256 and size match the pinned manifest (a mismatch is reported, never used, and
+        refuses automatic retry for 24 h unless ``force_retry``). Needs 2x the pending bytes free on disk.
         """
         pfaf = pfaf_region.zfill(2)
         status = self.basins_region_cache(pfaf)
         downloaded: list[str] = []
         failure: str | None = None
+        integrity_failure: str | None = None
         if acquisition_policy in ("download", "download_if_missing"):
             todo = []
             if not status.megabasins_ready:
@@ -352,12 +389,26 @@ class MeritDataManager:
                 todo.append((vf.region_asset_spec("basins", pfaf), self.basins_db_path(pfaf)))
             if not status.rivers_ready:
                 todo.append((vf.region_asset_spec("rivers", pfaf), self.rivers_db_path(pfaf)))
+            pending = sum(spec.size_bytes or 0 for spec, _ in todo)
+            free = shutil.disk_usage(self.root).free
+            if pending and free < pending * 2:
+                status.acquisition_policy = acquisition_policy
+                status.message = (
+                    f"Not enough disk space to stage Pfaf {pfaf} vectors (needs {pending / 1e6:.0f} MB, "
+                    f"only {free / 1e9:.1f} GB free under {self.root}). Free up space or set AIHYDRO_HOME."
+                )
+                return status
             for spec, dest in todo:
                 try:
                     log.info("Downloading %s (%.0f MB) from %s", spec.name, (spec.size_bytes or 0) / 1e6, spec.url)
-                    self._stage(spec, dest, progress_cb)
+                    self._stage(spec, dest, progress_cb, force=force_retry)
                     downloaded.append(spec.name)
-                except Exception as exc:  # integrity failures and network errors both leave nothing installed
+                except vf.AssetIntegrityError as exc:  # nothing unverified is installed
+                    failure = f"{spec.name}: {exc}"
+                    integrity_failure = str(exc)
+                    log.warning("MERIT vector staging failed: %s", failure)
+                    break
+                except Exception as exc:  # network errors leave a resumable partial file
                     failure = f"{spec.name}: {exc}"
                     log.warning("MERIT vector staging failed: %s", failure)
                     break
@@ -369,6 +420,8 @@ class MeritDataManager:
         status.downloaded = downloaded or None
         if failure:
             status.message = f"Staging failed ({failure}); nothing unverified was installed."
+            if integrity_failure:
+                status.integrity_error = integrity_failure
         elif status.acquisition_required and acquisition_policy == "check_only":
             status.message = (
                 f"MERIT-Basins vectors missing for Pfaf {pfaf} (~{(status.estimated_download_size_bytes or 0) / 1e6:.0f} MB "
@@ -562,8 +615,6 @@ class MeritDataManager:
 
         Returns RoutingRegionStatus; check ``.flowdir_ready`` for success.
         """
-        import shutil
-
         policy, max_gb = _merit_auto_stage_policy()
         pfaf = pfaf.zfill(2)
         status = self.routing_region_cache(pfaf)
@@ -711,26 +762,11 @@ class MeritDataManager:
             downloaded=downloaded or None,
         )
 
-    def configure_delineator_env(self, pfaf_code: str) -> dict[str, str]:
-        """Return env var dict for upstream-delineator (paths must exist)."""
-        pfaf = pfaf_code.zfill(2)
-        catch = self.catchment_shapefile_path(pfaf)
-        river = self.river_shapefile_path(pfaf)
-        flowdir = self._glob_flowdir(pfaf)
-        accum_dir = self.root / "raster" / "accum_basins"
-        accum_matches = list(accum_dir.glob(f"*pfaf_{pfaf}*.tif")) if accum_dir.exists() else []
-        megabasins = self.level2_shapefile_path()
-
-        env = {
-            "CATCHMENT_PATH": str(catch) if catch.exists() else "",
-            "RIVER_PATH": str(river) if river.exists() else "",
-            "FLOW_DIR_PATH": str(flowdir) if flowdir else "",
-            "ACCUM_PATH": str(accum_matches[0]) if accum_matches else "",
-            "MEGABASINS_PATH": str(megabasins) if megabasins.exists() else "",
-        }
-        return env
-
     def delineator_ready(self, pfaf_code: str) -> bool:
-        env = self.configure_delineator_env(pfaf_code)
-        required = ("CATCHMENT_PATH", "RIVER_PATH", "FLOW_DIR_PATH")
-        return all(env.get(k) for k in required)
+        """True when the verified ``basins##.db`` and ``rivers##.db`` for the region are staged.
+
+        (Retained for the tools pack's ``merit_ensure_basin``. The old shapefile/``upstream-delineator``
+        environment helper, ``configure_delineator_env``, was removed with the shapefile layout.)
+        """
+        st = self.basins_region_cache(pfaf_code)
+        return bool(st.catchments_ready and st.rivers_ready)

@@ -1,42 +1,10 @@
 {
- "schema": 1,
- "description": "Pinned, hash-verified per-megabasin MERIT-Basins/MERIT-Hydro files served by mghydro.com for the 'delineator' package. Hashes are copied from delineator's published HASHES table; sizes are Content-Length from HEAD requests. No file is trusted unless its SHA-256 matches.",
- "source": {
-  "package": "delineator",
-  "package_version": "2.2.4",
-  "package_license": "MIT",
-  "hashes_file": "https://github.com/mheberger/delineator/blob/v2.2.4/src/delineator/constants.py",
-  "base_url": "https://mghydro.com/watersheds/data/",
-  "data_version": "v3",
-  "data_updated": "2026-07-12",
-  "checked": "2026-11-05"
- },
- "layout": {
-  "basins": "basins{pfaf}.db  SpatiaLite SQLite; table l0_basins(comid, nextdown, area_km2, geometry) plus l1..l4 nested hierarchy",
-  "rivers": "rivers{pfaf}.db  SpatiaLite SQLite; table rivers(comid, uparea, sorder, lengthkm, geometry)",
-  "flowdir": "flowdir{pfaf}.tif  MERIT-Hydro D8 flow direction GeoTIFF (ESRI codes)",
-  "accum": "accum{pfaf}.tif  flow accumulation in cells (GeoTIFF)"
- },
- "level2_index": {
-  "name": "megabasins.db",
-  "url": "https://raw.githubusercontent.com/mheberger/delineator/v2.2.4/src/delineator/data/megabasins.db",
-  "size_bytes": 52879360,
-  "sha256": null,
-  "git_blob_sha1": "35886e8c1137bd9302e954bad1f0f30976f90416",
-  "note": "Not served by mghydro.com (404); it is bundled in the delineator repo/wheel. delineator publishes no SHA-256 for it, so it is pinned by the git blob SHA-1 at the v2.2.4 tag. The SHA-256 of the first verified copy is recorded in the provenance sidecar and enforced on every later load."
- },
- "licence": {
-  "data_files": "CC-BY-NC-SA 4.0 ('released with the same terms', mghydro.com/watersheds/data)",
-  "merit_basins": "CC BY-NC-SA 4.0 for contributor content on reachhydro.org; a UCSD licence (text not shown) for CW3E content; page ties neither to a version",
-  "merit_hydro": "CC BY-NC 4.0 or ODbL 1.0 (global-hydrodynamics.github.io/MERIT_Hydro)",
-  "summary": "Non-commercial. The sources disagree on the exact variant (BY-NC, BY-NC-SA, ODbL option); treat as non-commercial and share-alike until the owner rules.",
-  "checked": "2026-11-05"
- },
  "dataset_versions": {
-  "vectors": "MERIT-Basins v0.7/v1.0_bugfix1 (delineator README; MERIT_Hydro_v07_Basins_v01 file family)",
+  "earth_engine": "MERIT/Hydro/v1_0_1",
   "rasters": "MERIT Hydro as processed by mghydro.com; the version is not stated on the data page (unverified)",
-  "earth_engine": "MERIT/Hydro/v1_0_1"
+  "vectors": "MERIT-Basins v0.7/v1.0_bugfix1 (delineator README; MERIT_Hydro_v07_Basins_v01 file family)"
  },
+ "description": "Pinned, hash-verified per-megabasin MERIT-Basins/MERIT-Hydro files served by mghydro.com for the 'delineator' package. Hashes are copied from delineator's published HASHES table; sizes are Content-Length from HEAD requests. No file is trusted unless its SHA-256 matches.",
  "files": {
   "accum11.tif": {
    "sha256": "3cbd439b5e661ca2f6d4418e812fb6ea733929e8c6863d2ae57e2b0fa75edb1d",
@@ -998,5 +966,41 @@
    "sha256": "8a7fa63c8f90307b38ac3e2041fb0c9342116b72568341029cc1bc8a33df31ee",
    "size_bytes": 41078784
   }
+ },
+ "layout": {
+  "accum": "accum{pfaf}.tif  flow accumulation in cells (GeoTIFF)",
+  "basins": "basins{pfaf}.db  SpatiaLite SQLite; table l0_basins(comid, nextdown, area_km2, geometry) plus l1..l4 nested hierarchy",
+  "flowdir": "flowdir{pfaf}.tif  MERIT-Hydro D8 flow direction GeoTIFF (ESRI codes)",
+  "rivers": "rivers{pfaf}.db  SpatiaLite SQLite; table rivers(comid, uparea, sorder, lengthkm, geometry)"
+ },
+ "level2_index": {
+  "git_blob_sha1": "35886e8c1137bd9302e954bad1f0f30976f90416",
+  "name": "megabasins.db",
+  "note": "Not served by mghydro.com (404); it is bundled in the delineator repo/wheel. delineator publishes no SHA-256 for it, so it is pinned by the git blob SHA-1 at the v2.2.4 tag. The SHA-256 of the first verified copy is recorded in the provenance sidecar and enforced on every later load.",
+  "sha256": null,
+  "size_bytes": 52879360,
+  "url": "https://raw.githubusercontent.com/mheberger/delineator/c56095e8625d1ee3534217b0462a8ed43027c77c/src/delineator/data/megabasins.db"
+ },
+ "licence": {
+  "checked": "2026-11-05",
+  "data_files": "CC-BY-NC-SA 4.0 ('released with the same terms', mghydro.com/watersheds/data)",
+  "merit_basins": "CC BY-NC-SA 4.0 for contributor content on reachhydro.org; a UCSD licence (text not shown) for CW3E content; page ties neither to a version",
+  "merit_hydro": "CC BY-NC 4.0 or ODbL 1.0 (global-hydrodynamics.github.io/MERIT_Hydro)",
+  "share_alike": true,
+  "summary": "Non-commercial and share-alike. mghydro.com releases the files under CC BY-NC-SA 4.0; MERIT Hydro is CC BY-NC 4.0 or ODbL 1.0 (derived data must be shared alike); the sources disagree on the exact variant. Derived-data obligations may apply."
+ },
+ "schema": 1,
+ "source": {
+  "base_url": "https://mghydro.com/watersheds/data/",
+  "checked": "2026-11-05",
+  "constants_blob_sha1": "a2b6b9a983ff0bb8a12c25302b10c3334ec9c66f",
+  "data_updated": "2026-07-12",
+  "data_version": "v3",
+  "hashes_file": "https://github.com/mheberger/delineator/blob/c56095e8625d1ee3534217b0462a8ed43027c77c/src/delineator/constants.py",
+  "package": "delineator",
+  "package_license": "MIT",
+  "package_version": "2.2.4",
+  "tag": "v2.2.4",
+  "tag_commit": "c56095e8625d1ee3534217b0462a8ed43027c77c"
  }
 }

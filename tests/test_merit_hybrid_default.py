@@ -33,7 +33,7 @@ def _serve(region, tamper: str | None = None):
     """An opener that serves the fixture files by URL, optionally corrupting one."""
     by_url = {vf.asset_spec(n).url: n for n in region.files}
 
-    def opener(url: str):
+    def opener(url: str, headers=None):
         name = by_url[url]
         data = region.files[name].read_bytes()
         if name == tamper:
@@ -91,23 +91,55 @@ def test_hash_mismatch_fails_closed_and_installs_nothing(region, tmp_path):
     spec = vf.region_asset_spec("basins", fx.PFAF)
     with pytest.raises(vf.AssetIntegrityError, match="MERIT_ASSET_INTEGRITY_FAILED"):
         vf.fetch_verified(spec, dest, opener=_serve(region, tamper="basins73.db"))
-    assert not dest.exists() and not dest.with_name(dest.name + ".part").exists()
+    assert not dest.exists() and not list(dest.parent.glob("*.part"))
     assert not vf.sidecar_path(dest).exists()
+    marker = vf.active_integrity_marker(dest)
+    assert marker["file"] == "basins73.db" and len(marker["observed_sha256"]) == 64
+    assert marker["observed_sha256"] != spec.sha256
 
 
-def test_tampered_existing_file_is_refused_and_sidecar_avoids_rehash(region, tmp_path, monkeypatch):
+def test_sidecar_fast_path_for_big_files_and_always_rehash_for_small_dbs(region, tmp_path, monkeypatch):
+    mgr = _stage_all(region, tmp_path / "m")
+    real = vf.sha256_file
+    hashed: list[str] = []
+    monkeypatch.setattr(vf, "sha256_file", lambda p: (hashed.append(Path(p).name), real(p))[1])
+    vf.verified_path(mgr.raster_path("flowdir", fx.PFAF), vf.region_asset_spec("flowdir", fx.PFAF))
+    assert hashed == []  # raster: sidecar fast path, no re-hash
+    vf.verified_path(mgr.basins_db_path(fx.PFAF), vf.region_asset_spec("basins", fx.PFAF))
+    vf.verified_path(mgr.megabasins_path(), vf.asset_spec("megabasins.db"))
+    assert hashed == ["basins73.db", "megabasins.db"]  # small .db and level-2 index: always re-hashed
+
+
+def test_tamper_that_restores_mtime_is_caught(region, tmp_path, monkeypatch):
+    import os
+
+    mgr = _stage_all(region, tmp_path / "m")
+
+    def tamper(path: Path):
+        st = path.stat()
+        with path.open("r+b") as f:
+            first = f.read(1)
+            f.seek(0)
+            f.write(bytes([first[0] ^ 0xFF]))
+        os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns))  # same size, same mtime, same inode
+
+    db = mgr.basins_db_path(fx.PFAF)
+    tamper(db)
+    with pytest.raises(vf.AssetIntegrityError):
+        vf.verified_path(db, vf.region_asset_spec("basins", fx.PFAF))  # small .db: always re-hashed
+    monkeypatch.setattr(vf, "REHASH_BELOW_BYTES", 0)  # force the large-file fast path
+    tif = mgr.raster_path("flowdir", fx.PFAF)
+    tamper(tif)  # ctime cannot be restored by utime, so the sidecar check fails and the file is re-hashed
+    with pytest.raises(vf.AssetIntegrityError):
+        vf.verified_path(tif, vf.region_asset_spec("flowdir", fx.PFAF))
+
+
+def test_tampered_existing_file_is_refused_and_reported(region, tmp_path):
     mgr = _stage_all(region, tmp_path / "m", rasters=False)
-    spec = vf.region_asset_spec("basins", fx.PFAF)
-    path = mgr.basins_db_path(fx.PFAF)
-    monkeypatch.setattr(vf, "sha256_file", lambda p: (_ for _ in ()).throw(AssertionError("re-hashed")))
-    assert vf.verified_path(path, spec) == path  # sidecar hit: no re-hash
-    monkeypatch.undo()
-    monkeypatch.setattr(vf, "load_manifest", lambda: fx.patched_manifest(json.loads(
-        (Path(vf.__file__).parent / "delineator_data_manifest.json").read_text()), region))
-    with path.open("ab") as f:
+    with mgr.basins_db_path(fx.PFAF).open("ab") as f:
         f.write(b"x")
     with pytest.raises(vf.AssetIntegrityError):
-        vf.verified_path(path, spec)
+        mgr.verified_asset("basins", fx.PFAF)
     st = mgr.basins_region_cache(fx.PFAF)
     assert not st.catchments_ready and "MERIT_ASSET_INTEGRITY_FAILED" in (st.integrity_error or "")
 
@@ -196,6 +228,8 @@ def test_hybrid_local_rasters_refines_terminal_and_is_version_consistent(staged)
     assert names == {"basins73.db", "rivers73.db", "flowdir73.tif", "accum73.tif", "megabasins.db"}
     assert all(len(f["sha256"]) == 64 and f["verified"] for f in res.data_provenance["files"])
     assert "non-commercial" in res.data_provenance["licence"].lower()
+    assert "share-alike" in res.data_provenance["licence"].lower() and res.data_provenance["share_alike"] is True
+    assert res.data_provenance["downloaded"] == [] and "MERIT_AUTO_STAGED" not in res.quality_flags
     assert not res.gdf.geometry.iloc[0].geom_type == "GeometryCollection"
 
 
@@ -345,6 +379,7 @@ def test_router_global_auto_runs_hybrid_first_and_reads_merit_basins_hybrid(call
     }
     assert d["data_provenance"]["licence"] == "non-commercial"
     assert "non-commercial" in d["license"].lower() and "ODbL" in d["license"]
+    assert "share-alike" in d["license"].lower()
 
 
 def test_router_forced_merit_hybrid_works_in_conus_and_alias(calls):
@@ -394,3 +429,268 @@ def test_router_integrity_failure_is_flagged_and_hybrid_tried_once(calls, monkey
         router.delineate_from_point(-3.0, -60.0)
     assert len(calls["hybrid"]) == 1  # later fallbacks do not retry it
     assert "DELINEATION_FAILED" in repr(ei.value) or "failed" in str(ei.value).lower()
+
+
+# ------------------------------------------------------------------ disclosure, policy, disk
+
+
+def test_first_call_downloads_are_disclosed_and_flagged(region, tmp_path, monkeypatch):
+    monkeypatch.setenv("AIHYDRO_MERIT_DIR", str(tmp_path / "merit"))
+    monkeypatch.delenv("AIHYDRO_MERIT_AUTO_STAGE", raising=False)
+    monkeypatch.setattr(vf, "_default_opener", _serve(region))
+    _stub_ee(monkeypatch, region, [])
+    first = pipe.merit_basins_hybrid_delineate(*fx.OUTLET_REQUEST)
+    prov = first.data_provenance
+    assert "MERIT_AUTO_STAGED" in first.quality_flags and prov["acquisition_policy"] == "tiered"
+    got = {d["name"]: d for d in prov["downloaded"]}
+    assert set(got) == {"megabasins.db", "basins73.db", "rivers73.db"}
+    for name, d in got.items():
+        assert d["bytes"] == region.files[name].stat().st_size and d["sha256"] == region.sha(name)
+        assert d["url"].startswith("https://") or d["url"].startswith("http")
+    again = pipe.merit_basins_hybrid_delineate(*fx.OUTLET_REQUEST)
+    assert again.data_provenance["downloaded"] == [] and "MERIT_AUTO_STAGED" not in again.quality_flags
+
+
+def test_default_policy_is_one_constant(region, tmp_path, monkeypatch):
+    import aihydro_watershed.merit.merit_manager as mm
+
+    monkeypatch.delenv("AIHYDRO_MERIT_AUTO_STAGE", raising=False)
+    assert mm.DEFAULT_AUTO_STAGE_POLICY == "tiered" and mm._merit_auto_stage_policy()[0] == "tiered"
+    monkeypatch.setattr(mm, "DEFAULT_AUTO_STAGE_POLICY", "never")  # the one-line switch to confirm-first
+    assert mm._merit_auto_stage_policy()[0] == "never"
+    monkeypatch.setenv("AIHYDRO_MERIT_DIR", str(tmp_path / "merit"))
+    monkeypatch.setattr(vf, "_default_opener", _serve(region))
+    mm.MeritDataManager(opener=_serve(region)).ensure_level2_index(download=True)
+    with pytest.raises(RuntimeError, match="MERIT_BASINS_NOT_STAGED"):
+        pipe.merit_basins_hybrid_delineate(*fx.OUTLET_REQUEST)
+    assert not list((tmp_path / "merit" / "vector").glob("basins*"))
+
+
+def test_disk_free_check_blocks_vector_staging(region, tmp_path, monkeypatch):
+    import collections
+
+    import aihydro_watershed.merit.merit_manager as mm
+
+    Usage = collections.namedtuple("Usage", "total used free")
+    monkeypatch.setattr(mm.shutil, "disk_usage", lambda p: Usage(10, 10, 1))
+    opened: list = []
+    mgr = MeritDataManager(tmp_path / "m", opener=lambda *a, **k: opened.append(a) or _serve(region)(*a))
+    monkeypatch.delenv("AIHYDRO_MERIT_AUTO_STAGE", raising=False)
+    st = mgr.auto_stage_vectors(fx.PFAF)
+    assert "Not enough disk space" in st.message and opened == [] and not st.catchments_ready
+
+
+# ------------------------------------------------------- negative cache, resume, locking
+
+
+def test_integrity_failure_backs_off_for_24h_and_is_not_reported_as_not_staged(region, tmp_path, monkeypatch):
+    import json as _json
+
+    root = tmp_path / "merit"
+    monkeypatch.setenv("AIHYDRO_MERIT_DIR", str(root))
+    monkeypatch.delenv("AIHYDRO_MERIT_AUTO_STAGE", raising=False)
+    MeritDataManager(opener=_serve(region)).ensure_level2_index(download=True)
+    opens: list[str] = []
+    bad = _serve(region, tamper="basins73.db")
+    monkeypatch.setattr(vf, "_default_opener", lambda url, headers=None: opens.append(url) or bad(url))
+    with pytest.raises(RuntimeError, match="MERIT_ASSET_INTEGRITY_FAILED"):
+        pipe.merit_basins_hybrid_delineate(*fx.OUTLET_REQUEST)
+    n = len(opens)
+    assert n >= 1
+    with pytest.raises(RuntimeError) as ei:  # second call: refused without touching the network
+        pipe.merit_basins_hybrid_delineate(*fx.OUTLET_REQUEST)
+    assert "MERIT_ASSET_INTEGRITY_FAILED" in str(ei.value) and "MERIT_BASINS_NOT_STAGED" not in str(ei.value)
+    assert "automatic retry is refused" in str(ei.value) and len(opens) == n
+    mgr = MeritDataManager(opener=_serve(region))
+    marker = vf.integrity_marker_path(mgr.basins_db_path(fx.PFAF))
+    # explicit forced retry works (and clears the marker)
+    st = mgr.ensure_basins_region(fx.PFAF, acquisition_policy="download", force_retry=True)
+    assert st.catchments_ready and not marker.exists()
+    # an aged marker (> 24 h) no longer blocks
+    (root / "vector" / "basins73.db").unlink()
+    vf.sidecar_path(root / "vector" / "basins73.db").unlink()
+    bad_again = MeritDataManager(opener=_serve(region, tamper="basins73.db"))
+    bad_again.ensure_basins_region(fx.PFAF, acquisition_policy="download")
+    rec = _json.loads(marker.read_text())
+    rec["epoch"] -= 25 * 3600
+    marker.write_text(_json.dumps(rec))
+    assert vf.active_integrity_marker(mgr.basins_db_path(fx.PFAF)) is None
+    st = MeritDataManager(opener=_serve(region)).ensure_basins_region(fx.PFAF, acquisition_policy="download")
+    assert st.catchments_ready
+
+
+class _Resp:
+    def __init__(self, data: bytes, status: int = 200, fail_after: int | None = None):
+        self._b, self.status, self._fail = io.BytesIO(data), status, fail_after
+        self._read = 0
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def read(self, n=-1):
+        if self._fail is not None and self._read >= self._fail:
+            raise ConnectionError("dropped")
+        chunk = self._b.read(n if self._fail is None else min(n, self._fail - self._read))
+        self._read += len(chunk)
+        return chunk
+
+
+def _range_server(data: bytes, *, supports_range: bool, drop_first_at: int | None):
+    calls: list[dict] = []
+
+    def opener(url, headers=None):
+        calls.append(dict(headers or {}))
+        rng = (headers or {}).get("Range")
+        if rng and supports_range:
+            start = int(rng.split("=")[1].split("-")[0])
+            return _Resp(data[start:], status=206)
+        return _Resp(data, status=200, fail_after=drop_first_at if not calls[1:] else None)
+
+    return opener, calls
+
+
+@pytest.mark.parametrize("supports_range", [True, False])
+def test_interrupted_download_resumes_with_range_or_restarts(region, tmp_path, supports_range):
+    spec = vf.region_asset_spec("rivers", fx.PFAF)
+    data = region.files["rivers73.db"].read_bytes()
+    opener, calls = _range_server(data, supports_range=supports_range, drop_first_at=len(data) // 2)
+    dest = tmp_path / "d" / "rivers73.db"
+    with pytest.raises(ConnectionError):
+        vf.fetch_verified(spec, dest, opener=opener)
+    parts = list(dest.parent.glob("rivers73.db.*.part"))
+    assert len(parts) == 1 and 0 < parts[0].stat().st_size < len(data) and not dest.exists()
+    assert vf.active_integrity_marker(dest) is None  # a dropped connection is not an integrity failure
+    vf.fetch_verified(spec, dest, opener=opener)
+    assert dest.read_bytes() == data and not list(dest.parent.glob("*.part")) and not dest.with_name("rivers73.db.lock").exists()
+    assert len(calls) == 2
+    assert calls[1]["Range"].startswith("bytes=") and calls[0] == {}  # resume asks for a range; a server that ignores it (200) restarts
+
+
+def test_concurrent_first_downloads_do_not_interleave(region, tmp_path):
+    import threading
+    import time
+
+    spec = vf.region_asset_spec("rivers", fx.PFAF)
+    data = region.files["rivers73.db"].read_bytes()
+    opens: list[int] = []
+
+    def slow(url, headers=None):
+        opens.append(1)
+        time.sleep(0.4)
+        return _Resp(data)
+
+    dest = tmp_path / "d" / "rivers73.db"
+    errs: list = []
+
+    def run():
+        try:
+            vf.fetch_verified(spec, dest, opener=slow)
+        except BaseException as exc:  # pragma: no cover
+            errs.append(exc)
+
+    ts = [threading.Thread(target=run) for _ in range(3)]
+    [t.start() for t in ts]
+    [t.join() for t in ts]
+    assert not errs and len(opens) == 1  # the others waited on the lock and found a verified file
+    assert dest.read_bytes() == data and not list(dest.parent.glob("*.part"))
+
+
+# ----------------------------------------------------------------------- store determinism
+
+
+def test_locate_is_deterministic_among_overlapping_hits(tmp_path):
+    import sqlite3
+
+    rows = [
+        {"comid": 73000010, "nextdown": 0, "geometry": fx.box(0, 40, 0.02, 40.02)},
+        {"comid": 73000011, "nextdown": 0, "geometry": fx.box(0, 40, 0.02, 40.02)},
+        {"comid": 73000012, "nextdown": 0, "geometry": fx.box(0, 40, 0.02, 40.02)},
+    ]
+    for order in (rows, rows[::-1]):
+        db = tmp_path / f"b{order[0]['comid']}.db"
+        g = gpd.GeoDataFrame(order, crs=4326)
+        g["area_km2"] = 1.0
+        g.to_file(db, layer="l0_basins", driver="SQLite", SPATIALITE="YES", engine="pyogrio")
+        rdb = tmp_path / f"r{order[0]['comid']}.db"
+        with sqlite3.connect(rdb) as con:
+            con.execute("CREATE TABLE rivers (comid INTEGER, uparea REAL)")
+            con.executemany("INSERT INTO rivers VALUES (?,?)", [(73000010, 5.0), (73000011, 9.0), (73000012, 9.0)])
+        assert BasinsStore(db, rdb).locate(0.01, 40.01) == 73000011  # max uparea; tie -> lowest comid
+        assert BasinsStore(db, None).locate(0.01, 40.01) == 73000010  # no rivers db: lowest comid
+
+
+def test_missing_polygons_are_reported_and_flagged(staged, monkeypatch):
+    store = BasinsStore(staged.basins_db_path(fx.PFAF), staged.rivers_db_path(fx.PFAF))
+    real = gpd.read_file
+
+    def drop(*a, **k):
+        g = real(*a, **k)
+        return g[g["comid"] != 73000004] if "comid" in g else g
+
+    monkeypatch.setattr("aihydro_watershed.merit.basins_store.gpd.read_file", drop)
+    geoms = store.geometries(store.upstream_ids(fx.TERMINAL))
+    assert geoms.attrs["missing_comids"] == [73000004] and len(geoms) == 3
+    res = pipe.merit_basins_hybrid_delineate(*fx.OUTLET_REQUEST)
+    assert "VECTOR_ASSEMBLY_INCOMPLETE" in res.quality_flags
+    assert res.area_validation["catchments_without_polygon"] == 1
+
+
+# ------------------------------------------------------------------ legacy layout, shim, manifest
+
+
+def test_legacy_shapefile_layout_is_noted_and_not_read(region, tmp_path, caplog):
+    mgr = MeritDataManager(tmp_path / "m")
+    legacy = mgr.catchment_shapefile_path(fx.PFAF)
+    legacy.parent.mkdir(parents=True)
+    legacy.write_bytes(b"")
+    with caplog.at_level("WARNING"):
+        st = mgr.basins_region_cache(fx.PFAF)
+    assert st.legacy_layout_found and not st.catchments_ready
+    assert "not read" in st.message and "merit_ensure_basins_region" in st.message and "re-stage" in st.message.lower()
+    assert any("Legacy shapefile layout" in r.message for r in caplog.records)
+
+
+def test_deprecated_merit_download_shim_stages_verified_files(region, tmp_path, monkeypatch):
+    from aihydro_watershed.merit import merit_download as md
+
+    monkeypatch.setenv("AIHYDRO_MERIT_DIR", str(tmp_path / "m"))
+    monkeypatch.setattr(vf, "_default_opener", _serve(region))
+    with pytest.warns(DeprecationWarning):
+        assert md.ensure_level2_index(tmp_path / "ignored") is True
+    with pytest.warns(DeprecationWarning):
+        assert md.download_river_shapefile(fx.PFAF, tmp_path / "ignored") is True
+    with pytest.warns(DeprecationWarning):
+        assert md.download_catchment_shapefile(fx.PFAF, tmp_path / "ignored") is True
+    assert MeritDataManager().delineator_ready(fx.PFAF) is True
+    assert not hasattr(MeritDataManager, "configure_delineator_env")
+
+
+def test_manifest_matches_vendored_delineator_constants_and_generator_is_reproducible():
+    import ast
+    import hashlib
+    import importlib.util
+    import re
+
+    fixture = Path(__file__).parent / "fixtures" / "delineator_v2.2.4" / "constants.py"
+    raw = fixture.read_bytes()
+    man = json.loads((Path(vf.__file__).parent / "delineator_data_manifest.json").read_text())
+    assert (fixture.parent / "LICENSE").read_text().startswith("MIT License")  # delineator is MIT
+    block = re.search(r"HASHES = (\{.*?\n\})", raw.decode(), re.S).group(1)
+    pins = {k: v.replace("sha256:", "") for k, v in ast.literal_eval(block).items()}
+    assert {k: v["sha256"] for k, v in man["files"].items()} == pins
+    src = man["source"]
+    assert src["constants_blob_sha1"] == hashlib.sha1(b"blob %d\0" % len(raw) + raw).hexdigest()
+    assert len(src["tag_commit"]) == 40 and src["tag_commit"] in src["hashes_file"]
+    assert src["tag_commit"] in man["level2_index"]["url"] and src["tag"] == "v" + src["package_version"]
+    script = Path(__file__).parents[1] / "scripts" / "gen_delineator_manifest.py"
+    spec = importlib.util.spec_from_file_location("gen_manifest", script)
+    gen = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(gen)
+    sizes = {k: v["size_bytes"] for k, v in man["files"].items()}
+    rebuilt = gen.build(raw, src["tag_commit"], src["tag"], sizes, man["level2_index"], man)
+    assert json.dumps(rebuilt, indent=1, sort_keys=True) + "\n" == (
+        Path(vf.__file__).parent / "delineator_data_manifest.json"
+    ).read_text()

@@ -101,9 +101,20 @@ auto           — tries tiers in order of accuracy; degrades gracefully on fail
   Vectors are staged on demand under the tiered policy (`AIHYDRO_MERIT_AUTO_STAGE=never|tiered|always`,
   `merit_auto_stage_max_gb`, default 2 GB). Rasters are optional and staged explicitly. Everything lives under
   `$AIHYDRO_HOME/merit` (default `~/.aihydro/merit`); `AIHYDRO_MERIT_DIR` overrides.
-- **Licence.** Non-commercial. mghydro.com releases the files under CC BY-NC-SA 4.0; MERIT Hydro is
+- **First-call cost.** The first delineation in a region downloads that region's `basins##.db` + `rivers##.db` (SHA-256
+  verified) under the tiered policy (the default, one constant: `DEFAULT_AUTO_STAGE_POLICY` in `merit/merit_manager.py`;
+  set it to `"never"` for confirm-first, or use `AIHYDRO_MERIT_AUTO_STAGE=never`). From the pinned manifest, over all 60 regions:
+  **min 14 MB (region 54), median 530 MB, max 2015 MB (region 56, Australia, above the 2 GB auto-stage limit so it needs an
+  explicit `merit_ensure_basins_region`)**; North America (71-78, 81-86): min 60 MB, median 502 MB, max 916 MB. The very first call
+  ever also fetches the 52.9 MB level-2 index. Staged rasters are optional and explicit (flowdir + accum per region: min 12 MB,
+  median 696 MB, max 1931 MB). Staging needs 2x the pending bytes free on disk. Every call that downloads says so: quality flag
+  `MERIT_AUTO_STAGED`, and `data_provenance.downloaded` lists `{name, bytes, url, sha256}`, with `data_provenance.acquisition_policy`.
+  A file that fails verification is deleted and not retried automatically for 24 h (`MERIT_ASSET_INTEGRITY_FAILED`, with the
+  observed digest); interrupted downloads resume with an HTTP Range request when the server supports it.
+- **Licence.** Non-commercial and share-alike. mghydro.com releases the files under CC BY-NC-SA 4.0; MERIT Hydro is
   CC BY-NC 4.0 or ODbL 1.0; the sources disagree on the exact variant. The result carries the
-  licence and the SHA-256 of every file used (`data_provenance`).
+  licence (`data_provenance.share_alike: true`) and the SHA-256 of every file used (`data_provenance`).
+  Legacy shapefile layouts (`shp/merit_catchments`, `shp/merit_rivers`) are not read; `basins_region_cache` says so.
 - **Version consistency.** The vectors are MERIT-Basins v0.7/v1.0_bugfix1. With the regional
   rasters staged, snapping and refinement use the same provider's files. Without them the tier uses
   Earth Engine (MERIT Hydro v1.0.1) and flags `MERIT_VERSION_MIX`; `data_provenance.version_consistency`

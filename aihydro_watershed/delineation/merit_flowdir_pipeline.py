@@ -30,8 +30,9 @@ MERIT_LICENSE = "CC-BY-NC 4.0 or ODbL 1.0; derived-data obligations may apply."
 # Hybrid tier data: MERIT-Basins vectors + regional rasters as published for the `delineator` package
 # (pinned by SHA-256 in merit/delineator_data_manifest.json). Non-commercial; sources disagree on variant.
 MERIT_BASINS_LICENSE = (
-    "Non-commercial. MERIT-Basins/mghydro files: CC BY-NC-SA 4.0; MERIT Hydro: CC BY-NC 4.0 or ODbL 1.0 "
-    "(the sources disagree on the exact variant); derived-data obligations may apply."
+    "Non-commercial and share-alike. MERIT-Basins/mghydro files: CC BY-NC-SA 4.0 (share-alike); MERIT Hydro: "
+    "CC BY-NC 4.0 or ODbL 1.0 (ODbL derived data must be shared alike); the sources disagree on the exact "
+    "variant; derived-data obligations may apply."
 )
 MERIT_CITATION = (
     "Yamazaki D., Ikeshima D., Sosa J., Bates P.D., Allen G.H., Pavelsky T.M. "
@@ -586,8 +587,9 @@ def merit_ensure_basins_region(
     pfaf_region: str,
     *,
     acquisition_policy: str = "check_only",
+    force_retry: bool = False,
 ) -> dict[str, Any]:
-    """Ensure/report regional MERIT-Basins vectors for hybrid routing."""
+    """Ensure/report regional MERIT-Basins vectors for hybrid routing (``force_retry`` overrides the 24 h integrity back-off)."""
     from dataclasses import asdict
 
     from aihydro_watershed.merit.merit_manager import MeritDataManager
@@ -596,6 +598,7 @@ def merit_ensure_basins_region(
         MeritDataManager().ensure_basins_region(
             pfaf_region,
             acquisition_policy=acquisition_policy,
+            force_retry=force_retry,
         )
     )
 
@@ -1081,18 +1084,24 @@ def merit_basins_hybrid_delineate(
             quality_flags.append(name)
 
     mgr = MeritDataManager()
+    stage_policy = _merit_auto_stage_policy()[0] if auto_stage else "check_only"
+    downloaded_names: list[str] = []
     try:
         # -- region + pinned vectors (level-2 index, basins##.db, rivers##.db) --------------------
         try:
             pfaf = mgr.resolve_pfaf_region(lat, lon)
         except FileNotFoundError as exc:
-            if not auto_stage or _merit_auto_stage_policy()[0] == "never":
+            if not auto_stage or stage_policy == "never":
                 raise RuntimeError(f"MERIT_BASINS_NOT_STAGED HYBRID_ROUTING_REQUIRED: {exc}") from exc
-            mgr.ensure_level2_index(download=True)
+            if mgr.ensure_level2_index(download=True) is not None:
+                downloaded_names.append("megabasins.db")
             pfaf = mgr.resolve_pfaf_region(lat, lon)
         status = mgr.auto_stage_vectors(pfaf) if auto_stage else mgr.basins_region_cache(pfaf)
+        downloaded_names += status.downloaded or []
         if status.integrity_error:
-            raise vf.AssetIntegrityError(status.integrity_error)
+            raise vf.AssetIntegrityError(
+                status.integrity_error.removeprefix(f"{vf.AssetIntegrityError.code}: ")
+            )
         if not status.catchments_ready:
             raise RuntimeError(
                 f"MERIT_BASINS_NOT_STAGED HYBRID_ROUTING_REQUIRED: {status.message}"
@@ -1155,6 +1164,11 @@ def merit_basins_hybrid_delineate(
     upstream = store.geometries(upstream_ids)
     if upstream.empty:
         raise RuntimeError(f"Hybrid topology returned no upstream catchments for {terminal_id}.")
+    missing_ids = upstream.attrs.get("missing_comids") or []
+    if missing_ids:
+        _flag("VECTOR_ASSEMBLY_INCOMPLETE")
+        if terminal_id in missing_ids:
+            raise RuntimeError(f"Terminal catchment {terminal_id} has no polygon in {basins_db.name}.")
     rss_after_vector_load = _rss_memory_mb()
     terminal = upstream[upstream["comid"] == terminal_id][["geometry"]].copy()
     nonterminal = upstream[upstream["comid"] != terminal_id][["geometry"]].copy()
@@ -1244,6 +1258,8 @@ def merit_basins_hybrid_delineate(
         area_validation["merit_basins_uparea_km2"] = round(official_uparea, 3)
         area_validation["catchment_area_sum_km2"] = round(catchment_area_sum or 0.0, 3)
         area_validation["relative_error_assembly_vs_uparea"] = round(rel, 4) if rel is not None else None
+    if missing_ids:
+        area_validation["catchments_without_polygon"] = len(missing_ids)
     for flag in area_flags + more_snap_flags:
         _flag(flag)
     if "MERIT_UPA_AREA_MISMATCH" in quality_flags:
@@ -1271,10 +1287,26 @@ def merit_basins_hybrid_delineate(
                 "size_bytes": mega_rec["size_bytes"], "url": mega_rec["url"], "verified": True,
             }
         )
+    downloaded: list[dict[str, Any]] = []
+    for name in dict.fromkeys(downloaded_names):
+        if name == "megabasins.db":
+            path = mgr.megabasins_path()
+        else:
+            path = mgr._asset_path(next(k for k in vf.VALID_KINDS if name.startswith(k)), pfaf)
+        rec = vf.read_provenance(path) if path.exists() else None
+        if rec:
+            downloaded.append(
+                {"name": name, "bytes": rec["size_bytes"], "url": rec["url"], "sha256": rec["sha256"]}
+            )
+    if downloaded:
+        _flag("MERIT_AUTO_STAGED")
     man = vf.load_manifest()
     data_provenance = {
         "files": files,
-        "licence": man["licence"]["summary"],
+        "downloaded": downloaded,
+        "acquisition_policy": stage_policy,
+        "licence": MERIT_BASINS_LICENSE,
+        "share_alike": True,
         "licence_detail": man["licence"],
         "pinned_manifest": {
             "package": man["source"]["package"],

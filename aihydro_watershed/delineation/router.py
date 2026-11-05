@@ -452,6 +452,31 @@ def delineate_from_point(
         whole NHDPlus catchments; for culverts pass ``expected_area_km2`` or
         ``method="small_catchment"``.
     """
+    trail: list[dict[str, Any]] = []
+    try:
+        return _delineate_from_point(
+            lat, lon, expected_area_km2=expected_area_km2, method=method,
+            verbose=verbose, name=name, _trail=trail,
+        )
+    except ToolError as exc:
+        # A failed delineation keeps the tiers it tried: the same ``fallback_history`` a success returns,
+        # carried in ``details`` so it reaches the error envelope. Never overwrites a history already set.
+        if trail and "fallback_history" not in exc.details:
+            exc.details = {**exc.details, "fallback_history": list(trail)}
+        raise
+
+
+def _delineate_from_point(
+    lat: float,
+    lon: float,
+    *,
+    expected_area_km2: float | None,
+    method: Method,
+    verbose: bool,
+    name: str | None,
+    _trail: list[dict[str, Any]],
+) -> HydroResult:
+    """Implementation of :func:`delineate_from_point`; ``_trail`` is the caller-owned ``fallback_history``."""
     if not (-90 <= lat <= 90 and -180 <= lon <= 180):
         raise ToolError(
             code="INVALID_COORDS",
@@ -497,7 +522,7 @@ def delineate_from_point(
     peak_memory_mb: float | None = None
     runtime_seconds: float | None = None
     memory_telemetry: dict[str, float] | None = None
-    fallback_history: list[dict[str, Any]] = []
+    fallback_history = _trail
     safe_envelope_version: str | None = None
     snapped_outlet: tuple[float, float] | None = None  # (lon, lat) of the snapped pour point, if the tier reports it
     snap_grid_crs: str | None = None  # CRS / resolution of the grid that point sits on

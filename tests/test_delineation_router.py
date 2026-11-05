@@ -42,3 +42,25 @@ def test_fast_result_escalates_large_expected_area_mismatch():
 
     assert reason is not None
     assert "differs from expected" in reason
+
+
+def test_failed_delineation_error_carries_the_tiers_it_tried(monkeypatch):
+    """A total failure keeps the attempt trail: ``ToolError.details['fallback_history']``."""
+    import pytest
+    from aihydro_core import ToolError
+
+    from aihydro_watershed.delineation import small_catchment
+    from aihydro_watershed.delineation.router import delineate_from_point
+
+    def _boom(lat, lon, *a, **k):
+        raise RuntimeError("3DEP service unavailable")
+
+    monkeypatch.setattr(small_catchment, "delineate_small_catchment", _boom)
+    with pytest.raises(ToolError) as caught:
+        delineate_from_point(40.0, -100.0, method="small_catchment")
+    exc = caught.value
+    assert exc.code == "DELINEATION_FAILED"
+    history = exc.details["fallback_history"]
+    assert [(h["method"], h["outcome"]) for h in history] == [("small_catchment_3dep", "failed")]
+    assert "3DEP service unavailable" in history[0]["reason"]
+    assert exc.to_dict()["fallback_history"] == history      # reaches the envelope

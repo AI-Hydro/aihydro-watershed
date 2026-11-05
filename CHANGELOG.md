@@ -1,5 +1,14 @@
 # Changelog — aihydro-watershed
 
+## [Unreleased]
+
+### Changed
+
+- `delineate_from_point`: a `ToolError` raised after one or more tiers were tried now carries `details["fallback_history"]`, the same
+  list a successful result returns (it reaches `to_dict()` and so the error envelope). Before, a total failure kept only the last
+  tier's message. A history already set on the error is not overwritten; a failure before any tier ran (invalid coordinates) is unchanged.
+  The body moved into a private `_delineate_from_point`; the public signature and behaviour on success are unchanged.
+
 ## [0.3.0] - unreleased (2026-10-30) BREAKING-VALUE
 
 Version 0.3.0, not 0.2.2: a `<0.3` pin on an installed 2.8.4 would otherwise take these changed values.

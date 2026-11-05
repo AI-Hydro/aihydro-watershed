@@ -1,5 +1,16 @@
 # Changelog — aihydro-watershed
 
+## [Unreleased]
+
+### Fixed
+
+- The precipitation fetch in `extract_hydrological_signatures` now has a wall-clock bound (default 600 s, `AIHYDRO_PRECIP_FETCH_TIMEOUT_S`
+  to override). Before, an unreachable network blocked the caller indefinitely inside the data layer's HTTP client; now the fetch fails with
+  "precipitation fetch did not complete within N s (network unreachable or data service not responding)" in the precipitation provenance record,
+  and the signatures that need precipitation are reported as unavailable, as for any other fetch failure.
+- `tests/test_signatures_offline.py`: the two tests that hung without a network now pass `precipitation="skip"`, and an autouse fixture
+  makes any precipitation fetch in that module fail loudly.
+
 ## [0.3.0] - unreleased (2026-10-30) BREAKING-VALUE
 
 Version 0.3.0, not 0.2.2: a `<0.3` pin on an installed 2.8.4 would otherwise take these changed values.

@@ -19,7 +19,7 @@ The 3 previously successful gauges differ by under 0.1% in area from the pilot.
 Largest window fetched in `per_gauge_live_run.csv`: 3.75M cells (02196000, 82 km derived half-side).
 
 Computed from `per_gauge_live_run.csv` (this run):
-- vs `area_gages2`, 14 gauges (14158500 excluded: CAMELS fabric 122.9 km2 vs 237.1 km2 gages2, MERIT 233.8): mean +0.33%, median -0.06%, range -2.77% to +4.86%.
+- vs `area_gages2`, 14 gauges (14158500 excluded: CAMELS fabric 122.9 km2 vs 237.1 km2 gages2, MERIT 233.8): mean +0.32%, median -0.06%, range -2.77% to +4.86%.
   With 14158500 included (15): mean +0.21%, median -0.13%.
 - vs the CAMELS polygon, the same 14: mean -1.78%, median -0.55%. Correlation of that error with `area_geospa_fabric / area_gages2 - 1`: -0.85.
   So the "too small" pilot bias is mostly against the fabric polygon, which exceeds `area_gages2` where the two differ. n is small and CONUS-only.

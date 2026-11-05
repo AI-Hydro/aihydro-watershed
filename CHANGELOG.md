@@ -25,7 +25,7 @@ Live evidence for this section: `docs/evidence/merit-gee-native-grid-2026-11/` (
 
 - `fetch_merit_gee_bbox`: `scale_m` is deprecated and ignored (a `DeprecationWarning` if passed); the returned window is `bbox` rounded out to whole MERIT cells and clamped to the
   asset's extent (lon -180..180, lat -60..85; no antimeridian wrap). New `native_window()`.
-- Area, from the live run above (14 gauges, 14158500 excluded for the CAMELS fabric/USGS inconsistency): MERIT polygon vs `area_gages2` mean +0.33%, median -0.06%; vs the CAMELS
+- Area, from the live run above (14 gauges, 14158500 excluded for the CAMELS fabric/USGS inconsistency): MERIT polygon vs `area_gages2` mean +0.32%, median -0.06%; vs the CAMELS
   polygon mean -1.78%, with the error correlating -0.85 with the fabric/`area_gages2` ratio. The polygon area is 0.08-0.19% above MERIT's own UPA at the snapped cell, and equals the pixel-area sum
   and the WGS84 geodesic area to under 0.1% (unit test). No bias correction was added.
 

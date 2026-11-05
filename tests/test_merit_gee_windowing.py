@@ -264,6 +264,32 @@ def test_snap_ignores_a_large_river_outside_the_search_radius():
     assert got[0] == got[1] == (r0, c0 - 13)
 
 
+def _flat_tf(n, lat=40.0):
+    px = m.MERIT_NATIVE_PX_DEG
+    tf = Affine(px, 0, -100.0, 0, -px, lat + (n // 2 + 0.5) * px)
+    return tf, lat, tf.c + (n // 2 + 0.5) * px
+
+
+def test_snap_single_candidate_returns_it_whatever_the_window():
+    n = 101
+    tf, lat, lon = _flat_tf(n)
+    upa = np.zeros((n, n), dtype=np.float32)
+    upa[50, 58] = 3.0  # the only stream cell inside the radius
+    upa[:, 99] = 1.0e6  # outside the radius
+    s = m.snap_outlet_on_merit(lat, lon, upa=upa, transform=tf)
+    assert (s.row, s.col, s.snapped_upa_km2) == (50, 58, 3.0)
+    assert s.snap_quality == "nearest_merit_stream"
+
+
+def test_snap_all_zero_upa_falls_back_to_nearest_cell_without_nan_or_warning(recwarn):
+    n = 101
+    tf, lat, lon = _flat_tf(n)
+    s = m.snap_outlet_on_merit(lat, lon, upa=np.zeros((n, n), dtype=np.float32), transform=tf)
+    assert (s.row, s.col) == (50, 50) and s.snapped_upa_km2 == 0.0
+    assert s.distance_m < 100
+    assert not [w for w in recwarn if issubclass(w.category, RuntimeWarning)]
+
+
 # --- grid edges ------------------------------------------------------------------------------------
 
 

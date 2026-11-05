@@ -56,8 +56,9 @@ MERIT_ORIGIN_Y = 85.0 - 0.5 * MERIT_NATIVE_PX_DEG
 # Extent of the asset: lon -180..180, lat 85..-60 (the window is clamped to it).
 MERIT_GRID_COLS = 360 * 1200
 MERIT_GRID_ROWS = 145 * 1200
-# Largest synchronous window requested (3 bands). 82 km half-side (4.1M cells)
-# succeeded live on the native grid; gauge 05495000 needs 4.1M.
+# Largest synchronous window requested (3 bands). A 4.1M-cell / 82 km half-side
+# native-grid request succeeded in an unsaved console probe (see
+# docs/evidence/merit-gee-native-grid-2026-11/README.md); 4.5M was not run live.
 MERIT_GEE_MAX_WINDOW_CELLS = 4_500_000
 _AREA_MISMATCH_WARN_FRAC = 0.25
 _MAX_LOCAL_FLOWDIR_CELLS = 250_000_000

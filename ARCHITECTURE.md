@@ -271,7 +271,8 @@ Decision record. Evidence: `docs/vision-2040/evidence/camels-delineation-1/` (ou
   Separately the service has a transient upstream read-timeout fault that returns 502 in either form at some points (02298608, about half of requests), handled by retry/back-off.
   Upstream issue (not filed anywhere, by instruction): pynhd should percent-encode the WKT space, and the NLDI service should accept `+` or return 400, not 502. Installed site-packages are not patched.
 - **Outlet ambiguity.** The pour point is the caller's. A nearest reach draining < 80 km2 may be a tributary reach or the head of a larger stem; the tool no longer decides.
-  It returns the nearest reach with `NLDI_OUTLET_AMBIGUOUS` and the candidate COMIDs (areas included). Moving downstream needs `expected_area_km2` or `allow_downstream_expansion=True`.
+  It returns the nearest reach with `NLDI_OUTLET_AMBIGUOUS` and the candidate COMIDs (areas included). Moving downstream needs `expected_area_km2` or `allow_downstream_expansion=True`, and only to a candidate larger than the nearest reach.
+  `NLDI_OUTLET_AMBIGUOUS` (quality flag): the nearest reach drains < 80 km2, so the outlet may be a tributary reach or a larger stem; the returned basin is the nearest reach's and `outlet_ambiguity` lists the alternatives.
   Side effect: map-click quick delineation now returns the small reach's basin plus the flag, not the former larger stem.
 - **Not changed.** CAMELS 14158500's WRONG_BASIN is a reference defect (CAMELS' own list gives a 48% size error; the NLDI area is within 3% of the USGS area), not a tool fault.
   Using the NLDI `nwissite/USGS-<id>` feature when a gauge id is known is already the path of `delineate_watershed(gauge_id)`; `delineate_from_point` takes no gauge id and was not extended here.

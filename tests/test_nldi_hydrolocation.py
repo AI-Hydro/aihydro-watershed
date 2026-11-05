@@ -198,3 +198,49 @@ def test_router_forwards_consent_flag_default_false(monkeypatch):
     with pytest.raises(ToolError):
         router.delineate_from_point(39.1, -120.1, method="nldi", allow_downstream_expansion=True)
     assert seen == {"allow_downstream_expansion": True}
+
+
+# ---- latency bound ---------------------------------------------------------
+@pytest.fixture(autouse=True)
+def reset_memo(monkeypatch):
+    monkeypatch.setattr(nl, "_unavailable_until", 0.0)
+
+
+def test_outage_is_memoised_and_next_call_fails_fast(reset_memo):
+    s = Session([Resp(502)] * 4)
+    with pytest.raises(ToolError):
+        nl.hydrolocation_comid(-97.9, 30.3, session=s, sleep=lambda x: None)
+    s2 = Session([])  # any request would pop from an empty script
+    with pytest.raises(ToolError) as ei:
+        nl.hydrolocation_comid(-97.9, 30.3, session=s2, sleep=lambda x: None)
+    assert ei.value.code == "NLDI_UNAVAILABLE" and "failing fast" in str(ei.value) and s2.urls == []
+
+
+def test_memo_expires(reset_memo, monkeypatch):
+    monkeypatch.setattr(nl, "_unavailable_until", nl.time.monotonic() - 1)
+    s = Session([Resp(200, _fx("hydrolocation_pct20_10336660.200.json"))])
+    assert nl.hydrolocation_comid(-120.16214, 39.10741, session=s, sleep=lambda x: None).comid == START
+
+
+def test_deadline_stops_retries(reset_memo, monkeypatch):
+    clock = {"t": 1000.0}
+    monkeypatch.setattr(nl.time, "monotonic", lambda: clock["t"])
+    s = Session([Resp(502)] * 4)
+    waits = []
+
+    def sleep(w):
+        waits.append(w)
+        clock["t"] += w
+
+    with nl.nldi_deadline(5.0):
+        with pytest.raises(ToolError) as ei:
+            nl.hydrolocation_comid(-97.9, 30.3, session=s, sleep=sleep)
+    assert waits == [3.0] and len(s.urls) == 2  # the 8 s back-off would overrun the 5 s budget
+    assert "deadline" in str(ei.value)
+
+
+def test_expansion_requires_strictly_larger_basin(fake_nldi, monkeypatch):
+    monkeypatch.setitem(AREAS, STEM, 30.0)
+    monkeypatch.setitem(AREAS, 8934100, 30.0)
+    comid, area, amb = nl.quick_comid_resolution(39.1, -120.1, allow_downstream_expansion=True)
+    assert comid == START and "outlet_moved_downstream" not in amb

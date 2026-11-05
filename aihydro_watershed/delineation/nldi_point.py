@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import json
 import logging
 import time
@@ -20,6 +22,13 @@ _NLDI_BASE = "https://api.water.usgs.gov/nldi/linked-data"
 _HYDROLOCATION_ATTEMPTS = 4
 _HYDROLOCATION_BACKOFF_S = (3.0, 8.0, 15.0)
 _HYDROLOCATION_TIMEOUT_S = 30.0
+# Total time our NLDI requests may take inside one ``nldi_deadline`` block (one router tier call), and
+# how long a confirmed outage short-circuits further requests so repeated calls fail fast and fall through.
+_NLDI_DEADLINE_S = 90.0
+_UNAVAILABLE_MEMO_S = 60.0
+
+_deadline: contextvars.ContextVar[float | None] = contextvars.ContextVar("nldi_deadline", default=None)
+_unavailable_until = 0.0  # time.monotonic() until which hydrolocation fails fast
 
 _SOURCES = [
     DataSource(
@@ -37,6 +46,24 @@ _QUICK_TRIBUTARY_MAX_KM2 = 80.0
 _QUICK_DOWNSTREAM_KM = 30
 _QUICK_MAX_CANDIDATES = 12
 _QUICK_MAX_BASIN_KM2 = 15_000.0
+
+
+@contextlib.contextmanager
+def nldi_deadline(seconds: float = _NLDI_DEADLINE_S):
+    """Bound our NLDI request loop to ``seconds`` in total. Re-entrant: an outer deadline wins."""
+    if _deadline.get() is not None:
+        yield
+        return
+    token = _deadline.set(time.monotonic() + seconds)
+    try:
+        yield
+    finally:
+        _deadline.reset(token)
+
+
+def _remaining() -> float | None:
+    d = _deadline.get()
+    return None if d is None else d - time.monotonic()
 
 
 @dataclass(frozen=True)
@@ -94,14 +121,30 @@ def hydrolocation_comid(
     """
     import requests
 
+    global _unavailable_until
     sess = session or requests
     url = hydrolocation_url(lon, lat)
+    if time.monotonic() < _unavailable_until:
+        raise ToolError(
+            code="NLDI_UNAVAILABLE",
+            message=(
+                "NLDI hydrolocation skipped: api.water.usgs.gov failed within the last "
+                f"{_UNAVAILABLE_MEMO_S:.0f} s (failing fast)."
+            ),
+            tool=_TOOL_PATH,
+            recovery="The USGS NLDI service is down or throttling; retry later or use method='merit_gee'.",
+        )
     last = "no response"
     status: int | None = None
     for attempt in range(_HYDROLOCATION_ATTEMPTS):
         retry_after = None
+        remaining = _remaining()
+        if remaining is not None and remaining <= 0:
+            last += " (total NLDI deadline reached)"
+            break
         try:
-            resp = sess.get(url, timeout=_HYDROLOCATION_TIMEOUT_S, headers={"Accept": "application/json"})
+            timeout = _HYDROLOCATION_TIMEOUT_S if remaining is None else max(1.0, min(_HYDROLOCATION_TIMEOUT_S, remaining))
+            resp = sess.get(url, timeout=timeout, headers={"Accept": "application/json"})
             status = resp.status_code
             if status == 200:
                 hit = _parse_hydrolocation(resp.json())
@@ -125,8 +168,13 @@ def hydrolocation_comid(
                 wait = max(wait, min(float(retry_after), 60.0))
             except (TypeError, ValueError):
                 pass
+            remaining = _remaining()
+            if remaining is not None and wait >= remaining:
+                last += " (total NLDI deadline reached)"
+                break
             log.info("NLDI hydrolocation %s; retrying in %.0fs", last, wait)
             sleep(wait)
+    _unavailable_until = time.monotonic() + _UNAVAILABLE_MEMO_S
     raise ToolError(
         code="NLDI_UNAVAILABLE",
         message=f"NLDI hydrolocation failed for ({lat}, {lon}): {last} (host api.water.usgs.gov).",
@@ -260,13 +308,16 @@ def quick_comid_resolution(
 
     listed: list[dict] = [{"comid": start, "area_km2": round(start_area, 3), "role": "nearest_reach"}]
     for comid in candidates[:max_candidates]:
+        rem = _remaining()
+        if rem is not None and rem <= 0:
+            break
         try:
             a = area_km2(nldi.get_basins(comid, fsource="comid").dissolve())
         except Exception:
             continue
         listed.append({"comid": comid, "area_km2": round(a, 3), "role": "downstream_main"})
 
-    larger = [c for c in listed[1:] if c["area_km2"] <= _QUICK_MAX_BASIN_KM2]
+    larger = [c for c in listed[1:] if start_area < c["area_km2"] <= _QUICK_MAX_BASIN_KM2]
     ambiguity = {
         "reason": (
             f"nearest NHDPlus reach drains {start_area:.1f} km2 (< {_QUICK_TRIBUTARY_MAX_KM2:.0f}); "

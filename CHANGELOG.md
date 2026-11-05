@@ -11,6 +11,11 @@
   connection errors with back-off (3, 8, 15 s; honours `Retry-After`) and raises `NLDI_UNAVAILABLE` carrying the HTTP status and host, or
   `NLDI_NOT_FOUND`, instead of a geopandas "no active geometry" error. The service also has a separate transient fault (upstream 5 s read timeout, about half of requests
   for 02298608 even in the `%20` form), which the retries absorb but cannot remove. See ARCHITECTURE.md "NLDI request form and outlet ambiguity".
+- **Latency bound.** Our NLDI request loop has a total deadline of 90 s per router NLDI tier call (`nldi_deadline`), and a confirmed outage is remembered for
+  60 s, during which `hydrolocation_comid` fails immediately (`NLDI_UNAVAILABLE`) so repeated calls fall through to the next tier. Worst case: one NLDI tier call
+  spends at most about 90 s in hydrolocation requests (a request started near the limit is capped to the time left, minimum 1 s) before `NLDI_UNAVAILABLE`; `delineate_from_point` has up to two NLDI tiers
+  (expected-area, then quick), so about 180 s worst case, and the second is skipped by the memo after the first failure. Without the deadline the worst case was 4 x 30 s + 26 s back-off = 146 s per call.
+  The deadline covers our request loop only; pynhd's own basin/navigation calls (after a successful lookup) keep pynhd's timeouts.
 - **No silent downstream jump (CAMELS 10336660: 29.8 km2 gauge returned a 1414 km2 basin, x43.6).** With no `expected_area_km2` and a nearest reach draining
   < 80 km2, NLDI point delineation used to walk 30 km downstream and keep the largest basin. It now returns the nearest reach's basin, adds the
   `NLDI_OUTLET_AMBIGUOUS` quality flag and `outlet_ambiguity` (selected COMID, candidate downstream COMIDs with areas, how to resolve). The outlet moves downstream only with
@@ -19,6 +24,8 @@
 
 ### Added
 
+- Quality flag `NLDI_OUTLET_AMBIGUOUS`: the nearest NHDPlus reach drains < 80 km2, so the point may sit on a tributary reach or on a larger stem; the basin returned is the nearest reach's, candidates are in `outlet_ambiguity`.
+- `requests>=2.31.0` declared as a dependency.
 - `nldi_point.hydrolocation_url`, `hydrolocation_comid`, `HydrolocationHit`, `quick_comid_resolution`.
 
 ## [0.3.0] - unreleased (2026-10-30) BREAKING-VALUE

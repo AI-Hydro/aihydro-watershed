@@ -1,5 +1,37 @@
 # Changelog — aihydro-watershed
 
+## [Unreleased]
+
+### Changed
+
+- **MERIT-Basins hybrid is the default global delineation tier.** `delineate_from_point(method="auto")` outside CONUS tries
+  `merit_basins_hybrid` first (before `merit_gee` / `local_merit` / raw DEM, which remain as fallbacks). `method="merit_hybrid"`
+  (alias `merit_basins`) forces it anywhere, including CONUS, so the CAMELS evaluation can score it; in CONUS `auto` still starts with NLDI.
+  The tier is attempted once per call; the trail row is `merit_basins_hybrid` (`succeeded` / `failed`) and `method_used` reads `merit_basins_hybrid`.
+- Data source replaced: the unhashed Google Drive download, the runtime `pip install gdown` and the `git clone` of delineator into `/tmp` are gone
+  (`merit/merit_download.py` removed). Per-region files come from mghydro.com's `delineator` 2.2.4 / data v3 set, pinned by SHA-256 and size in
+  `merit/delineator_data_manifest.json`, streamed to `.part` and installed only if the digest matches. A mismatch raises
+  `MERIT_ASSET_INTEGRITY_FAILED` (fail closed); an on-disk file that no longer matches is refused. `megabasins.db` (not served by mghydro.com) is pinned by
+  the git blob SHA-1 at the v2.2.4 tag, and its SHA-256 is recorded on first verification and enforced afterwards.
+  The old shapefile layout (`cat_pfaf_##` / `riv_pfaf_##`) is no longer read; re-stage with `merit_ensure_basins_region`.
+- Vector assembly reads `basins##.db` (SQLite `nextdown` topology, `where`-filtered geometries) instead of loading a whole regional shapefile;
+  the assembled area is checked against MERIT-Basins' own `uparea` (`VECTOR_ASSEMBLY_UPAREA_MISMATCH` above 2%).
+- Terminal-catchment refinement reads a small window: the staged `flowdir##.tif` if present, otherwise one Earth Engine `dir` request limited to 40 km
+  (larger terminals keep the whole unit catchment and raise `TERMINAL_REFINEMENT_WINDOW_TOO_LARGE`). An outlet that could not be snapped is no longer
+  refined from an off-channel point (`TERMINAL_CATCHMENT_REFINEMENT_SKIPPED_UNSNAPPED`).
+- Snapping uses the staged `accum##.tif` when present. Otherwise the Earth Engine reference (MERIT Hydro v1.0.1, against v0.7-based vectors) is used and
+  the result is flagged `MERIT_VERSION_MIX`; `data_provenance.version_consistency` records the dataset of each step.
+- `MeritDataManager` flowdir staging (`ensure_routing_region`, `auto_stage_flowdir`) now uses the same verified download (the old mghydro `raster/` URL was dead).
+- `AIHYDRO_HOME` is honoured for the MERIT data root and the auto-stage config (`config.json`); `AIHYDRO_MERIT_AUTO_STAGE` overrides the policy.
+  The Earth Engine window cache path in `merit_flowdir_pipeline` is unchanged here.
+
+### Added
+
+- `merit/verified_fetch.py`, `merit/basins_store.py`, `delineation/merit_hybrid.py`; `MeritDataManager.auto_stage_vectors`, `ensure_level2_index`, `verified_asset`.
+- Result field `data_provenance` (file name, SHA-256, size, URL of every file used; licence; pinned manifest version; version consistency).
+  The result `license` is now the non-commercial MERIT-Basins/mghydro/MERIT Hydro statement.
+- `tests/test_merit_hybrid_default.py` (21 offline tests on a synthetic fixture); `tests/conftest.py` sends `HOME`/`AIHYDRO_HOME` to a temp dir and blocks downloads.
+
 ## [0.3.0] - unreleased (2026-10-30) BREAKING-VALUE
 
 Version 0.3.0, not 0.2.2: a `<0.3` pin on an installed 2.8.4 would otherwise take these changed values.

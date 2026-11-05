@@ -23,6 +23,7 @@ Method = Literal[
     "merit_gee",
     "local_merit",
     "merit_basins",
+    "merit_hybrid",
     "dem_raw_fallback",
     "fast",
     "small_catchment",
@@ -82,10 +83,15 @@ _SOURCES_MERIT = [
     DataSource(
         name="MERIT-Basins",
         url="https://www.reachhydro.org/home/params/merit-basins",
+        citation="@article{Lin2019MERITBasins}",
     ),
     DataSource(
-        name="MERIT Hydro regional flow-direction rasters",
-        url="https://mghydro.com/watersheds/raster/",
+        name="MERIT-Basins / MERIT Hydro regional files (mghydro.com, SHA-256 pinned to delineator 2.2.4)",
+        url="https://mghydro.com/watersheds/data/",
+    ),
+    DataSource(
+        name="Heberger (2025) hybrid raster and vector delineation",
+        url="https://mghydro.com/pages/Heberger_delineation_2025.pdf",
     ),
 ]
 
@@ -442,8 +448,11 @@ def delineate_from_point(
         Prior drainage area for validation / adaptive snapping. In CONUS, a
         value below 5 km2 sends ``auto`` to the small-catchment tier first.
     method : str
-        ``auto`` (NLDI in CONUS, MERIT GEE globally), ``nldi``, ``merit_gee``,
-        ``local_merit``, ``merit_basins``, ``dem_raw_fallback``, or
+        ``auto`` (NLDI in CONUS; globally the MERIT-Basins hybrid first, then
+        ``merit_gee`` / ``local_merit`` / raw DEM), ``nldi``, ``merit_gee``,
+        ``local_merit``, ``merit_hybrid`` (alias ``merit_basins``; MERIT-Basins vector
+        assembly with terminal-catchment refinement, also usable in CONUS),
+        ``dem_raw_fallback``, or
         ``small_catchment`` (CONUS culvert-scale catchments on USGS 3DEP 10 m
         with an embankment notch; see
         :mod:`aihydro_watershed.delineation.small_catchment`). ``fast`` is an
@@ -463,6 +472,8 @@ def delineate_from_point(
         method = "dem_raw_fallback"
     if method == "3dep":
         method = "small_catchment"
+    if method == "merit_hybrid":
+        method = "merit_basins"
 
     method_used = method
     escalation_reason: str | None = None
@@ -511,6 +522,8 @@ def delineate_from_point(
     raster_dataset_version: str | None = None
     vector_data_source: str | None = None
     raster_data_source: str | None = None
+    data_provenance: dict[str, Any] | None = None
+    hybrid_tried = False
 
     def _try_small_catchment(reason: str | None) -> bool:
         """Run the 3DEP small-catchment tier; on success fill the result state."""
@@ -716,7 +729,14 @@ def delineate_from_point(
 
     snap_reference = None
     local_cache_status: dict[str, Any] | None = None
-    if (method in ("auto", "local_merit", "merit_gee", "merit_basins")) and gdf is None:
+    # The default global tier snaps and refines itself (staged rasters first), so the Earth Engine
+    # snap reference is only prepared up front when a different tier runs first.
+    hybrid_first = gdf is None and (
+        method == "merit_basins" or (method == "auto" and not is_conus(lat, lon))
+    )
+
+    def _prepare_merit_context() -> None:
+        nonlocal snap_reference, local_cache_status, pfaf_code, regional_flowdir_cached
         try:
             from aihydro_watershed.delineation.merit_flowdir_pipeline import (
                 merit_get_snap_reference,
@@ -745,6 +765,9 @@ def delineate_from_point(
         except Exception as e:
             log.info("MERIT regional cache status unavailable: %s", e)
 
+    if (method in ("auto", "local_merit", "merit_gee", "merit_basins")) and gdf is None and not hybrid_first:
+        _prepare_merit_context()
+
     run_cached_local_merit = (
         (method in ("auto", "local_merit"))
         and gdf is None
@@ -765,7 +788,7 @@ def delineate_from_point(
         nonlocal safe_envelope_version, terminal_catchment_id, upstream_catchment_count
         nonlocal terminal_refinement_used, vector_assembly_area_km2, refined_polygon_area_km2
         nonlocal vector_dataset_version, raster_dataset_version
-        nonlocal vector_data_source, raster_data_source
+        nonlocal vector_data_source, raster_data_source, data_provenance
 
         gdf = local.gdf
         area = local.area_km2
@@ -808,14 +831,18 @@ def delineate_from_point(
         raster_dataset_version = local.raster_dataset_version
         vector_data_source = local.vector_data_source
         raster_data_source = local.raster_data_source
+        data_provenance = local.data_provenance
         method_used = used_method
 
     def _try_hybrid_result(reason: str) -> bool:
-        nonlocal license_note, citation, run_fast, quality_flags
+        nonlocal license_note, citation, run_fast, quality_flags, hybrid_tried
+        if hybrid_tried:  # one attempt per call; the failed row is already in fallback_history
+            return False
+        hybrid_tried = True
         try:
             from aihydro_watershed.delineation.merit_flowdir_pipeline import (
+                MERIT_BASINS_LICENSE,
                 MERIT_CITATION,
-                MERIT_LICENSE,
                 merit_basins_hybrid_delineate,
             )
 
@@ -827,7 +854,7 @@ def delineate_from_point(
                 allow_offline=True,
             )
             _apply_merit_result(hybrid, used_method="merit_basins_hybrid")
-            license_note = MERIT_LICENSE
+            license_note = MERIT_BASINS_LICENSE
             citation = MERIT_CITATION
             fallback_history.append(
                 {
@@ -849,6 +876,11 @@ def delineate_from_point(
                 and "HYBRID_ROUTING_REQUIRED" not in quality_flags
             ):
                 quality_flags.append("HYBRID_ROUTING_REQUIRED")
+            if (
+                "MERIT_ASSET_INTEGRITY_FAILED" in str(hybrid_exc)
+                and "MERIT_ASSET_INTEGRITY_FAILED" not in quality_flags
+            ):
+                quality_flags.append("MERIT_ASSET_INTEGRITY_FAILED")
             fallback_history.append(
                 {
                     "method": "merit_basins_hybrid",
@@ -857,6 +889,15 @@ def delineate_from_point(
                 }
             )
             return False
+
+    # Default global tier (and forced method="merit_hybrid"/"merit_basins", also in CONUS): MERIT-Basins
+    # vector assembly with terminal-catchment refinement. If it cannot serve, the older tiers follow.
+    if hybrid_first and not _try_hybrid_result(escalation_reason or "default_global_tier"):
+        if method == "auto":
+            _prepare_merit_context()
+            run_cached_local_merit = bool(
+                gdf is None and local_cache_status and local_cache_status.get("flowdir_ready")
+            )
 
     if run_cached_local_merit or (run_local_merit and gdf is None):
         try:
@@ -1129,8 +1170,8 @@ def delineate_from_point(
     # topology, ~MERIT accuracy) over raw DEM when GEE + local_merit couldn't
     # serve. This restores the documented tier order
     # (… → merit_basins → dem_raw_fallback) for the no-expected-area case, where
-    # escalation-from-fast never fires (it requires expected_area_km2). CONUS
-    # deliberately stays on NLDI + raw DEM — no MERIT machinery there.
+    # escalation-from-fast never fires (it requires expected_area_km2). In auto mode
+    # CONUS stays on NLDI + raw DEM; the hybrid there is opt-in (method="merit_hybrid").
     # _try_hybrid_result sets gdf + method_used + run_fast=False on success; on
     # failure (e.g. basins not staged → MERIT_BASINS_NOT_STAGED) run_fast stays
     # True so raw DEM remains the final fallback.
@@ -1314,6 +1355,7 @@ def delineate_from_point(
             "raster_dataset_version": raster_dataset_version,
             "vector_data_source": vector_data_source,
             "raster_data_source": raster_data_source,
+            "data_provenance": data_provenance,
             "routing_resolution_m": routing_resolution_m,
             "area_validation": area_validation,
             "validation_sources": validation_sources,

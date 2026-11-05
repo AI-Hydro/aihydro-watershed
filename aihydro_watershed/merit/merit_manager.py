@@ -1,24 +1,29 @@
 """
-Lazy MERIT-Hydro / MERIT-Basins data layout under ~/.aihydro/merit/.
+Lazy MERIT-Hydro / MERIT-Basins data layout under ``$AIHYDRO_HOME/merit/``
+(default ``~/.aihydro/merit/``).
 
-Vector rivers + level-2 index enable outlet snapping; full raster sets enable
-upstream-delineator (accurate tier) when installed locally.
+The default global delineation tier (MERIT-Basins vector assembly) reads the
+per-region ``basins##.db`` / ``rivers##.db`` files and optional ``flowdir##.tif`` /
+``accum##.tif`` rasters published for the ``delineator`` package. Every file is
+pinned by SHA-256 in ``delineator_data_manifest.json`` and verified before use
+(see :mod:`aihydro_watershed.merit.verified_fetch`).
 """
 
 from __future__ import annotations
 
 import logging
 import os
-import hashlib
-import zipfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import geopandas as gpd
 import yaml
 from shapely.geometry import Point
+
+from aihydro_watershed._paths import aihydro_home
+from aihydro_watershed.merit import verified_fetch as vf
 
 log = logging.getLogger(__name__)
 
@@ -27,36 +32,25 @@ _MANIFEST_PATH = Path(__file__).parent / "merit_manifest.yaml"
 # ---------------------------------------------------------------------------
 # Auto-staging policy (Design B)
 # ---------------------------------------------------------------------------
-# Read once from ~/.aihydro/config.json.  Keys:
+# Read from $AIHYDRO_HOME/config.json (default ~/.aihydro).  Keys:
 #   merit_auto_stage: "tiered" | "always" | "never"   (default "tiered")
 #   merit_auto_stage_max_gb: float                     (default 2.0)
 # ---------------------------------------------------------------------------
 
 def _merit_auto_stage_policy() -> tuple[str, float]:
-    """Return (policy, max_gb) from ~/.aihydro/config.json."""
+    """Return (policy, max_gb) from ``AIHYDRO_MERIT_AUTO_STAGE`` or $AIHYDRO_HOME/config.json."""
     import json as _json
-    cfg_path = Path.home() / ".aihydro" / "config.json"
+    cfg_path = aihydro_home() / "config.json"
+    env_policy = os.environ.get("AIHYDRO_MERIT_AUTO_STAGE", "").strip().lower()
     try:
         if cfg_path.exists():
             cfg = _json.loads(cfg_path.read_text())
             policy = str(cfg.get("merit_auto_stage", "tiered"))
             max_gb = float(cfg.get("merit_auto_stage_max_gb", 2.0))
-            return policy, max_gb
+            return (env_policy or policy), max_gb
     except Exception:
         pass
-    return "tiered", 2.0
-
-
-def _estimate_flowdir_size_bytes(url: str) -> int | None:
-    """HTTP HEAD request to get content-length without downloading."""
-    import urllib.request
-    try:
-        req = urllib.request.Request(url, method="HEAD")
-        with urllib.request.urlopen(req, timeout=8) as r:
-            cl = r.headers.get("Content-Length")
-            return int(cl) if cl else None
-    except Exception:
-        return None
+    return (env_policy or "tiered"), 2.0
 
 
 @dataclass
@@ -104,20 +98,24 @@ class BasinsRegionStatus:
     citation: str
     message: str
     downloaded: list[str] | None = None
+    integrity_error: str | None = None
+    rivers_db_path: str | None = None
+    megabasins_ready: bool = False
 
 
 class MeritDataManager:
     """Resolve Pfafstetter basin and local MERIT file paths."""
 
-    def __init__(self, root: Path | str | None = None) -> None:
+    def __init__(self, root: Path | str | None = None, *, opener: "vf.Opener | None" = None) -> None:
+        self._opener = opener
         if root is not None:
             self.root = Path(root)
         else:
             env = os.environ.get("AIHYDRO_MERIT_DIR") or os.environ.get("MERIT_DATA_DIR")
-            self.root = Path(env) if env else Path.home() / ".aihydro" / "merit"
+            self.root = Path(env) if env else aihydro_home() / "merit"
         self.root.mkdir(parents=True, exist_ok=True)
         self._manifest = self._load_manifest()
-        self._base_url = os.environ.get("AIHYDRO_MERIT_BASE_URL", "").rstrip("/")
+        self._base_url = vf.mirror_base_url()
 
     def _load_manifest(self) -> dict[str, Any]:
         if _MANIFEST_PATH.exists():
@@ -188,13 +186,65 @@ class MeritDataManager:
         return self.root / "metadata" / f"basins_{pfaf}.json"
 
     def _merit_license(self) -> str:
-        return "CC-BY-NC 4.0 or ODbL 1.0; derived-data obligations may apply."
+        return vf.licence_summary()
 
     def _merit_basins_citation(self) -> str:
         return (
-            "Yamazaki et al. 2019, MERIT Hydro; MERIT-Basins vector hydrography, "
-            "https://www.reachhydro.org/home/params/merit-basins"
+            "Lin et al. 2019 (MERIT-Basins), https://www.reachhydro.org/home/params/merit-basins; "
+            "Yamazaki et al. 2019 (MERIT Hydro), https://doi.org/10.1029/2019WR024873; "
+            "Heberger 2025 (hybrid delineation), https://mghydro.com/pages/Heberger_delineation_2025.pdf"
         )
+
+    # -- pinned delineator-layout data (basins##.db, rivers##.db, rasters, megabasins.db) --------
+
+    def megabasins_path(self) -> Path:
+        return self.root / "vector" / "megabasins.db"
+
+    def basins_db_path(self, pfaf_code: str) -> Path:
+        return self.root / "vector" / vf.region_asset_name("basins", pfaf_code)
+
+    def rivers_db_path(self, pfaf_code: str) -> Path:
+        return self.root / "vector" / vf.region_asset_name("rivers", pfaf_code)
+
+    def raster_path(self, kind: str, pfaf_code: str) -> Path:
+        rel = "raster/flowdir_basins" if kind == "flowdir" else "raster/accum_basins"
+        return self.root / rel / vf.region_asset_name(kind, pfaf_code)
+
+    def _asset_path(self, kind: str, pfaf_code: str) -> Path:
+        if kind == "basins":
+            return self.basins_db_path(pfaf_code)
+        if kind == "rivers":
+            return self.rivers_db_path(pfaf_code)
+        return self.raster_path(kind, pfaf_code)
+
+    def verified_asset(self, kind: str, pfaf_code: str) -> Path | None:
+        """Path of a verified regional file (``basins``/``rivers``/``flowdir``/``accum``) or ``None``.
+
+        Raises :class:`AssetIntegrityError` if a file is present but does not match its pin.
+        """
+        return vf.verified_path(
+            self._asset_path(kind, pfaf_code), vf.region_asset_spec(kind, pfaf_code)
+        )
+
+    def verified_megabasins(self) -> Path | None:
+        return vf.verified_path(self.megabasins_path(), vf.asset_spec("megabasins.db"))
+
+    def _stage(self, spec: "vf.AssetSpec", dest: Path, progress_cb=None) -> Path:
+        return vf.fetch_verified(
+            spec,
+            dest,
+            opener=self._opener,
+            progress_cb=(lambda done, tot: progress_cb(f"Downloading {spec.name}", done, tot))
+            if progress_cb
+            else None,
+        )
+
+    def ensure_level2_index(self, *, download: bool = False) -> Path | None:
+        """Verified megabasin index (``megabasins.db``); downloaded (52.9 MB) only when asked."""
+        got = self.verified_megabasins()
+        if got is None and download:
+            got = self._stage(vf.asset_spec("megabasins.db"), self.megabasins_path())
+        return got
 
     def resolve_pfaf_region(self, lat: float, lon: float) -> str:
         """Resolve the MERIT Pfafstetter level-2 region for a point."""
@@ -232,32 +282,50 @@ class MeritDataManager:
         )
 
     def basins_region_cache(self, pfaf_region: str) -> BasinsRegionStatus:
-        """Report regional MERIT-Basins vector/topology cache readiness."""
+        """Report regional MERIT-Basins vector readiness (hash-verified, never trusts an unpinned file)."""
         pfaf = pfaf_region.zfill(2)
-        catchments = self.catchment_shapefile_path(pfaf)
-        rivers = self.river_shapefile_path(pfaf)
         meta = self._basins_metadata_path(pfaf)
-        catch_ready = catchments.exists()
-        rivers_ready = rivers.exists()
-        source = self._base_url or "local_cache_or_manifest"
+        err: str | None = None
+        found: dict[str, Path | None] = {}
+        for kind in ("basins", "rivers"):
+            try:
+                found[kind] = self.verified_asset(kind, pfaf)
+            except vf.AssetIntegrityError as exc:
+                found[kind] = None
+                err = err or str(exc)
+        try:
+            mega = self.verified_megabasins()
+        except vf.AssetIntegrityError as exc:
+            mega = None
+            err = err or str(exc)
+        need = sum(
+            vf.region_asset_spec(k, pfaf).size_bytes or 0 for k in ("basins", "rivers") if found[k] is None
+        )
+        if mega is None:
+            need += vf.asset_spec("megabasins.db").size_bytes or 0
+        basins_ok, rivers_ok = found["basins"] is not None, found["rivers"] is not None
+        if err:
+            message = f"{err} The file was not used."
+        elif basins_ok and rivers_ok:
+            message = f"MERIT-Basins vectors verified for Pfaf {pfaf}."
+        else:
+            message = f"MERIT-Basins vectors missing for Pfaf {pfaf}; staging required."
         return BasinsRegionStatus(
             pfaf_region=pfaf,
-            catchments_ready=catch_ready,
-            catchments_path=str(catchments) if catch_ready else None,
-            rivers_ready=rivers_ready,
-            rivers_path=str(rivers) if rivers_ready else None,
-            acquisition_required=not (catch_ready and rivers_ready),
+            catchments_ready=basins_ok,
+            catchments_path=str(found["basins"]) if basins_ok else None,
+            rivers_ready=rivers_ok,
+            rivers_path=str(found["rivers"]) if rivers_ok else None,
+            acquisition_required=not (basins_ok and rivers_ok),
             acquisition_policy="check_only",
-            estimated_download_size_bytes=None,
+            estimated_download_size_bytes=need or None,
             metadata_path=str(meta) if meta.exists() else None,
-            source=source,
+            source=self._base_url or vf.load_manifest()["source"]["base_url"],
             license=self._merit_license(),
             citation=self._merit_basins_citation(),
-            message=(
-                f"MERIT-Basins catchments/rivers cached for Pfaf {pfaf}."
-                if catch_ready and rivers_ready
-                else f"MERIT-Basins vectors missing for Pfaf {pfaf}; staging required."
-            ),
+            message=message,
+            integrity_error=err,
+            megabasins_ready=mega is not None,
         )
 
     def ensure_basins_region(
@@ -265,99 +333,105 @@ class MeritDataManager:
         pfaf_region: str,
         *,
         acquisition_policy: str = "check_only",
+        progress_cb: "Callable[[str, int, int], None] | None" = None,
     ) -> BasinsRegionStatus:
-        """Ensure/report regional MERIT-Basins vector assets for hybrid routing."""
+        """Ensure/report regional MERIT-Basins vectors (``basins##.db``, ``rivers##.db``, ``megabasins.db``).
+
+        ``check_only`` never downloads. ``download`` fetches only what is missing, installing a file
+        only if its SHA-256 and size match the pinned manifest (a mismatch is reported, never used).
+        """
         pfaf = pfaf_region.zfill(2)
         status = self.basins_region_cache(pfaf)
         downloaded: list[str] = []
-        fallback_downloaded = False
-        if acquisition_policy in ("download", "download_if_missing") and status.acquisition_required:
-            # Reuse the existing lazy vector installer. It resolves by point, so this
-            # path remains check/report oriented unless a lab mirror is configured.
-            for asset, tmpl_key, dest_path in (
-                ("catchments", "catchments", self.catchment_shapefile_path(pfaf)),
-                ("rivers", "rivers", self.river_shapefile_path(pfaf)),
-            ):
-                if dest_path.exists():
-                    continue
-                tmpl = (
-                    self._manifest.get("basin_template", {})
-                    .get(tmpl_key, {})
-                    .get("download_url")
-                )
-                url = tmpl.format(pfaf=pfaf) if tmpl else None
-                if self._base_url:
-                    url = f"{self._base_url}/{asset}/{dest_path.stem}.zip"
-                if url:
-                    zip_path = self.root / "downloads" / f"{asset}_{pfaf}.zip"
-                    if self._try_download(url, zip_path):
-                        downloaded.append(f"{asset}_{pfaf}")
-            status = self.basins_region_cache(pfaf)
-            if status.catchments_ready is False:
+        failure: str | None = None
+        if acquisition_policy in ("download", "download_if_missing"):
+            todo = []
+            if not status.megabasins_ready:
+                todo.append((vf.asset_spec("megabasins.db"), self.megabasins_path()))
+            if not status.catchments_ready:
+                todo.append((vf.region_asset_spec("basins", pfaf), self.basins_db_path(pfaf)))
+            if not status.rivers_ready:
+                todo.append((vf.region_asset_spec("rivers", pfaf), self.rivers_db_path(pfaf)))
+            for spec, dest in todo:
                 try:
-                    from aihydro_watershed.merit.merit_download import download_catchment_shapefile
-
-                    catchments_dir = self.catchment_shapefile_path(pfaf).parent
-                    if download_catchment_shapefile(pfaf, catchments_dir):
-                        downloaded.append(f"catchments_{pfaf}")
-                        fallback_downloaded = True
-                except Exception as e:
-                    log.warning("MERIT catchment download (Google Drive) failed for pfaf %s: %s", pfaf, e)
-            if status.rivers_ready is False:
-                try:
-                    from aihydro_watershed.merit.merit_download import download_river_shapefile
-
-                    rivers_dir = self.river_shapefile_path(pfaf).parent
-                    if download_river_shapefile(pfaf, rivers_dir):
-                        downloaded.append(f"rivers_{pfaf}")
-                        fallback_downloaded = True
-                except Exception as e:
-                    log.warning("MERIT river download (Google Drive) failed for pfaf %s: %s", pfaf, e)
+                    log.info("Downloading %s (%.0f MB) from %s", spec.name, (spec.size_bytes or 0) / 1e6, spec.url)
+                    self._stage(spec, dest, progress_cb)
+                    downloaded.append(spec.name)
+                except Exception as exc:  # integrity failures and network errors both leave nothing installed
+                    failure = f"{spec.name}: {exc}"
+                    log.warning("MERIT vector staging failed: %s", failure)
+                    break
             status = self.basins_region_cache(pfaf)
             if not status.acquisition_required:
-                source = "google_drive_public_merit_basins" if fallback_downloaded else self._base_url or "manifest_urls"
-                self._write_basins_metadata(pfaf, source=source)
+                self._write_basins_metadata(pfaf, source=self._base_url or "mghydro_pinned_manifest")
                 status = self.basins_region_cache(pfaf)
-        elif acquisition_policy in ("download", "download_if_missing") and not status.acquisition_required:
-            if status.metadata_path is None:
-                self._write_basins_metadata(pfaf, source="existing_local_cache")
-                status = self.basins_region_cache(pfaf)
-
         status.acquisition_policy = acquisition_policy
         status.downloaded = downloaded or None
-        if status.acquisition_required and acquisition_policy == "check_only":
+        if failure:
+            status.message = f"Staging failed ({failure}); nothing unverified was installed."
+        elif status.acquisition_required and acquisition_policy == "check_only":
             status.message = (
-                f"MERIT-Basins vectors missing for Pfaf {pfaf}; call "
-                "merit_ensure_basins_region(..., acquisition_policy='download') "
-                "after reviewing the regional vector assets."
+                f"MERIT-Basins vectors missing for Pfaf {pfaf} (~{(status.estimated_download_size_bytes or 0) / 1e6:.0f} MB "
+                "to download, SHA-256 verified); call merit_ensure_basins_region(..., "
+                "acquisition_policy='download') after reviewing the size."
             )
         return status
+
+    def auto_stage_vectors(
+        self,
+        pfaf: str,
+        progress_cb: "Callable[[str, int, int], None] | None" = None,
+    ) -> BasinsRegionStatus:
+        """Stage the vectors for *pfaf* under the same tiered policy as :meth:`auto_stage_flowdir`.
+
+        ``AIHYDRO_MERIT_AUTO_STAGE=never|tiered|always`` (or ``merit_auto_stage`` in config) and
+        ``merit_auto_stage_max_gb`` (default 2 GB) apply; sizes come from the pinned manifest.
+        """
+        pfaf = pfaf.zfill(2)
+        status = self.basins_region_cache(pfaf)
+        if not status.acquisition_required or status.integrity_error:
+            return status
+        policy, max_gb = _merit_auto_stage_policy()
+        need = status.estimated_download_size_bytes or 0
+        if policy == "never":
+            status.message = (
+                f"MERIT-Basins vectors for Pfaf {pfaf} are not staged and auto-staging is disabled "
+                f"(~{need / 1e6:.0f} MB, SHA-256 verified, on demand)."
+            )
+            return status
+        if policy == "tiered" and need > max_gb * 1e9:
+            status.message = (
+                f"MERIT-Basins vectors for Pfaf {pfaf} are ~{need / 1e9:.1f} GB (> {max_gb:g} GB auto-stage "
+                "limit); stage explicitly with merit_ensure_basins_region(acquisition_policy='download')."
+            )
+            setattr(status, "action_required", "confirm_large_download")
+            return status
+        return self.ensure_basins_region(pfaf, acquisition_policy="download", progress_cb=progress_cb)
 
     def _write_basins_metadata(self, pfaf: str, *, source: str) -> None:
         meta = self._basins_metadata_path(pfaf)
         meta.parent.mkdir(parents=True, exist_ok=True)
         assets: dict[str, dict[str, Any]] = {}
         for name, path in (
-            ("catchments", self.catchment_shapefile_path(pfaf)),
-            ("rivers", self.river_shapefile_path(pfaf)),
+            ("catchments", self.basins_db_path(pfaf)),
+            ("rivers", self.rivers_db_path(pfaf)),
+            ("megabasins", self.megabasins_path()),
         ):
-            if not path.exists():
-                continue
-            digest = hashlib.sha256()
-            with path.open("rb") as f:
-                for chunk in iter(lambda: f.read(1024 * 1024), b""):
-                    digest.update(chunk)
-            assets[name] = {
-                "path": str(path),
-                "size_bytes": path.stat().st_size,
-                "checksum_sha256": digest.hexdigest(),
-            }
+            rec = vf.read_provenance(path) if path.exists() else None
+            if rec:
+                assets[name] = {
+                    "path": str(path),
+                    "size_bytes": rec["size_bytes"],
+                    "checksum_sha256": rec["sha256"],
+                    "url": rec["url"],
+                }
         payload = {
             "pfaf_region": pfaf,
             "asset": "merit_basins_vectors",
             "assets": assets,
             "source": source,
-            "dataset_version": "MERIT_Hydro_v07_Basins_v01",
+            "dataset_version": vf.load_manifest()["dataset_versions"]["vectors"],
+            "data_version": vf.load_manifest()["source"]["data_version"],
             "acquisition_date": datetime.now(timezone.utc).isoformat(),
             "license": self._merit_license(),
             "citation": self._merit_basins_citation(),
@@ -367,43 +441,49 @@ class MeritDataManager:
     def _write_flowdir_metadata(self, pfaf: str, flowdir: Path, *, source: str) -> None:
         meta = self._flowdir_metadata_path(pfaf)
         meta.parent.mkdir(parents=True, exist_ok=True)
-        digest = hashlib.sha256()
-        with flowdir.open("rb") as f:
-            for chunk in iter(lambda: f.read(1024 * 1024), b""):
-                digest.update(chunk)
+        rec = vf.read_provenance(flowdir) or {}
         payload = {
             "pfaf_region": pfaf,
             "asset": "flowdir",
             "path": str(flowdir),
             "source": source,
-            "checksum_sha256": digest.hexdigest(),
+            "checksum_sha256": rec.get("sha256"),
             "size_bytes": flowdir.stat().st_size,
             "acquisition_date": datetime.now(timezone.utc).isoformat(),
-            "license": "CC-BY-NC 4.0 or ODbL 1.0; derived-data obligations may apply.",
+            "license": self._merit_license(),
             "citation": "Yamazaki et al. 2019, MERIT Hydro, https://doi.org/10.1029/2019WR024873",
         }
         meta.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
 
     def resolve_pfaf_code(self, lat: float, lon: float) -> str:
         shp = self.level2_shapefile_path()
-        if not shp.exists():
-            raise FileNotFoundError(
-                f"MERIT level-2 index missing at {shp}. "
-                "Run merit_ensure_basin or install MERIT vectors — see local-docs/watershed-delineation.md"
-            )
-        gdf = gpd.read_file(shp)
         pt = Point(lon, lat)
-        hit = gdf[gdf.geometry.contains(pt)]
+        if shp.exists():
+            gdf = gpd.read_file(shp)
+            hit = gdf[gdf.geometry.contains(pt)]
+            id_cols = ("pfaf_code", "PFAF_ID", "BASIN", "basin")
+        else:
+            mega = self.verified_megabasins()
+            if mega is None:
+                raise FileNotFoundError(
+                    f"MERIT level-2 index missing at {self.megabasins_path()}. Stage it (52.9 MB, "
+                    "SHA-256 pinned) with merit_ensure_basins_region(acquisition_policy='download')."
+                )
+            gdf = gpd.read_file(mega, layer="megabasins")
+            hit = gdf[gdf.geometry.contains(pt)]
+            if hit.empty:  # coastline slivers: nearest megabasin within ~5 km (0.05 deg)
+                near = gdf[gdf.geometry.distance(pt) <= 0.05]
+                if not near.empty:
+                    hit = near.loc[[near.geometry.distance(pt).idxmin()]]
+            id_cols = ("basin", "BASIN", "pfaf_code", "PFAF_ID")
         if hit.empty:
             raise ValueError(f"({lat}, {lon}) is outside MERIT level-2 basins.")
         row = hit.iloc[0]
-        code = str(
-            row.get("pfaf_code")
-            or row.get("PFAF_ID")
-            or row.get("BASIN")
-            or row.get("basin")
-            or ""
-        )
+        code = ""
+        for col in id_cols:
+            if col in row.index and row[col] not in (None, ""):
+                code = str(row[col])
+                break
         if not code:
             raise ValueError(f"Could not read Pfaf/BASIN code from level-2 index at ({lat}, {lon}).")
         return str(int(code)).zfill(2)
@@ -420,8 +500,8 @@ class MeritDataManager:
         """
         Ensure/report flowdir-first regional MERIT routing assets.
 
-        ``check_only`` never downloads. ``download`` attempts only configured
-        manifest/base-url flowdir URLs and still never requires accumulation.
+        ``check_only`` never downloads. ``download`` fetches the pinned, SHA-256-verified
+        ``flowdir##.tif`` and still never requires accumulation.
         """
         if pfaf_region is None:
             if lat is None or lon is None:
@@ -434,32 +514,28 @@ class MeritDataManager:
 
         status = self.routing_region_cache(pfaf)
         downloaded: list[str] = []
+        failure: str | None = None
         if (
             acquisition_policy in ("download", "download_if_missing")
             and not status.flowdir_ready
         ):
-            tmpl = (
-                self._manifest.get("basin_template", {})
-                .get("flowdir", {})
-                .get("download_url")
-            )
-            url = tmpl.format(pfaf=pfaf) if tmpl else None
-            if self._base_url:
-                url = f"{self._base_url}/flowdir/flowdir{pfaf}.tif"
-            if url:
-                rel = self._manifest.get("basin_template", {}).get("flowdir", {}).get(
-                    "relative_dir", "raster/flowdir_basins"
-                )
-                dest = self.root / rel / f"flowdir{pfaf}.tif"
-                if self._try_download(url, dest):
-                    downloaded.append(f"flowdir_{pfaf}")
-                    self._write_flowdir_metadata(pfaf, dest, source=url)
-                    status = self.routing_region_cache(pfaf)
+            spec = vf.region_asset_spec("flowdir", pfaf)
+            dest = self.raster_path("flowdir", pfaf)
+            try:
+                self._stage(spec, dest)
+                downloaded.append(f"flowdir_{pfaf}")
+                self._write_flowdir_metadata(pfaf, dest, source=spec.url)
+                status = self.routing_region_cache(pfaf)
+            except Exception as exc:
+                failure = f"{spec.name}: {exc}"
+                log.warning("MERIT flowdir staging failed: %s", failure)
 
         status.acquisition_policy = acquisition_policy
         status.required_assets = required
         status.downloaded = downloaded or None
-        if not status.flowdir_ready and acquisition_policy == "check_only":
+        if failure:
+            status.message = f"Staging failed ({failure}); nothing unverified was installed."
+        elif not status.flowdir_ready and acquisition_policy == "check_only":
             status.message = (
                 f"Regional MERIT flowdir missing for Pfaf {pfaf}; call "
                 "merit_ensure_routing_region(..., acquisition_policy='download') "
@@ -486,7 +562,6 @@ class MeritDataManager:
 
         Returns RoutingRegionStatus; check ``.flowdir_ready`` for success.
         """
-        from typing import Callable  # local to avoid circular at module level
         import shutil
 
         policy, max_gb = _merit_auto_stage_policy()
@@ -503,21 +578,9 @@ class MeritDataManager:
             )
             return status
 
-        # Resolve download URL
-        tmpl = (
-            self._manifest.get("basin_template", {})
-            .get("flowdir", {})
-            .get("download_url")
-        )
-        url = tmpl.format(pfaf=pfaf) if tmpl else None
-        if self._base_url:
-            url = f"{self._base_url}/flowdir/flowdir{pfaf}.tif"
-        if not url:
-            status.message = "No download URL configured for MERIT flowdir."
-            return status
-
-        # HEAD request for size estimate
-        size_bytes = _estimate_flowdir_size_bytes(url)
+        spec = vf.region_asset_spec("flowdir", pfaf)
+        url = spec.url
+        size_bytes = spec.size_bytes  # pinned size from the manifest (no HEAD request needed)
         size_mb = (size_bytes or 0) / (1024 ** 2)
         size_gb = size_mb / 1024
 
@@ -564,21 +627,31 @@ class MeritDataManager:
         _start_msg = (
             f"Staging MERIT-Hydro flow-direction for the {region_label}. "
             f"This enables proper hydrological routing (MERIT-pyflwdir) instead of "
-            f"raw DEM fallback. Source: Yamazaki et al. 2019 (CC-BY-NC). "
+            f"raw DEM fallback. Source: Yamazaki et al. 2019; non-commercial licence, SHA-256 verified. "
             f"Download: {size_label} → {self.root / 'raster/flowdir_basins'}"
         )
         log.info(_start_msg)
         if progress_cb:
             progress_cb(_start_msg, 0, size_bytes or 0)
 
-        rel = self._manifest.get("basin_template", {}).get("flowdir", {}).get(
-            "relative_dir", "raster/flowdir_basins"
-        )
-        dest = self.root / rel / f"flowdir{pfaf}.tif"
+        dest = self.raster_path("flowdir", pfaf)
         dest.parent.mkdir(parents=True, exist_ok=True)
 
-        # Download with chunk-based progress reporting
-        success = self._try_download_with_progress(url, dest, size_bytes, progress_cb)
+        success = False
+        try:
+            self._stage(
+                spec,
+                dest,
+                (lambda msg, done, tot: progress_cb(
+                    f"{msg} {done / 1048576:.0f} / {tot / 1048576:.0f} MB", done, tot
+                ))
+                if progress_cb
+                else None,
+            )
+            success = True
+        except Exception as exc:
+            log.warning("MERIT flowdir staging failed: %s", exc)
+            failure_msg = str(exc)
         if success:
             self._write_flowdir_metadata(pfaf, dest, source=url)
             status = self.routing_region_cache(pfaf)
@@ -591,130 +664,42 @@ class MeritDataManager:
             if progress_cb:
                 progress_cb(_done_msg, size_bytes or 0, size_bytes or 0)
         else:
-            status.message = f"Download failed for Pfaf {pfaf} flowdir from {url}."
+            status.message = f"Download failed for Pfaf {pfaf} flowdir from {url}: {failure_msg}"
             if progress_cb:
                 progress_cb(status.message, 0, size_bytes or 0)
 
         return status
 
-    def _try_download_with_progress(
-        self,
-        url: str,
-        dest: Path,
-        total_bytes: int | None,
-        progress_cb: "Callable[[str, int, int], None] | None",
-    ) -> bool:
-        """Download *url* to *dest*, calling *progress_cb* every 5 MB."""
-        import urllib.request
-        try:
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            chunk_size = 5 * 1024 * 1024  # 5 MB
-            downloaded = 0
-            with urllib.request.urlopen(url, timeout=300) as resp, open(dest, "wb") as f:  # noqa: S310
-                while True:
-                    chunk = resp.read(chunk_size)
-                    if not chunk:
-                        break
-                    f.write(chunk)
-                    downloaded += len(chunk)
-                    if progress_cb and total_bytes:
-                        pct = int(downloaded / total_bytes * 100)
-                        mb_done = downloaded / (1024 ** 2)
-                        mb_total = total_bytes / (1024 ** 2)
-                        progress_cb(
-                            f"Downloading… {mb_done:.0f} / {mb_total:.0f} MB ({pct}%)",
-                            downloaded,
-                            total_bytes,
-                        )
-            if dest.suffix == ".zip":
-                import zipfile
-                with zipfile.ZipFile(dest, "r") as zf:
-                    zf.extractall(dest.parent)
-            return dest.exists()
-        except Exception as exc:
-            log.warning("_try_download_with_progress failed for %s: %s", url, exc)
-            return False
-
-    def _try_download(self, url: str, dest: Path) -> bool:
-        if not url:
-            return False
-        try:
-            import urllib.request
-
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            log.info("Downloading %s", url)
-            urllib.request.urlretrieve(url, dest)  # noqa: S310
-            if dest.suffix == ".zip" and dest.exists():
-                with zipfile.ZipFile(dest, "r") as zf:
-                    zf.extractall(dest.parent)
-            return True
-        except Exception as e:
-            log.warning("Download failed %s: %s", url, e)
-            return False
-
     def ensure_basin(
         self, lat: float, lon: float, *, download: bool = True
     ) -> BasinEnsureStatus:
-        """Ensure MERIT assets for the basin containing (lat, lon)."""
+        """Ensure verified MERIT-Basins vectors for the basin containing (lat, lon)."""
         downloaded: list[str] = []
-        level2_ready = self.level2_shapefile_path().exists()
-
-        if not level2_ready and download:
-            url = self._manifest.get("level2", {}).get("download_url")
-            if self._base_url:
-                url = f"{self._base_url}/level2/merit_hydro_vect_level2.zip"
-            if url:
-                zip_path = self.root / "downloads" / "merit_hydro_vect_level2.zip"
-                if self._try_download(url, zip_path):
+        level2_ready = False
+        try:
+            if self.level2_shapefile_path().exists():
+                level2_ready = True
+            else:
+                level2_ready = self.ensure_level2_index(download=download) is not None
+                if level2_ready and download:
                     downloaded.append("level2")
-                    level2_ready = self.level2_shapefile_path().exists()
-            if not level2_ready:
-                try:
-                    from aihydro_watershed.merit.merit_download import ensure_level2_index
-
-                    if ensure_level2_index(self.level2_shapefile_path().parent):
-                        downloaded.append("level2")
-                        level2_ready = True
-                except Exception as e:
-                    log.warning("Level-2 install via delineator sample failed: %s", e)
+        except Exception as e:
+            log.warning("Level-2 index unavailable: %s", e)
 
         pfaf = self.resolve_pfaf_code(lat, lon) if level2_ready else "00"
-        rivers_ready = self.river_shapefile_path(pfaf).exists()
-        catchments_ready = self.catchment_shapefile_path(pfaf).exists()
-        flowdir_ready = self._glob_flowdir(pfaf) is not None
-
-        if download and not rivers_ready:
-            url = (
-                self._manifest.get("basin_template", {})
-                .get("rivers", {})
-                .get("download_url")
-            )
-            if self._base_url:
-                url = f"{self._base_url}/rivers/riv_pfaf_{pfaf}.zip"
-            if url:
-                zip_path = self.root / "downloads" / f"riv_pfaf_{pfaf}.zip"
-                if self._try_download(url, zip_path):
-                    downloaded.append(f"rivers_{pfaf}")
-                    rivers_ready = self.river_shapefile_path(pfaf).exists()
-            if not rivers_ready:
-                try:
-                    from aihydro_watershed.merit.merit_download import download_river_shapefile
-
-                    rivers_dir = self.river_shapefile_path(pfaf).parent
-                    if download_river_shapefile(pfaf, rivers_dir):
-                        downloaded.append(f"rivers_{pfaf}")
-                        rivers_ready = self.river_shapefile_path(pfaf).exists()
-                except Exception as e:
-                    log.warning("MERIT river download (Google Drive) failed for pfaf %s: %s", pfaf, e)
+        if download and level2_ready:
+            st = self.ensure_basins_region(pfaf, acquisition_policy="download")
+            downloaded.extend(st.downloaded or [])
+        st = self.basins_region_cache(pfaf) if level2_ready else None
+        rivers_ready = bool(st and st.rivers_ready)
+        catchments_ready = bool(st and st.catchments_ready)
+        flowdir_ready = self._glob_flowdir(pfaf) is not None if level2_ready else False
 
         msg_parts = [f"Pfafstetter basin {pfaf}"]
         if not level2_ready:
             msg_parts.append("level-2 index missing")
-        if not rivers_ready:
-            msg_parts.append(
-                "river vectors missing — click Install again or run: "
-                "python scripts/install_merit_minimal.py --lat <lat> --lon <lon>"
-            )
+        if st is not None and st.acquisition_required:
+            msg_parts.append(st.message)
 
         return BasinEnsureStatus(
             pfaf_code=pfaf,

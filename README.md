@@ -63,8 +63,8 @@ tool path, version, parameters, and data sources.
 
 | Subpackage | Capability |
 |---|---|
-| `delineation` | Global pour-point / gauge delineation. Three tiers: NLDI (CONUS NHD-indexed), MERIT-Hydro/pyflwdir (local flowdir cache), MERIT-Basins hybrid (vector topology + raster refinement). Auto-routing chooses the best available tier. |
-| `merit` | MERIT-Hydro data management: regional basin cache, flowdir rasters, map layers, region presets. |
+| `delineation` | Global pour-point / gauge delineation. Tiers: NLDI (CONUS NHD-indexed), MERIT-Basins hybrid (default outside CONUS: vector assembly of unit catchments + raster refinement of the terminal catchment), MERIT-Hydro/pyflwdir (local flowdir cache, Earth Engine). Auto-routing chooses the best available tier. |
+| `merit` | MERIT-Hydro / MERIT-Basins data management: per-region vectors and rasters pinned by SHA-256, map layers, region presets. |
 | `characterize` | Geomorphic parameters (28 indices), watershed attributes, topographic wetness index. |
 | `terrain` | Curve number (TR-55, AMC II), event runoff (SCS-CN), RUSLE erosion. SSURGO soil attributes in CONUS (recorded hydrologic group and erodibility Kw via gNATSGO + Soil Data Access), POLARIS/SoilGrids elsewhere. |
 | `signatures` | Baseflow index (Lyne-Hollick, Ladson 2013 recipe as used by CAMELS), flow-duration curve, flood frequency (Gumbel/GEV), drought indices (SPI, SPEI, Palmer). |
@@ -75,7 +75,11 @@ The flood-inundation suite is **not** part of this package.
 
 ```
 1. nldi        — USGS NLDI NHD-indexed basin (CONUS only, < 1 s)
-2. merit_gee   — MERIT-Hydro flowdir from Google Earth Engine (global, cloud)
+2. merit_hybrid (alias merit_basins) — MERIT-Basins unit catchments assembled by
+                 upstream traversal; only the terminal unit catchment is refined on
+                 a small raster window. DEFAULT global tier (auto outside CONUS);
+                 force it anywhere, including CONUS, with method="merit_hybrid".
+3. merit_gee   — MERIT-Hydro flowdir from Google Earth Engine (small-basin fallback)
 3. local_merit — MERIT-Hydro flowdir from local cache (global, offline after download)
 4. fast        — pysheds on cloud-fetched DEM tile (global, no MERIT cache needed)
 5. small_catchment (alias 3dep): CONUS catchments under ~5 km2 (road
@@ -85,6 +89,26 @@ The flood-inundation suite is **not** part of this package.
 auto           — tries tiers in order of accuracy; degrades gracefully on failures
                  (in CONUS, expected_area_km2 < 5 sends it to small_catchment first)
 ```
+
+### MERIT-Basins hybrid: data, licence, versions
+
+- **Data.** Per-megabasin files published for Heberger's `delineator` 2.2.x
+  (`basins##.db`, `rivers##.db`, optional `flowdir##.tif` / `accum##.tif`,
+  plus the 52.9 MB level-2 index `megabasins.db`), pinned by SHA-256 and size in
+  `aihydro_watershed/merit/delineator_data_manifest.json`. A file whose digest does
+  not match is deleted before install and, if already on disk, refused
+  (`MERIT_ASSET_INTEGRITY_FAILED`); nothing falls back to unverified data.
+  Vectors are staged on demand under the tiered policy (`AIHYDRO_MERIT_AUTO_STAGE=never|tiered|always`,
+  `merit_auto_stage_max_gb`, default 2 GB). Rasters are optional and staged explicitly. Everything lives under
+  `$AIHYDRO_HOME/merit` (default `~/.aihydro/merit`); `AIHYDRO_MERIT_DIR` overrides.
+- **Licence.** Non-commercial. mghydro.com releases the files under CC BY-NC-SA 4.0; MERIT Hydro is
+  CC BY-NC 4.0 or ODbL 1.0; the sources disagree on the exact variant. The result carries the
+  licence and the SHA-256 of every file used (`data_provenance`).
+- **Version consistency.** The vectors are MERIT-Basins v0.7/v1.0_bugfix1. With the regional
+  rasters staged, snapping and refinement use the same provider's files. Without them the tier uses
+  Earth Engine (MERIT Hydro v1.0.1) and flags `MERIT_VERSION_MIX`; `data_provenance.version_consistency`
+  records which dataset each step used. Refinement via Earth Engine is limited to a 40 km window and is
+  skipped (flagged) beyond it.
 
 Why a separate small-catchment tier: NLDI returns whole NHDPlus catchments
 (and the router rejects anything under 1 km2), MERIT-Hydro is 90 m, and the

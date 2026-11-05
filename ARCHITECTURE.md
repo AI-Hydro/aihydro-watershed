@@ -85,7 +85,9 @@ aihydro_watershed/
 │
 ├── merit/                   MERIT-HYDRO DATA MANAGEMENT
 │   ├── merit_manager.py     Tile inventory, download, local cache (~/.aihydro/merit/)
-│   ├── merit_download.py    HydroSHEDS / MERIT-Hydro tile downloader
+│   ├── verified_fetch.py    SHA-256-pinned download + verification of MERIT region files
+│   ├── basins_store.py      basins##.db reader (unit-catchment topology, geometries, uparea)
+│   ├── delineator_data_manifest.json  pinned file digests, sizes, licence (delineator 2.2.4)
 │   ├── merit_map_layers.py  GeoDataFrame overlays (river network, basins)
 │   ├── merit_manifest.yaml  Tile URL catalogue (5° tiles, global coverage)
 │   ├── region_presets.py    Named region bboxes for batch prefetch

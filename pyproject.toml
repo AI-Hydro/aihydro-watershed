@@ -77,10 +77,10 @@ delineation = [
     "earthengine-api>=0.1.390",
 ]
 
-# Accurate MERIT-Basins hybrid tier (adds upstream-delineator)
+# Retained alias. The MERIT-Basins hybrid tier (default global delineation) needs no extra
+# package: its data is downloaded on demand, SHA-256 verified, from the pinned manifest.
 delineation-full = [
     "aihydro-watershed[delineation]",
-    # upstream-delineator is installed from GitHub; see README install notes.
 ]
 
 # Watershed characterization + signatures (geomorphics, TWI, baseflow, FDC)
@@ -128,7 +128,7 @@ where = ["."]
 include = ["aihydro_watershed*"]
 
 [tool.setuptools.package-data]
-"aihydro_watershed.merit" = ["*.yaml"]
+"aihydro_watershed.merit" = ["*.yaml", "*.json"]
 
 # ── Pytest ─────────────────────────────────────────────────────────────────
 [tool.pytest.ini_options]

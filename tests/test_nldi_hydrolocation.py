@@ -317,3 +317,98 @@ def test_expansion_requires_strictly_larger_basin(fake_nldi, monkeypatch):
     monkeypatch.setitem(AREAS, 8934100, 30.0)
     comid, area, amb = nl.quick_comid_resolution(39.1, -120.1, allow_downstream_expansion=True)
     assert comid == START and "outlet_moved_downstream" not in amb
+
+
+# ---- bounded worker pool, streak rules -----------------------------------
+def test_pool_full_fails_fast_without_starting_a_thread(monkeypatch):
+    import threading
+
+    monkeypatch.setattr(nl, "_pool_slots", threading.BoundedSemaphore(2))
+    release = threading.Event()
+    started = []
+
+    def hung():
+        started.append(1)
+        release.wait(10)
+
+    try:
+        for _ in range(2):
+            with pytest.raises(ToolError):  # each hangs past its 0.2 s budget
+                nl._bounded(hung, end=nl.time.monotonic() + 0.2)
+        before = threading.active_count()
+        with pytest.raises(ToolError) as ei:
+            nl._bounded(hung, end=nl.time.monotonic() + 5)
+        assert ei.value.code == "NLDI_UNAVAILABLE" and "busy" in str(ei.value)
+        assert len(started) == 2 and threading.active_count() == before
+    finally:
+        release.set()
+
+
+def test_slot_is_released_when_the_abandoned_call_finishes(monkeypatch):
+    import threading
+    import time as _t
+
+    monkeypatch.setattr(nl, "_pool_slots", threading.BoundedSemaphore(1))
+    with pytest.raises(ToolError):
+        nl._bounded(lambda: _t.sleep(0.5), end=nl.time.monotonic() + 0.1)
+    _t.sleep(0.8)
+    assert nl._bounded(lambda: 7, end=nl.time.monotonic() + 2) == 7
+
+
+def test_bounded_propagates_the_call_exception():
+    def boom():
+        raise KeyError("x")
+
+    with pytest.raises(KeyError):
+        nl._bounded(boom, end=nl.time.monotonic() + 2)
+
+
+def test_first_get_basins_timeout_is_nldi_unavailable(fake_nldi, monkeypatch):
+    import time as _t
+
+    class Hung(FakeNLDI):
+        def get_basins(self, comid, fsource="comid"):
+            _t.sleep(3)
+            return super().get_basins(comid, fsource)
+
+    monkeypatch.setitem(sys.modules, "pynhd", types.SimpleNamespace(NLDI=Hung))
+    with nl.nldi_deadline(0.3):
+        with pytest.raises(ToolError) as ei:
+            nl.quick_comid_resolution(39.1, -120.1)
+    assert ei.value.code == "NLDI_UNAVAILABLE"
+
+
+def test_final_get_basins_in_delineation_is_bounded(fake_nldi, monkeypatch):
+    import time as _t
+
+    class HangFinal(FakeNLDI):
+        def get_basins(self, comid, fsource="comid"):
+            _t.sleep(3)  # quick_comid_resolution is stubbed, so this is the final basin fetch
+            return super().get_basins(comid, fsource)
+
+    monkeypatch.setitem(sys.modules, "pynhd", types.SimpleNamespace(NLDI=HangFinal))
+    monkeypatch.setattr(nl, "quick_comid_resolution", lambda *a, **k: (START, 30.0, None))
+    t0 = _t.monotonic()
+    with nl.nldi_deadline(0.3):
+        with pytest.raises(ToolError) as ei:
+            nl.delineate_nldi_at_point(39.1, -120.1)
+    assert ei.value.code == "NLDI_UNAVAILABLE" and _t.monotonic() - t0 < 2.5
+
+
+def test_5xx_then_4xx_is_not_an_exhausted_call(reset_memo):
+    for _ in range(3):
+        with pytest.raises(ToolError):
+            nl.hydrolocation_comid(
+                -97.9, 30.3, session=Session([Resp(502), Resp(404)]), sleep=lambda x: None
+            )
+    assert nl._exhausted_calls == 0 and nl._unavailable_until == 0.0
+
+
+def test_4xx_between_exhausted_calls_resets_the_streak(reset_memo):
+    _exhaust()
+    assert nl._exhausted_calls == 1
+    with pytest.raises(ToolError):
+        nl.hydrolocation_comid(-97.9, 30.3, session=Session([Resp(404)]), sleep=lambda x: None)
+    assert nl._exhausted_calls == 0
+    _exhaust()
+    assert nl._unavailable_until == 0.0  # not two in a row any more

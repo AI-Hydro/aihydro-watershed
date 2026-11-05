@@ -6,6 +6,7 @@ import contextlib
 import contextvars
 import json
 import logging
+import threading
 import time
 from dataclasses import dataclass
 
@@ -68,21 +69,58 @@ def _remaining() -> float | None:
     return None if d is None else d - time.monotonic()
 
 
-def _bounded(fn, *args, end: float, **kwargs):
-    """Run ``fn`` but stop waiting at ``end`` (time.monotonic()); raises TimeoutError.
+_POOL_MAX_THREADS = 4
+_pool_slots = threading.BoundedSemaphore(_POOL_MAX_THREADS)
 
-    pynhd's calls take no timeout argument. The worker thread is abandoned, not killed.
+
+def _end_at() -> float:
+    """Absolute monotonic end of the NLDI budget: the active deadline, else a fresh per-call cap."""
+    d = _deadline.get()
+    return d if d is not None else time.monotonic() + _NLDI_DEADLINE_S
+
+
+def _bounded(fn, *args, end: float, **kwargs):
+    """Run ``fn`` on a daemon thread and stop waiting at ``end`` (time.monotonic()).
+
+    pynhd's calls take no timeout argument, so a hung call cannot be cancelled: its thread is
+    abandoned (daemon, so it never blocks exit) and keeps its slot until the call returns. At most
+    ``_POOL_MAX_THREADS`` such threads exist at once across the module; when all are busy (e.g. an
+    outage left several hung) this fails fast instead of starting another. Both the timeout and the
+    full pool raise ``ToolError`` ``NLDI_UNAVAILABLE``.
     """
     import concurrent.futures as cf
 
-    ex = cf.ThreadPoolExecutor(max_workers=1)
+    if not _pool_slots.acquire(blocking=False):
+        raise ToolError(
+            code="NLDI_UNAVAILABLE",
+            message=f"NLDI worker threads are all busy ({_POOL_MAX_THREADS} hung calls); failing fast.",
+            tool=_TOOL_PATH,
+            recovery="The USGS NLDI service is not answering; retry later or use method='merit_gee'.",
+        )
+    fut: cf.Future = cf.Future()
+
+    def run():
+        try:
+            fut.set_result(fn(*args, **kwargs))
+        except BaseException as e:  # noqa: BLE001 - re-raised in the caller
+            fut.set_exception(e)
+        finally:
+            _pool_slots.release()
+
     try:
-        fut = ex.submit(fn, *args, **kwargs)
+        threading.Thread(target=run, name="nldi-bounded", daemon=True).start()
+    except BaseException:
+        _pool_slots.release()
+        raise
+    try:
         return fut.result(timeout=max(0.1, end - time.monotonic()))
     except cf.TimeoutError as e:
-        raise TimeoutError("NLDI call exceeded the total NLDI deadline") from e
-    finally:
-        ex.shutdown(wait=False)
+        raise ToolError(
+            code="NLDI_UNAVAILABLE",
+            message="NLDI call exceeded the total NLDI deadline (api.water.usgs.gov not answering).",
+            tool=_TOOL_PATH,
+            recovery="The USGS NLDI service is slow or down; retry later or use method='merit_gee'.",
+        ) from e
 
 
 @dataclass(frozen=True)
@@ -156,7 +194,7 @@ def hydrolocation_comid(
     last = "no response"
     status: int | None = None
     sent = 0
-    transient = False
+    last_transient = False
     # Callers outside a router tier (worker threads, snap, gauge fallback) have no deadline context:
     # give the call its own cap rather than leaving it unbounded.
     end = _deadline.get()
@@ -185,12 +223,13 @@ def hydrolocation_comid(
                 return hit
             last = f"HTTP {status}"
             if status != 429 and status < 500:
-                break  # a 4xx is not transient and says nothing about an outage
-            transient = True
+                last_transient = False  # a 4xx is not transient: the service answered
+                break
+            last_transient = True
             retry_after = resp.headers.get("Retry-After")
         except requests.RequestException as e:
             status = None
-            transient = True
+            last_transient = True
             last = f"{type(e).__name__}: {e}"
         if attempt < _HYDROLOCATION_ATTEMPTS - 1:
             wait = _HYDROLOCATION_BACKOFF_S[min(attempt, len(_HYDROLOCATION_BACKOFF_S) - 1)]
@@ -205,11 +244,13 @@ def hydrolocation_comid(
             log.info("NLDI hydrolocation %s; retrying in %.0fs", last, wait)
             sleep(wait)
     # Remember an outage only on evidence of one: a request was sent and failed transiently
-    # (no response, 429, 5xx) on this call, and the previous call did too.
-    if sent and transient:
+    # (no response, 429, 5xx) as its LAST attempt, and the previous call did too.
+    if sent and last_transient:
         _exhausted_calls += 1
         if _exhausted_calls >= _UNAVAILABLE_TRIP_AFTER:
             _unavailable_until = time.monotonic() + _UNAVAILABLE_MEMO_S
+    elif sent:
+        _exhausted_calls = 0  # the call ended on a 4xx (the service answered): the streak is broken
     raise ToolError(
         code="NLDI_UNAVAILABLE",
         message=f"NLDI hydrolocation failed for ({lat}, {lon}): {last} (host api.water.usgs.gov).",
@@ -251,6 +292,7 @@ def resolve_comid_for_area(
     from pynhd import NLDI
 
     nldi = NLDI()
+    end = _end_at()
     start = hydrolocation_comid(lon, lat).comid
     candidates: set[int] = {start}
 
@@ -270,14 +312,16 @@ def resolve_comid_for_area(
             log.debug("NLDI navigate %s skipped: %s", navigation, e)
 
     best_comid = start
-    best_area = area_km2(nldi.get_basins(start, fsource="comid").dissolve())
+    best_area = area_km2(_bounded(nldi.get_basins, start, fsource="comid", end=end).dissolve())
     best_err = abs(best_area - expected_area_km2)
 
     for comid in list(candidates)[:max_candidates]:
         if comid == start:
             continue
         try:
-            a = area_km2(nldi.get_basins(comid, fsource="comid").dissolve())
+            if end - time.monotonic() <= 0:
+                break
+            a = area_km2(_bounded(nldi.get_basins, comid, fsource="comid", end=end).dissolve())
         except Exception:
             continue
         err = abs(a - expected_area_km2)
@@ -320,9 +364,7 @@ def quick_comid_resolution(
     from pynhd import NLDI
 
     nldi = NLDI()
-    end = _deadline.get()
-    if end is None:
-        end = time.monotonic() + _NLDI_DEADLINE_S
+    end = _end_at()
     start = hydrolocation_comid(lon, lat).comid
     start_area = area_km2(_bounded(nldi.get_basins, start, fsource="comid", end=end).dissolve())
 
@@ -475,7 +517,7 @@ def delineate_nldi_at_point(
             lat, lon, allow_downstream_expansion=allow_downstream_expansion
         )
 
-    basins = nldi.get_basins(comid, fsource="comid")
+    basins = _bounded(nldi.get_basins, comid, fsource="comid", end=_end_at())
     if basins.empty:
         raise ToolError(
             code="DELINEATION_FAILED",

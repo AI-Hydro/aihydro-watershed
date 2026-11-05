@@ -994,7 +994,9 @@ def delineate_from_point(
             if not regional_flowdir_cached:
                 quality_flags.append("REGIONAL_FLOWDIR_STAGING_REQUIRED")
             reason = (
-                "GEE_MEMORY_LIMIT"
+                "MERIT_GEE_WINDOW_LIMIT"
+                if "MERIT_GEE_WINDOW_LIMIT" in str(e)
+                else "GEE_MEMORY_LIMIT"
                 if re.search(r"memory limit|User memory limit|HTTP 400", str(e), re.I)
                 else str(e)
             )

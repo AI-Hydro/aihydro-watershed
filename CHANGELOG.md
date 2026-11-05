@@ -1,5 +1,29 @@
 # Changelog — aihydro-watershed
 
+## [Unreleased]
+
+### Fixed
+
+- `method="merit_gee"` failed for 13 of 20 CAMELS pilot gauges with Earth Engine HTTP 400 "User memory limit exceeded" (12) or HTTP 503
+  "memory capacity exceeded" (1). Cause: the raster request was `getDownloadURL` with `crs="EPSG:4326"`, `scale=92.77` and
+  `.clip(rectangle)`, which makes Earth Engine resample onto a grid 0.004% off MERIT's native 3 arc-second cell. It failed at the first
+  window expansion (about 32 km half-side, 0.6M cells). The request is now MERIT's own grid (`crs_transform` + `dimensions`, whole
+  cells, no clip, no region): on gauge 01547700 it succeeded at 32, 51, 64 and 82 km half-side (4.1M cells) where the old request failed
+  from 32 km. The flow-direction grid is no longer resampled, so topology is the asset's own.
+- Earth Engine is initialised once per process (was every fetch; the API discovery document was 64% of pilot traffic).
+- A basin needing more than `MERIT_GEE_MAX_WINDOW_CELLS` (4.5M cells, about 85 km half-side) now raises `MeritGeeWindowLimit` ("MERIT_GEE_WINDOW_LIMIT: ...")
+  before any request instead of an Earth Engine memory error; the router records `MERIT_GEE_WINDOW_LIMIT` as the fallback reason.
+- `merit_flowdir_pipeline` created and used `~/.aihydro/cache/...` at import, ignoring `AIHYDRO_HOME`; `merit_manager` read
+  `~/.aihydro/config.json` and defaulted its root to `~/.aihydro/merit` the same way. Both now use `$AIHYDRO_HOME` (default `~/.aihydro`),
+  and the cache directory is created on first use, not at import.
+
+### Changed
+
+- `fetch_merit_gee_bbox`: the returned window is `bbox` rounded out to whole MERIT cells; `scale_m` no longer affects the request. New `native_window()`.
+- Not changed, by finding: MERIT areas read 0.1-0.2% above MERIT's own UPA at the snapped cell, and the polygon area equals the pixel-area sum and the WGS84 geodesic
+  area to under 0.1% (`test_polygon_area_equals_pixel_area_sum_and_geodesic_area`). The pilot's "too small" bias is against the CAMELS geospatial-fabric polygon, which
+  is larger than USGS `area_gages2` for the same gauges; against `area_gages2` there is no bias. No correction was added.
+
 ## [0.3.0] - unreleased (2026-10-30) BREAKING-VALUE
 
 Version 0.3.0, not 0.2.2: a `<0.3` pin on an installed 2.8.4 would otherwise take these changed values.

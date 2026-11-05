@@ -32,10 +32,14 @@ _MANIFEST_PATH = Path(__file__).parent / "merit_manifest.yaml"
 #   merit_auto_stage_max_gb: float                     (default 2.0)
 # ---------------------------------------------------------------------------
 
+def _aihydro_home() -> Path:
+    return Path(os.environ.get("AIHYDRO_HOME") or (Path.home() / ".aihydro"))
+
+
 def _merit_auto_stage_policy() -> tuple[str, float]:
-    """Return (policy, max_gb) from ~/.aihydro/config.json."""
+    """Return (policy, max_gb) from ``$AIHYDRO_HOME/config.json`` (default ``~/.aihydro``)."""
     import json as _json
-    cfg_path = Path.home() / ".aihydro" / "config.json"
+    cfg_path = _aihydro_home() / "config.json"
     try:
         if cfg_path.exists():
             cfg = _json.loads(cfg_path.read_text())
@@ -114,7 +118,7 @@ class MeritDataManager:
             self.root = Path(root)
         else:
             env = os.environ.get("AIHYDRO_MERIT_DIR") or os.environ.get("MERIT_DATA_DIR")
-            self.root = Path(env) if env else Path.home() / ".aihydro" / "merit"
+            self.root = Path(env) if env else _aihydro_home() / "merit"
         self.root.mkdir(parents=True, exist_ok=True)
         self._manifest = self._load_manifest()
         self._base_url = os.environ.get("AIHYDRO_MERIT_BASE_URL", "").rstrip("/")

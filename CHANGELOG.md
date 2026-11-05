@@ -2,27 +2,32 @@
 
 ## [Unreleased]
 
+Live evidence for this section: `docs/evidence/merit-gee-native-grid-2026-11/` (README lists what was not recorded).
+
 ### Fixed
 
 - `method="merit_gee"` failed for 13 of 20 CAMELS pilot gauges with Earth Engine HTTP 400 "User memory limit exceeded" (12) or HTTP 503
-  "memory capacity exceeded" (1). Cause: the raster request was `getDownloadURL` with `crs="EPSG:4326"`, `scale=92.77` and
-  `.clip(rectangle)`, which makes Earth Engine resample onto a grid 0.004% off MERIT's native 3 arc-second cell. It failed at the first
-  window expansion (about 32 km half-side, 0.6M cells). The request is now MERIT's own grid (`crs_transform` + `dimensions`, whole
-  cells, no clip, no region): on gauge 01547700 it succeeded at 32, 51, 64 and 82 km half-side (4.1M cells) where the old request failed
-  from 32 km. The flow-direction grid is no longer resampled, so topology is the asset's own.
-- Earth Engine is initialised once per process (was every fetch; the API discovery document was 64% of pilot traffic).
-- A basin needing more than `MERIT_GEE_MAX_WINDOW_CELLS` (4.5M cells, about 85 km half-side) now raises `MeritGeeWindowLimit` ("MERIT_GEE_WINDOW_LIMIT: ...")
-  before any request instead of an Earth Engine memory error; the router records `MERIT_GEE_WINDOW_LIMIT` as the fallback reason.
-- `merit_flowdir_pipeline` created and used `~/.aihydro/cache/...` at import, ignoring `AIHYDRO_HOME`; `merit_manager` read
-  `~/.aihydro/config.json` and defaulted its root to `~/.aihydro/merit` the same way. Both now use `$AIHYDRO_HOME` (default `~/.aihydro`),
-  and the cache directory is created on first use, not at import.
+  "memory capacity exceeded" (1). The raster request was `getDownloadURL` with `crs="EPSG:4326"`, `scale=92.77` and `.clip(rectangle)`, which makes Earth Engine
+  resample onto a grid 0.004% off MERIT's native 3 arc-second cell; it failed at the first window expansion (about 32 km half-side). The request is now
+  MERIT's own grid (`crs_transform` + `dimensions`, whole cells, no clip, no region). Live: that request succeeded on gauge 01547700 at 32, 51, 64 and 82 km
+  half-side (4.1M cells) where the old one failed from 32 km; on the 16 pilot gauges 15 return a polygon (05495000 hits the window cap). Largest window verified live: 4.1M cells.
+- Earth Engine is initialised once per process, thread-safely (was every fetch; the API discovery document was 64% of pilot traffic). `reset_ee()` forces re-initialisation after a credentials or project change.
+- A basin needing more than `MERIT_GEE_MAX_WINDOW_CELLS` (4.5M cells) raises `MeritGeeWindowLimit` ("MERIT_GEE_WINDOW_LIMIT: ...") before any request instead of an Earth Engine
+  memory error; the router records `MERIT_GEE_WINDOW_LIMIT` as the fallback reason. The 4.5M value was not run live (4.1M is the largest verified; above that is untested).
+- `snap_outlet_on_merit` normalised its "nearest stream" score by the whole window's maximum UPA, so the snapped cell could change when the adaptive window grew. It now normalises
+  by the candidates inside the search radius.
+- Every returned (and every cached) GeoTIFF is checked against the requested native window (shape and transform); a mismatch raises on fetch and discards a cache entry.
+  The cache key carries `"grid": "merit-native-v1"` and no longer includes `scale_m`, so old resampled entries are not reused.
+- `merit_flowdir_pipeline` created and used `~/.aihydro/cache/...` at import, ignoring `AIHYDRO_HOME`; `merit_manager` read `~/.aihydro/config.json` and defaulted its
+  root to `~/.aihydro/merit` the same way. Both now use `$AIHYDRO_HOME` (default `~/.aihydro`); the cache directory is created on first use. (TODO: switch to the shared helper of aihydro-watershed#11.)
 
 ### Changed
 
-- `fetch_merit_gee_bbox`: the returned window is `bbox` rounded out to whole MERIT cells; `scale_m` no longer affects the request. New `native_window()`.
-- Not changed, by finding: MERIT areas read 0.1-0.2% above MERIT's own UPA at the snapped cell, and the polygon area equals the pixel-area sum and the WGS84 geodesic
-  area to under 0.1% (`test_polygon_area_equals_pixel_area_sum_and_geodesic_area`). The pilot's "too small" bias is against the CAMELS geospatial-fabric polygon, which
-  is larger than USGS `area_gages2` for the same gauges; against `area_gages2` there is no bias. No correction was added.
+- `fetch_merit_gee_bbox`: `scale_m` is deprecated and ignored (a `DeprecationWarning` if passed); the returned window is `bbox` rounded out to whole MERIT cells and clamped to the
+  asset's extent (lon -180..180, lat -60..85; no antimeridian wrap). New `native_window()`.
+- Area, from the live run above (14 gauges, 14158500 excluded for the CAMELS fabric/USGS inconsistency): MERIT polygon vs `area_gages2` mean +0.33%, median -0.06%; vs the CAMELS
+  polygon mean -1.78%, with the error correlating -0.85 with the fabric/`area_gages2` ratio. The polygon area is 0.08-0.19% above MERIT's own UPA at the snapped cell, and equals the pixel-area sum
+  and the WGS84 geodesic area to under 0.1% (unit test). No bias correction was added.
 
 ## [0.3.0] - unreleased (2026-10-30) BREAKING-VALUE
 

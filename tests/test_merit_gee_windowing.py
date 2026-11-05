@@ -17,6 +17,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from affine import Affine
 from pyproj import Geod
 
 from aihydro_watershed.delineation import merit_flowdir_pipeline as m
@@ -39,6 +40,7 @@ class FakeEE(types.ModuleType):
         self.init_calls = 0
         self.requests: list[dict] = []
         self.bands: list[str] = []
+        self.tamper = None  # callable(transform_tuple, nrows, ncols) -> (transform_tuple, nrows, ncols)
 
     def Initialize(self, **kw):  # noqa: N802
         self.init_calls += 1
@@ -75,6 +77,8 @@ def fake_ee(rec, monkeypatch, tmp_path):
         ncols, nrows = map(int, req["dimensions"].split("x"))
         col0 = round((c - m.MERIT_ORIGIN_X) / m.MERIT_NATIVE_PX_DEG)
         row0 = round((m.MERIT_ORIGIN_Y - f) / m.MERIT_NATIVE_PX_DEG)
+        if ee.tamper:
+            (a, _, c, _, e, f), nrows, ncols = ee.tamper((a, 0, c, 0, e, f), nrows, ncols)
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w") as zf:
             for band in req["bands"]:
@@ -223,6 +227,150 @@ def test_equal_area_crs_area_of_a_known_cell_block():
     g = gpd.GeoDataFrame(geometry=[box(-100.0, 45.0 - n * px, -100.0 + n * px, 45.0)], crs=4326)
     geo = abs(Geod(ellps="WGS84").geometry_area_perimeter(g.geometry.iloc[0])[0]) / 1e6
     assert area_km2(g) == pytest.approx(geo, rel=1e-4)
+
+
+# --- snap does not depend on the window -----------------------------------------------------------
+
+
+def test_snap_is_identical_at_two_window_sizes(rec, fake_ee):
+    snaps = []
+    for hs in (4.0, 12.0):
+        b = m.fetch_merit_gee_bbox(m.bbox_from_point(*GAUGE, hs))
+        s = m.snap_outlet_on_merit(*GAUGE, upa=b.bands["upa"], wth=b.bands["wth"], transform=b.transform)
+        snaps.append((s.row + round((b.transform.f - m.MERIT_ORIGIN_Y) / -m.MERIT_NATIVE_PX_DEG),
+                      s.col + round((b.transform.c - m.MERIT_ORIGIN_X) / m.MERIT_NATIVE_PX_DEG), s.snapped_upa_km2))
+    assert snaps[0] == snaps[1]  # same global cell and UPA
+
+
+def test_snap_ignores_a_large_river_outside_the_search_radius():
+    """Synthetic flip case: normalising by the window maximum picked A when a big river was in
+    the window, and B when it was not. B wins on the candidates inside the radius, either way."""
+    n = 201
+    px = m.MERIT_NATIVE_PX_DEG
+    lat = 40.0
+    tf = Affine(px, 0, -100.0, 0, -px, lat + (n // 2 + 0.5) * px)
+    lon = tf.c + (n // 2 + 0.5) * px
+    upa = np.zeros((n, n), dtype=np.float32)
+    r0 = c0 = n // 2
+    upa[r0, c0 + 7] = 2.0  # A: about 0.5 km away, tiny stream
+    upa[r0, c0 - 13] = 100.0  # B: about 0.9 km away, real stream
+    got = []
+    for river in (False, True):
+        u = upa.copy()
+        if river:
+            u[:, c0 + 90] = 1.0e6  # a continental river 6 km away, outside the 3 km radius
+        s = m.snap_outlet_on_merit(lat, lon, upa=u, transform=tf)
+        got.append((s.row, s.col))
+    assert got[0] == got[1] == (r0, c0 - 13)
+
+
+# --- grid edges ------------------------------------------------------------------------------------
+
+
+def _check_window(bbox):
+    tf, nc, nr = m.native_window(bbox)
+    px = m.MERIT_NATIVE_PX_DEG
+    xmin, ymax = tf.c, tf.f
+    assert (xmin - m.MERIT_ORIGIN_X) / px == pytest.approx(round((xmin - m.MERIT_ORIGIN_X) / px), abs=1e-6)
+    assert (m.MERIT_ORIGIN_Y - ymax) / px == pytest.approx(round((m.MERIT_ORIGIN_Y - ymax) / px), abs=1e-6)
+    return xmin, ymax - nr * px, xmin + nc * px, ymax
+
+
+def test_negative_longitude_window_covers_bbox_on_lattice():
+    bbox = m.bbox_from_point(44.8774, -71.0575, 20.0)
+    xmin, ymin, xmax, ymax = _check_window(bbox)
+    assert xmin <= bbox[0] and xmax >= bbox[2] and ymin <= bbox[1] and ymax >= bbox[3]
+    assert bbox[0] - xmin < m.MERIT_NATIVE_PX_DEG and xmax - bbox[2] < m.MERIT_NATIVE_PX_DEG
+
+
+def test_high_latitude_window_is_clamped_at_the_top_of_the_asset():
+    bbox = m.bbox_from_point(84.9, 10.0, 20.0)  # lon span is wide at 84.9N; top exceeds 85N
+    assert bbox[3] > 85.0
+    xmin, ymin, xmax, ymax = _check_window(bbox)
+    assert ymax == pytest.approx(m.MERIT_ORIGIN_Y)  # clamped to row 0
+    assert xmax - xmin > 3.0  # wide in degrees, not clamped
+    assert m.native_window(bbox)[2] < m.MERIT_GRID_ROWS
+
+
+def test_antimeridian_windows_clamp_at_both_ends_without_wrapping():
+    east = _check_window(m.bbox_from_point(0.0, 179.99, 20.0))
+    assert east[2] == pytest.approx(180.0 - 0.5 * m.MERIT_NATIVE_PX_DEG)
+    west = _check_window(m.bbox_from_point(0.0, -179.99, 20.0))
+    assert west[0] == pytest.approx(m.MERIT_ORIGIN_X)
+    tf, nc, nr = m.native_window(m.bbox_from_point(0.0, 179.99, 20.0))
+    assert tf.c + nc * tf.a <= 180.0
+
+
+def test_bbox_outside_the_asset_raises():
+    for bbox in ((10.0, 86.0, 11.0, 88.0), (10.0, -70.0, 11.0, -65.0)):
+        with pytest.raises(ValueError, match="does not intersect"):
+            m.native_window(bbox)
+
+
+# --- returned grid must be the requested grid --------------------------------------------------------
+
+
+def test_fetch_rejects_a_grid_that_is_not_the_requested_window(fake_ee):
+    fake_ee.tamper = lambda tf, nr, nc: (tf, nr, nc - 1)
+    with pytest.raises(RuntimeError, match="not the requested native window"):
+        m.fetch_merit_gee_bbox(m.bbox_from_point(*GAUGE, 3.0))
+    fake_ee.tamper = lambda tf, nr, nc: ((tf[0], 0, tf[2] + 0.5 * m.MERIT_NATIVE_PX_DEG, 0, tf[4], tf[5]), nr, nc)
+    with pytest.raises(RuntimeError, match="not the requested native window"):
+        m.fetch_merit_gee_bbox(m.bbox_from_point(*GAUGE, 3.0))
+
+
+def test_cache_hit_is_validated_and_a_bad_cached_grid_is_refetched(fake_ee):
+    import rasterio
+
+    bbox = m.bbox_from_point(*GAUGE, 3.0)
+    first = m.fetch_merit_gee_bbox(bbox)
+    assert m.fetch_merit_gee_bbox(bbox).source == "gee_cache" and len(fake_ee.requests) == 1
+    # Corrupt one cached band: same name, different shape.
+    path = next(m._cache_dir().glob("*_upa.tif"))
+    with rasterio.open(path) as src:
+        prof = src.profile
+    prof.update(width=prof["width"] - 1)
+    with rasterio.open(path, "w", **prof) as dst:
+        dst.write(np.zeros((prof["height"], prof["width"]), dtype="float32"), 1)
+    again = m.fetch_merit_gee_bbox(bbox)
+    assert again.source == "gee" and len(fake_ee.requests) == 2
+    np.testing.assert_array_equal(again.bands["upa"], first.bands["upa"])
+
+
+# --- cache key and deprecated scale_m ----------------------------------------------------------------
+
+
+def test_cache_key_is_native_grid_versioned_and_has_no_scale():
+    import inspect
+
+    assert "scale_m" not in inspect.signature(m._cache_key).parameters
+    k = m._cache_key(bbox=(0, 0, 1, 1), bands=("dir",), dataset=m.MERIT_GEE_DATASET)
+    legacy = __import__("hashlib").sha256(
+        __import__("json").dumps({"bbox": [0, 0, 1, 1], "bands": ["dir"], "scale_m": 92.77,
+                                  "dataset": m.MERIT_GEE_DATASET}, sort_keys=True).encode()
+    ).hexdigest()
+    assert k != legacy
+
+
+def test_scale_m_is_deprecated_and_ignored(fake_ee):
+    with pytest.warns(DeprecationWarning, match="scale_m"):
+        m.fetch_merit_gee_bbox(m.bbox_from_point(*GAUGE, 2.0), scale_m=92.77)
+    assert "scale" not in fake_ee.requests[0]
+
+
+# --- thread-safe, resettable init -----------------------------------------------------------------------
+
+
+def test_concurrent_first_calls_initialise_once_and_reset_forces_reinit(fake_ee):
+    import threading
+
+    ts = [threading.Thread(target=m._ee_initialize, args=(fake_ee, None)) for _ in range(16)]
+    [t.start() for t in ts]
+    [t.join() for t in ts]
+    assert fake_ee.init_calls == 1
+    m.reset_ee()
+    m._ee_initialize(fake_ee, None)
+    assert fake_ee.init_calls == 2
 
 
 # --- AIHYDRO_HOME ---------------------------------------------------------------------------------

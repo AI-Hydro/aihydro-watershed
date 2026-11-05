@@ -8,8 +8,10 @@ import logging
 import math
 import os
 import resource
+import threading
 import tempfile
 import time
+import warnings
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -51,6 +53,9 @@ _EDGE_MARGIN_CELLS = 2
 MERIT_NATIVE_PX_DEG = 1.0 / 1200.0
 MERIT_ORIGIN_X = -180.0 - 0.5 * MERIT_NATIVE_PX_DEG
 MERIT_ORIGIN_Y = 85.0 - 0.5 * MERIT_NATIVE_PX_DEG
+# Extent of the asset: lon -180..180, lat 85..-60 (the window is clamped to it).
+MERIT_GRID_COLS = 360 * 1200
+MERIT_GRID_ROWS = 145 * 1200
 # Largest synchronous window requested (3 bands). 82 km half-side (4.1M cells)
 # succeeded live on the native grid; gauge 05495000 needs 4.1M.
 MERIT_GEE_MAX_WINDOW_CELLS = 4_500_000
@@ -369,8 +374,12 @@ def snap_outlet_on_merit(
         score = area_err + 0.35 * (dist / max(search_radius_m, 1.0))
         quality_base = "area_targeted"
     else:
-        upa_norm = np.log1p(np.where(np.isfinite(upa_arr), upa_arr, 0.0))
-        max_upa = max(float(np.nanmax(upa_norm)), 1.0)
+        # Normalise by the candidates inside the search radius, not the whole
+        # window: a window-wide maximum made the snapped cell change when the
+        # adaptive window grew (a big river far outside the radius shrank the
+        # UPA term for everything inside it).
+        upa_norm = np.log1p(np.where(np.isfinite(upa_arr) & (upa_arr > 0), upa_arr, 0.0))
+        max_upa = max(float(np.max(upa_norm[candidates])), 1.0)
         score = (dist / max(search_radius_m, 1.0)) - 0.20 * (upa_norm / max_upa)
         quality_base = "nearest_merit_stream"
     score = np.where(candidates, score, np.inf)
@@ -394,6 +403,8 @@ def snap_outlet_on_merit(
 
 def _cache_dir() -> Path:
     """GEE raster cache, under ``AIHYDRO_HOME`` like the rest of the package."""
+    # TODO(aihydro-watershed#11): replace this local copy with the shared helper in
+    # aihydro_watershed/_paths.py once that PR merges (do not add a third copy).
     home = Path(os.environ.get("AIHYDRO_HOME") or (Path.home() / ".aihydro"))
     d = home / "cache" / "delineation" / "merit_gee"
     d.mkdir(parents=True, exist_ok=True)
@@ -401,45 +412,79 @@ def _cache_dir() -> Path:
 
 
 _EE_READY: str | None = None
+_EE_LOCK = threading.Lock()
 
 
 def _ee_initialize(ee, project_id: str | None) -> None:
-    """Initialise Earth Engine once per process (each call re-downloads the API discovery document)."""
+    """Initialise Earth Engine once per process (each call re-downloads the API discovery document).
+
+    Thread-safe. Re-initialises when the project id changes; call :func:`reset_ee`
+    after credentials change.
+    """
     global _EE_READY
     key = project_id or ""
-    if _EE_READY == key:
-        return
-    if project_id:
-        ee.Initialize(project=project_id)
-    else:
-        ee.Initialize()
-    _EE_READY = key
+    with _EE_LOCK:
+        if _EE_READY == key:
+            return
+        if project_id:
+            ee.Initialize(project=project_id)
+        else:
+            ee.Initialize()
+        _EE_READY = key
+
+
+def reset_ee() -> None:
+    """Forget the cached Earth Engine initialisation (use after credentials or project change)."""
+    global _EE_READY
+    with _EE_LOCK:
+        _EE_READY = None
 
 
 def native_window(bbox: tuple[float, float, float, float]) -> tuple[Affine, int, int]:
-    """Round ``bbox`` out to whole MERIT cells: (transform, ncols, nrows) on the asset's own grid."""
+    """Round ``bbox`` out to whole MERIT cells: (transform, ncols, nrows) on the asset's own grid.
+
+    Clamped to the asset's extent (lon -180..180, lat 85..-60); a bbox that does not
+    intersect it raises ``ValueError``. No antimeridian wrap: a window is cut at +/-180.
+    """
     xmin, ymin, xmax, ymax = bbox
     px = MERIT_NATIVE_PX_DEG
-    c0 = math.floor((xmin - MERIT_ORIGIN_X) / px)
-    c1 = math.ceil((xmax - MERIT_ORIGIN_X) / px)
-    r0 = math.floor((MERIT_ORIGIN_Y - ymax) / px)
-    r1 = math.ceil((MERIT_ORIGIN_Y - ymin) / px)
+    c0 = max(0, math.floor((xmin - MERIT_ORIGIN_X) / px))
+    c1 = min(MERIT_GRID_COLS, math.ceil((xmax - MERIT_ORIGIN_X) / px))
+    r0 = max(0, math.floor((MERIT_ORIGIN_Y - ymax) / px))
+    r1 = min(MERIT_GRID_ROWS, math.ceil((MERIT_ORIGIN_Y - ymin) / px))
+    if c1 <= c0 or r1 <= r0:
+        raise ValueError(f"bbox {bbox} does not intersect the MERIT Hydro grid (lon -180..180, lat -60..85).")
     tf = Affine(px, 0.0, MERIT_ORIGIN_X + c0 * px, 0.0, -px, MERIT_ORIGIN_Y - r0 * px)
     return tf, int(c1 - c0), int(r1 - r0)
+
+
+def _matches_native_window(
+    transform: Affine, shape_: tuple[int, int], want: Affine, ncols: int, nrows: int
+) -> bool:
+    return (
+        tuple(shape_) == (nrows, ncols)
+        and abs(transform.a - want.a) < 1e-12
+        and abs(transform.e - want.e) < 1e-12
+        and abs(transform.c - want.c) < 1e-9
+        and abs(transform.f - want.f) < 1e-9
+        and abs(transform.b) < 1e-12
+        and abs(transform.d) < 1e-12
+    )
 
 
 def _cache_key(
     *,
     bbox: tuple[float, float, float, float],
     bands: tuple[str, ...],
-    scale_m: float,
     dataset: str,
 ) -> str:
     payload = json.dumps(
         {
             "bbox": [round(v, 7) for v in bbox],
             "bands": bands,
-            "scale_m": scale_m,
+            # "grid" separates native-grid windows from the old resampled
+            # (scale=92.77 m, clipped) cache entries, which must not be reused.
+            "grid": "merit-native-v1",
             "dataset": dataset,
         },
         sort_keys=True,
@@ -447,7 +492,9 @@ def _cache_key(
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-def _load_cached_bundle(key: str) -> MeritRasterBundle | None:
+def _load_cached_bundle(
+    key: str, expect: tuple[Affine, int, int] | None = None
+) -> MeritRasterBundle | None:
     meta_path = _cache_dir() / f"{key}.json"
     if not meta_path.exists():
         return None
@@ -461,6 +508,9 @@ def _load_cached_bundle(key: str) -> MeritRasterBundle | None:
                 bands[band] = src.read(1)
                 transform = src.transform
                 crs = src.crs.to_string() if src.crs else "EPSG:4326"
+                if expect is not None and not _matches_native_window(transform, src.shape, *expect):
+                    log.warning("Discarding cached MERIT window %s: shape/transform is not the native window.", key)
+                    return None
         return MeritRasterBundle(
             bands=bands,
             transform=transform,
@@ -493,10 +543,20 @@ def fetch_merit_gee_bbox(
     bbox: tuple[float, float, float, float],
     *,
     bands: tuple[str, ...] = _DEFAULT_BANDS,
-    scale_m: float = MERIT_SCALE_M,
+    scale_m: float | None = None,
     project_id: str | None = None,
 ) -> MeritRasterBundle:
-    """Fetch MERIT Hydro bands from Earth Engine as cached GeoTIFF rasters."""
+    """Fetch MERIT Hydro bands from Earth Engine as cached GeoTIFF rasters on the native grid.
+
+    ``scale_m`` is deprecated and ignored: the grid is never resampled, and the
+    returned window is ``bbox`` rounded out to whole MERIT cells.
+    """
+    if scale_m is not None:
+        warnings.warn(
+            "scale_m is deprecated and ignored: MERIT Hydro is always fetched on its native grid.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
     # Request the asset's own grid: same crs_transform, whole-cell window, no clip.
     # The earlier request (EPSG:4326 at scale=92.77 m, clipped to a rectangle)
     # forced Earth Engine to resample onto a grid 0.004% off the native cell and
@@ -516,8 +576,8 @@ def fetch_merit_gee_bbox(
         transform.c + ncols * transform.a,
         transform.f,
     )
-    key = _cache_key(bbox=bbox, bands=bands, scale_m=scale_m, dataset=MERIT_GEE_DATASET)
-    cached = _load_cached_bundle(key)
+    key = _cache_key(bbox=bbox, bands=bands, dataset=MERIT_GEE_DATASET)
+    cached = _load_cached_bundle(key, expect=(transform, ncols, nrows))
     if cached is not None:
         return cached
 
@@ -595,14 +655,21 @@ def fetch_merit_gee_bbox(
                         dst.write(src.read(idx), 1)
                     band_files[band] = dest
 
-    _write_cached_bundle(key, band_files=band_files, bbox=bbox, resolution_m=scale_m)
+    want = (transform, ncols, nrows)
     with rasterio.open(band_files[bands[0]]) as src:
         transform = src.transform
         crs = src.crs.to_string() if src.crs else "EPSG:4326"
     loaded: dict[str, np.ndarray] = {}
     for band, path in band_files.items():
         with rasterio.open(path) as src:
+            if not _matches_native_window(src.transform, src.shape, *want):
+                raise RuntimeError(
+                    f"GEE MERIT {band} came back as {src.shape} with transform {tuple(src.transform)[:6]}, "
+                    f"not the requested native window {(nrows, ncols)} at {tuple(want[0])[:6]}; "
+                    "refusing a grid that differs from the asset's."
+                )
             loaded[band] = src.read(1)
+    _write_cached_bundle(key, band_files=band_files, bbox=bbox, resolution_m=MERIT_SCALE_M)
     return MeritRasterBundle(
         bands=loaded,
         transform=transform,
@@ -610,7 +677,7 @@ def fetch_merit_gee_bbox(
         cache_key=key,
         source="gee",
         bbox=bbox,
-        resolution_m=scale_m,
+        resolution_m=MERIT_SCALE_M,
     )
 
 

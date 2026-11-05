@@ -1,5 +1,26 @@
 # Changelog — aihydro-watershed
 
+## [Unreleased]
+
+### Fixed
+
+- **NLDI `hydrolocation` request form (CAMELS pilot, 11/20 gauges got HTTP 502).** pynhd 0.19.4 (`NLDI.comid_byloc`) sends `coords=POINT(lon lat)`
+  with the space encoded as `+`. The USGS service answers some points in that form with 502 (CAMELS 08155200: 502 in 6/6 `+` requests, 200 in 8/8
+  `%20` requests, same session; body: "Error executing process ... Read timed out (read timeout=5)", `upstream_status` 400). `nldi_point.hydrolocation_comid`
+  now builds the `%20` request itself (used by the snap, COMID resolution, point delineation and the gauge COMID fallback), retries 5xx / 429 /
+  connection errors with back-off (3, 8, 15 s; honours `Retry-After`) and raises `NLDI_UNAVAILABLE` carrying the HTTP status and host, or
+  `NLDI_NOT_FOUND`, instead of a geopandas "no active geometry" error. The service also has a separate transient fault (upstream 5 s read timeout, about half of requests
+  for 02298608 even in the `%20` form), which the retries absorb but cannot remove. See ARCHITECTURE.md "NLDI request form and outlet ambiguity".
+- **No silent downstream jump (CAMELS 10336660: 29.8 km2 gauge returned a 1414 km2 basin, x43.6).** With no `expected_area_km2` and a nearest reach draining
+  < 80 km2, NLDI point delineation used to walk 30 km downstream and keep the largest basin. It now returns the nearest reach's basin, adds the
+  `NLDI_OUTLET_AMBIGUOUS` quality flag and `outlet_ambiguity` (selected COMID, candidate downstream COMIDs with areas, how to resolve). The outlet moves downstream only with
+  `allow_downstream_expansion=True` (new argument of `delineate_from_point` and `delineate_nldi_at_point`; the result then says `outlet_moved_downstream`).
+  `resolve_comid_for_quick` keeps its signature (new keyword) and its default behaviour changes accordingly.
+
+### Added
+
+- `nldi_point.hydrolocation_url`, `hydrolocation_comid`, `HydrolocationHit`, `quick_comid_resolution`.
+
 ## [0.3.0] - unreleased (2026-10-30) BREAKING-VALUE
 
 Version 0.3.0, not 0.2.2: a `<0.3` pin on an installed 2.8.4 would otherwise take these changed values.

@@ -1,0 +1,1 @@
+{"type":"about:blank","title":"Bad Gateway","status":502,"detail":"Error executing process: HTTPSConnectionPool(host='api.water.usgs.gov', port=443): Read timed out. (read timeout=5)","instance":"urn:error:9e253260","upstream_status":400}

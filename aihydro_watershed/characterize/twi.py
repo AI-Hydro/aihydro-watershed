@@ -228,7 +228,12 @@ def compute_twi(
             try:
                 dem = dem.rio.reproject("EPSG:5070")
             except Exception as _proj_exc:
-                log.warning("DEM reproject to EPSG:5070 failed (%s); keeping native CRS", _proj_exc)
+                # Fail closed: flow accumulation, cell_size and slope all need metres.
+                from aihydro_watershed.characterize._dem import SlopeUnavailableError
+                raise SlopeUnavailableError(
+                    f"DEM reprojection to EPSG:5070 failed ({_proj_exc}); refusing to compute TWI "
+                    "on the native grid (cell size would be in degrees)"
+                ) from _proj_exc
         else:
             try:
                 # Derive UTM zone from the watershed centroid (more reliable than
@@ -244,10 +249,12 @@ def compute_twi(
                     dem = dem.squeeze(drop=True)
                 print(f"   ✓ Reprojected to UTM zone {zone} (EPSG:{epsg})")
             except Exception as _proj_exc:
-                log.warning("UTM reproject failed (%s); keeping native CRS", _proj_exc)
-                # Ensure still 2-D
-                if dem.ndim == 3:
-                    dem = dem.squeeze(drop=True)
+                # Fail closed: flow accumulation, cell_size and slope all need metres.
+                from aihydro_watershed.characterize._dem import SlopeUnavailableError
+                raise SlopeUnavailableError(
+                    f"DEM reprojection to UTM failed ({_proj_exc}); refusing to compute TWI "
+                    "on the native grid (cell size would be in degrees)"
+                ) from _proj_exc
         print(f"   ✓ DEM shape: {dem.shape}")
         print(f"   ✓ Elevation range: {float(dem.min()):.1f} - {float(dem.max()):.1f} m")
         

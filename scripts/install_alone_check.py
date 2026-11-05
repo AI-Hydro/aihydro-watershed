@@ -15,6 +15,10 @@ Task: hydrological signatures from a local streamflow file through the
 
 The series is synthetic and only exercises the install; no value printed here
 is a hydrological result.
+
+Socket block: an IN-PROCESS patch of the Python ``socket`` module (connect, create_connection,
+getaddrinfo). It does not cover child processes or C libraries that open sockets themselves, so
+it is evidence that this Python code made no network call, not an OS-level sandbox.
 """
 from __future__ import annotations
 
@@ -72,6 +76,7 @@ def main() -> int:
     data = res["data"]
     for key in ("q_mean", "q5", "q95", "baseflow_index", "slope_fdc", "hfd_mean"):
         assert isinstance(data[key], float), (key, data.get(key))
+    assert res["cli"]["warnings"] == [] and res["cli"]["n_duplicate_dates"] == 0, res["cli"]
     assert data["q5"] < data["q95"]
     assert data["runoff_ratio"] is None
     assert data["_precipitation"]["status"] == "not_attempted", data["_precipitation"]

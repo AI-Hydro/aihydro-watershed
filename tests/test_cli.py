@@ -56,6 +56,7 @@ def test_signatures_matches_python_api_and_makes_no_network_call(files, capsys, 
     assert out["data"]["runoff_ratio"] is None
     assert out["data"]["_precipitation"]["status"] == "not_attempted"
     assert out["meta"]["tool"].endswith("extract_hydrological_signatures")
+    assert out["cli"]["warnings"] == [] and out["cli"]["n_duplicate_dates"] == 0
 
 
 def test_output_file_and_custom_columns(files, tmp_path, capsys):
@@ -91,3 +92,55 @@ def test_nonpositive_area_is_refused(files, capsys):
 def test_no_subcommand_prints_help(capsys):
     assert cli.main([]) == 0
     assert "signatures" in capsys.readouterr().out
+
+
+def _write(tmp_path, q, name="q.csv", mutate=None):
+    df = pd.DataFrame({"date": q.index.strftime("%Y-%m-%d"), "q_cms": q.values})
+    if mutate:
+        df = mutate(df)
+    path = tmp_path / name
+    df.to_csv(path, index=False)
+    return path
+
+
+def test_negative_flow_is_refused(files, tmp_path, capsys):
+    q, _csv, gj = files
+
+    def neg(df):
+        df.loc[10, "q_cms"] = -5.0
+        return df
+
+    rc = cli.main(["signatures", "--flow-csv", str(_write(tmp_path, q, "neg.csv", neg)),
+                   "--area-km2", "250", "--geojson", str(gj)])
+    assert rc == 1 and "negative discharge" in capsys.readouterr().err
+
+
+def test_na_values_default_minus_999_is_missing_not_negative(files, tmp_path, capsys):
+    q, _csv, gj = files
+
+    def code(df):
+        df.loc[[10, 11, 12], "q_cms"] = -999
+        return df
+
+    rc = cli.main(["signatures", "--flow-csv", str(_write(tmp_path, q, "na.csv", code)),
+                   "--area-km2", "250", "--geojson", str(gj)])
+    assert rc == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["cli"]["n_missing"] == 3
+    assert any("missing" in w for w in out["cli"]["warnings"])
+
+
+def test_custom_na_value_and_duplicate_dates_reported_in_json(files, tmp_path, capsys):
+    q, _csv, gj = files
+
+    def mess(df):
+        df.loc[5, "q_cms"] = -1  # custom missing-data code
+        return pd.concat([df, df.iloc[[20, 21]]], ignore_index=True)  # duplicated dates
+
+    rc = cli.main(["signatures", "--flow-csv", str(_write(tmp_path, q, "m.csv", mess)),
+                   "--na-values", "-1", "--area-km2", "250", "--geojson", str(gj)])
+    assert rc == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["cli"]["n_missing"] == 1 and out["cli"]["na_values"] == ["-1"]
+    assert out["cli"]["n_duplicate_dates"] == 2 and len(out["cli"]["duplicate_dates"]) == 2
+    assert sum("duplicate" in w for w in out["cli"]["warnings"]) == 1

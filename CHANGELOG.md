@@ -6,7 +6,8 @@
 
 - `aihydro-watershed` console script with one subcommand, `signatures`: the CAMELS-style hydrological signatures from a local daily
   streamflow CSV, a basin polygon (GeoJSON) and a drainage area, offline (`precipitation="skip"`; `runoff_ratio` / `stream_elas` are null).
-  A new entry point ships only with a release (bump needed). Delineation stays in the Python API.
+  A new entry point ships only with a release (bump needed). Delineation stays in the Python API. Input handling is explicit: negative discharge is refused, `--na-values` (default `-999,-9999`) are read as missing,
+  duplicate dates keep the first row, and the JSON result carries a `cli` block (`n_missing`, `n_duplicate_dates`, `duplicate_dates`, absent calendar days, `warnings`).
 - `install-alone` CI workflow: builds the wheel, installs only it plus its PyPI dependencies in a fresh venv outside the checkout, and runs
   that CLI task with every socket connection refused (AGU ecosystem audit C1).
 

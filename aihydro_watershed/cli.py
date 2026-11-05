@@ -14,7 +14,9 @@ The CSV needs a date column and a discharge column in m3/s (``--date-col`` /
 ``--flow-col``, default ``date`` / ``q_cms``). Precipitation is never
 requested (``precipitation="skip"``), so ``runoff_ratio`` and ``stream_elas``
 are null and ``_precipitation.status`` records ``not_attempted``. The JSON on
-stdout is the ``HydroResult`` (``data`` + ``meta``) the Python API returns.
+stdout is the ``HydroResult`` (``data`` + ``meta``) the Python API returns, plus a ``cli`` block
+recording how the file was read: missing/duplicate rows, absent calendar days and warnings.
+Negative discharge is refused; missing-data codes go in ``--na-values`` (default -999,-9999).
 """
 from __future__ import annotations
 
@@ -43,29 +45,71 @@ def _read_polygon(path: str) -> dict:
     return obj
 
 
-def _cmd_signatures(args: argparse.Namespace) -> int:
+def _load_flow(args: argparse.Namespace):
+    """Read the CSV into a daily Series and report what was done to it, never silently."""
     import pandas as pd
 
-    from aihydro_watershed.signatures.signatures import extract_hydrological_signatures
-
-    df = pd.read_csv(args.flow_csv)
+    na_values = [v.strip() for v in args.na_values.split(",") if v.strip()]
+    df = pd.read_csv(args.flow_csv, na_values=na_values)
     for col in (args.date_col, args.flow_col):
         if col not in df.columns:
             raise ValueError(f"{args.flow_csv}: no column {col!r} (have {list(df.columns)})")
     idx = pd.to_datetime(df[args.date_col], errors="raise")
-    q = pd.Series(pd.to_numeric(df[args.flow_col], errors="coerce").to_numpy(), index=idx)
-    q = q[~q.index.duplicated(keep="first")].sort_index()
+    vals = pd.to_numeric(df[args.flow_col], errors="coerce")
+    notes: dict = {"n_rows": int(len(df)), "na_values": na_values, "warnings": []}
 
+    n_nan = int(vals.isna().sum())
+    notes["n_missing"] = n_nan
+    if n_nan:
+        notes["warnings"].append(
+            f"{n_nan} row(s) are missing or non-numeric (including --na-values {na_values}); "
+            "they are treated as missing days, not as zero flow")
+
+    neg = vals < 0
+    if neg.any():
+        first = idx[neg].iloc[0].date()
+        raise ValueError(
+            f"{args.flow_csv}: {int(neg.sum())} negative discharge value(s) (first on {first}). "
+            "Discharge cannot be negative; if these are a missing-data code, pass it in --na-values")
+
+    q = pd.Series(vals.to_numpy(), index=idx)
+    dup = q.index.duplicated(keep="first")
+    notes["n_duplicate_dates"] = int(dup.sum())
+    notes["duplicate_dates"] = sorted({str(d.date()) for d in q.index[dup]})[:20]
+    if dup.any():
+        notes["warnings"].append(
+            f"{int(dup.sum())} duplicate date row(s): the first row per date was kept")
+        q = q[~dup]
+    q = q.sort_index()
+
+    span = (q.index.max() - q.index.min()).days + 1
+    absent = int(span - len(q))
+    notes["n_calendar_days_absent"] = absent
+    if absent:
+        notes["warnings"].append(
+            f"{absent} calendar day(s) between the first and last date are absent from the file")
+    notes["period"] = [str(q.index.min().date()), str(q.index.max().date())]
+    return q, notes
+
+
+def _cmd_signatures(args: argparse.Namespace) -> int:
+    from aihydro_watershed.signatures.signatures import extract_hydrological_signatures
+
+    q, notes = _load_flow(args)
     result = extract_hydrological_signatures(
         gauge_id=None,
         watershed_geojson=_read_polygon(args.geojson),
         area_km2=args.area_km2,
-        start_date=str(q.index.min().date()),
-        end_date=str(q.index.max().date()),
+        start_date=notes["period"][0],
+        end_date=notes["period"][1],
         q_cms_series=q,
         precipitation="skip",
     )
-    text = json.dumps(result.to_dict(), indent=2, default=str)
+    out = result.to_dict()
+    out["cli"] = notes  # input handling and warnings travel with the result, not only on stderr
+    for w in notes["warnings"]:
+        print(f"warning: {w}", file=sys.stderr)
+    text = json.dumps(out, indent=2, default=str)
     if args.output:
         with open(args.output, "w", encoding="utf-8") as fh:
             fh.write(text + "\n")
@@ -93,6 +137,9 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="drainage area of the basin, km2")
     p.add_argument("--geojson", required=True, metavar="FILE",
                    help="basin polygon (GeoJSON Geometry, Feature or one-feature FeatureCollection)")
+    p.add_argument("--na-values", default="-999,-9999", metavar="V[,V…]",
+                   help="comma-separated flow codes read as missing (default: -999,-9999); "
+                        "negative flows that remain are refused")
     p.add_argument("--date-col", default="date", metavar="NAME")
     p.add_argument("--flow-col", default="q_cms", metavar="NAME")
     p.add_argument("-o", "--output", default="", metavar="FILE",

@@ -241,7 +241,7 @@ def compute_twi(
                 _centroid = watershed_geom.centroid if hasattr(watershed_geom, "centroid") else watershed_geom
                 lat0 = float(getattr(_centroid, "y", 0.0))
                 lon0 = float(getattr(_centroid, "x", 0.0))
-                zone = int((lon0 + 180) // 6) + 1
+                zone = int((lon0 + 180) // 6) % 60 + 1
                 epsg = 32600 + zone if lat0 >= 0 else 32700 + zone
                 dem = dem.rio.reproject(f"EPSG:{epsg}")
                 # Squeeze again in case reproject adds a band dim back

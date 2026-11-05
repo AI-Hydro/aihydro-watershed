@@ -29,6 +29,8 @@ _UNAVAILABLE_MEMO_S = 60.0
 
 _deadline: contextvars.ContextVar[float | None] = contextvars.ContextVar("nldi_deadline", default=None)
 _unavailable_until = 0.0  # time.monotonic() until which hydrolocation fails fast
+_exhausted_calls = 0  # consecutive hydrolocation calls that ran out of transient failures; reset by any HTTP 200
+_UNAVAILABLE_TRIP_AFTER = 2
 
 _SOURCES = [
     DataSource(
@@ -64,6 +66,23 @@ def nldi_deadline(seconds: float = _NLDI_DEADLINE_S):
 def _remaining() -> float | None:
     d = _deadline.get()
     return None if d is None else d - time.monotonic()
+
+
+def _bounded(fn, *args, end: float, **kwargs):
+    """Run ``fn`` but stop waiting at ``end`` (time.monotonic()); raises TimeoutError.
+
+    pynhd's calls take no timeout argument. The worker thread is abandoned, not killed.
+    """
+    import concurrent.futures as cf
+
+    ex = cf.ThreadPoolExecutor(max_workers=1)
+    try:
+        fut = ex.submit(fn, *args, **kwargs)
+        return fut.result(timeout=max(0.1, end - time.monotonic()))
+    except cf.TimeoutError as e:
+        raise TimeoutError("NLDI call exceeded the total NLDI deadline") from e
+    finally:
+        ex.shutdown(wait=False)
 
 
 @dataclass(frozen=True)
@@ -121,7 +140,7 @@ def hydrolocation_comid(
     """
     import requests
 
-    global _unavailable_until
+    global _unavailable_until, _exhausted_calls
     sess = session or requests
     url = hydrolocation_url(lon, lat)
     if time.monotonic() < _unavailable_until:
@@ -136,17 +155,26 @@ def hydrolocation_comid(
         )
     last = "no response"
     status: int | None = None
+    sent = 0
+    transient = False
+    # Callers outside a router tier (worker threads, snap, gauge fallback) have no deadline context:
+    # give the call its own cap rather than leaving it unbounded.
+    end = _deadline.get()
+    if end is None:
+        end = time.monotonic() + _NLDI_DEADLINE_S
     for attempt in range(_HYDROLOCATION_ATTEMPTS):
         retry_after = None
-        remaining = _remaining()
-        if remaining is not None and remaining <= 0:
+        remaining = end - time.monotonic()
+        if remaining <= 0:
             last += " (total NLDI deadline reached)"
             break
         try:
-            timeout = _HYDROLOCATION_TIMEOUT_S if remaining is None else max(1.0, min(_HYDROLOCATION_TIMEOUT_S, remaining))
+            timeout = max(1.0, min(_HYDROLOCATION_TIMEOUT_S, remaining))
+            sent += 1
             resp = sess.get(url, timeout=timeout, headers={"Accept": "application/json"})
             status = resp.status_code
             if status == 200:
+                _exhausted_calls = 0  # the service answered: not an outage
                 hit = _parse_hydrolocation(resp.json())
                 if hit is None:
                     raise ToolError(
@@ -157,10 +185,12 @@ def hydrolocation_comid(
                 return hit
             last = f"HTTP {status}"
             if status != 429 and status < 500:
-                break  # a 4xx is not transient
+                break  # a 4xx is not transient and says nothing about an outage
+            transient = True
             retry_after = resp.headers.get("Retry-After")
         except requests.RequestException as e:
             status = None
+            transient = True
             last = f"{type(e).__name__}: {e}"
         if attempt < _HYDROLOCATION_ATTEMPTS - 1:
             wait = _HYDROLOCATION_BACKOFF_S[min(attempt, len(_HYDROLOCATION_BACKOFF_S) - 1)]
@@ -168,13 +198,18 @@ def hydrolocation_comid(
                 wait = max(wait, min(float(retry_after), 60.0))
             except (TypeError, ValueError):
                 pass
-            remaining = _remaining()
-            if remaining is not None and wait >= remaining:
+            remaining = end - time.monotonic()
+            if wait >= remaining:
                 last += " (total NLDI deadline reached)"
                 break
             log.info("NLDI hydrolocation %s; retrying in %.0fs", last, wait)
             sleep(wait)
-    _unavailable_until = time.monotonic() + _UNAVAILABLE_MEMO_S
+    # Remember an outage only on evidence of one: a request was sent and failed transiently
+    # (no response, 429, 5xx) on this call, and the previous call did too.
+    if sent and transient:
+        _exhausted_calls += 1
+        if _exhausted_calls >= _UNAVAILABLE_TRIP_AFTER:
+            _unavailable_until = time.monotonic() + _UNAVAILABLE_MEMO_S
     raise ToolError(
         code="NLDI_UNAVAILABLE",
         message=f"NLDI hydrolocation failed for ({lat}, {lon}): {last} (host api.water.usgs.gov).",
@@ -285,8 +320,11 @@ def quick_comid_resolution(
     from pynhd import NLDI
 
     nldi = NLDI()
+    end = _deadline.get()
+    if end is None:
+        end = time.monotonic() + _NLDI_DEADLINE_S
     start = hydrolocation_comid(lon, lat).comid
-    start_area = area_km2(nldi.get_basins(start, fsource="comid").dissolve())
+    start_area = area_km2(_bounded(nldi.get_basins, start, fsource="comid", end=end).dissolve())
 
     if start_area >= _QUICK_TRIBUTARY_MAX_KM2:
         return start, start_area, None
@@ -308,11 +346,10 @@ def quick_comid_resolution(
 
     listed: list[dict] = [{"comid": start, "area_km2": round(start_area, 3), "role": "nearest_reach"}]
     for comid in candidates[:max_candidates]:
-        rem = _remaining()
-        if rem is not None and rem <= 0:
+        if end - time.monotonic() <= 0:
             break
         try:
-            a = area_km2(nldi.get_basins(comid, fsource="comid").dissolve())
+            a = area_km2(_bounded(nldi.get_basins, comid, fsource="comid", end=end).dissolve())
         except Exception:
             continue
         listed.append({"comid": comid, "area_km2": round(a, 3), "role": "downstream_main"})

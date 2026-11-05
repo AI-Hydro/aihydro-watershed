@@ -204,16 +204,89 @@ def test_router_forwards_consent_flag_default_false(monkeypatch):
 @pytest.fixture(autouse=True)
 def reset_memo(monkeypatch):
     monkeypatch.setattr(nl, "_unavailable_until", 0.0)
+    monkeypatch.setattr(nl, "_exhausted_calls", 0)
 
 
-def test_outage_is_memoised_and_next_call_fails_fast(reset_memo):
-    s = Session([Resp(502)] * 4)
+def _exhaust(session=None):
+    s = session or Session([Resp(502)] * 4)
     with pytest.raises(ToolError):
         nl.hydrolocation_comid(-97.9, 30.3, session=s, sleep=lambda x: None)
-    s2 = Session([])  # any request would pop from an empty script
+    return s
+
+
+def test_one_exhausted_call_does_not_trip_the_memo_two_do(reset_memo):
+    _exhaust()
+    s_ok = Session([Resp(200, _fx("hydrolocation_pct20_10336660.200.json"))])
+    # still allowed to try: one exhausted call is not an outage; this 200 also resets the counter
+    assert nl.hydrolocation_comid(-120.16214, 39.10741, session=s_ok, sleep=lambda x: None).comid == START
+    _exhaust()
+    _exhaust()  # two consecutive exhausted calls (the 200 reset the earlier one)
+    s2 = Session([])
     with pytest.raises(ToolError) as ei:
         nl.hydrolocation_comid(-97.9, 30.3, session=s2, sleep=lambda x: None)
     assert ei.value.code == "NLDI_UNAVAILABLE" and "failing fast" in str(ei.value) and s2.urls == []
+
+
+def test_200_resets_the_exhausted_counter(reset_memo):
+    _exhaust()
+    nl.hydrolocation_comid(
+        -120.16214, 39.10741, session=Session([Resp(200, _fx("hydrolocation_pct20_10336660.200.json"))]), sleep=lambda x: None
+    )
+    assert nl._exhausted_calls == 0
+    _exhaust()
+    assert nl._unavailable_until == 0.0  # one exhausted call after a 200: no trip
+
+
+def test_404_does_not_set_the_memo(reset_memo):
+    for _ in range(3):
+        with pytest.raises(ToolError):
+            nl.hydrolocation_comid(-97.9, 30.3, session=Session([Resp(404)]), sleep=lambda x: None)
+    assert nl._unavailable_until == 0.0 and nl._exhausted_calls == 0
+
+
+def test_deadline_spent_before_any_request_does_not_set_the_memo(reset_memo):
+    s = Session([])
+    for _ in range(3):
+        with nl.nldi_deadline(-1.0):
+            with pytest.raises(ToolError):
+                nl.hydrolocation_comid(-97.9, 30.3, session=s, sleep=lambda x: None)
+    assert s.urls == [] and nl._unavailable_until == 0.0 and nl._exhausted_calls == 0
+
+
+def test_call_without_deadline_context_is_still_capped(reset_memo, monkeypatch):
+    clock = {"t": 1000.0}
+    monkeypatch.setattr(nl.time, "monotonic", lambda: clock["t"])
+    timeouts = []
+
+    class S:
+        def get(self, url, timeout=None, **kw):
+            timeouts.append(timeout)
+            clock["t"] += 80.0  # slow service
+            return Resp(502)
+
+    def sleep(w):
+        clock["t"] += w
+
+    with pytest.raises(ToolError):
+        nl.hydrolocation_comid(-97.9, 30.3, session=S(), sleep=sleep)
+    assert len(timeouts) == 2 and timeouts[0] == 30.0 and timeouts[1] == pytest.approx(7.0)  # 90 s cap, not 4 full tries
+
+
+def test_slow_get_basins_is_not_waited_for(fake_nldi, monkeypatch):
+    import time as _t
+
+    class Slow(FakeNLDI):
+        def get_basins(self, comid, fsource="comid"):
+            if int(comid) != START:
+                _t.sleep(5)
+            return super().get_basins(comid, fsource)
+
+    monkeypatch.setitem(sys.modules, "pynhd", types.SimpleNamespace(NLDI=Slow))
+    t0 = _t.monotonic()
+    with nl.nldi_deadline(0.5):
+        comid, area, amb = nl.quick_comid_resolution(39.1, -120.1)
+    assert _t.monotonic() - t0 < 3 and comid == START
+    assert [c["comid"] for c in amb["candidates"]] == [START]
 
 
 def test_memo_expires(reset_memo, monkeypatch):

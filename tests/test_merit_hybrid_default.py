@@ -694,3 +694,90 @@ def test_manifest_matches_vendored_delineator_constants_and_generator_is_reprodu
     assert json.dumps(rebuilt, indent=1, sort_keys=True) + "\n" == (
         Path(vf.__file__).parent / "delineator_data_manifest.json"
     ).read_text()
+
+
+# ---------------------------------------------------------------- resume edge cases, heartbeat
+
+
+def _put_part(dest: Path, content: bytes) -> Path:
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    part = dest.parent / f"{dest.name}.stale.part"
+    part.write_bytes(content)
+    return part
+
+
+def test_failed_resume_retries_once_from_zero_before_any_marker(region, tmp_path):
+    spec = vf.region_asset_spec("rivers", fx.PFAF)
+    data = region.files["rivers73.db"].read_bytes()
+    dest = tmp_path / "d" / "rivers73.db"
+    _put_part(dest, b"\xff" * (len(data) // 2))  # corrupt partial: appending the real tail cannot verify
+    opener, calls = _range_server(data, supports_range=True, drop_first_at=None)
+    vf.fetch_verified(spec, dest, opener=opener)
+    assert dest.read_bytes() == data and vf.active_integrity_marker(dest) is None
+    assert [bool(c) for c in calls] == [True, False]  # Range attempt, then a clean full request
+    assert not list(dest.parent.glob("*.part"))
+
+
+def test_failed_resume_and_failed_retry_writes_the_marker_once(region, tmp_path):
+    spec = vf.region_asset_spec("rivers", fx.PFAF)
+    data = region.files["rivers73.db"].read_bytes()
+    bad = data[:-1] + bytes([data[-1] ^ 0xFF])
+    dest = tmp_path / "d" / "rivers73.db"
+    _put_part(dest, data[: len(data) // 2])
+    opener, calls = _range_server(bad, supports_range=True, drop_first_at=None)
+    with pytest.raises(vf.AssetIntegrityError):
+        vf.fetch_verified(spec, dest, opener=opener)
+    assert len(calls) == 2 and vf.active_integrity_marker(dest) is not None
+    assert not dest.exists() and not list(dest.parent.glob("*.part"))
+
+
+@pytest.mark.parametrize("extra", [0, 7])
+def test_full_size_or_oversize_partial_is_discarded_before_the_range_request(region, tmp_path, extra):
+    spec = vf.region_asset_spec("rivers", fx.PFAF)
+    data = region.files["rivers73.db"].read_bytes()
+    dest = tmp_path / "d" / "rivers73.db"
+    _put_part(dest, b"\x00" * (len(data) + extra))
+    seen: list = []
+
+    def strict(url, headers=None):
+        seen.append(dict(headers or {}))
+        if headers and headers.get("Range"):
+            raise AssertionError("416 Range Not Satisfiable would follow")
+        return _Resp(data)
+
+    vf.fetch_verified(spec, dest, opener=strict)
+    assert dest.read_bytes() == data and seen == [{}]
+
+
+def test_lock_heartbeat_keeps_a_long_download_from_looking_stale(region, tmp_path, monkeypatch):
+    import threading
+    import time
+
+    monkeypatch.setattr(vf, "_LOCK_STALE_SECONDS", 0.5)
+    monkeypatch.setattr(vf, "_LOCK_HEARTBEAT_SECONDS", 0.1)
+    monkeypatch.setattr(vf, "_LOCK_POLL_SECONDS", 0.05)
+    spec = vf.region_asset_spec("rivers", fx.PFAF)
+    data = region.files["rivers73.db"].read_bytes()
+    opens: list[int] = []
+
+    def slow(url, headers=None):
+        opens.append(1)
+        time.sleep(1.5)  # three times the stale limit
+        return _Resp(data)
+
+    dest = tmp_path / "d" / "rivers73.db"
+    errs: list = []
+
+    def run():
+        try:
+            vf.fetch_verified(spec, dest, opener=slow)
+        except BaseException as exc:  # pragma: no cover
+            errs.append(exc)
+
+    ts = [threading.Thread(target=run), threading.Thread(target=run)]
+    ts[0].start()
+    time.sleep(0.2)
+    ts[1].start()
+    [t.join() for t in ts]
+    assert not errs and len(opens) == 1  # without the heartbeat the second thread breaks the lock and downloads too
+    assert dest.read_bytes() == data and not dest.with_name("rivers73.db.lock").exists()

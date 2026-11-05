@@ -26,6 +26,7 @@ import json
 import logging
 import os
 import tempfile
+import threading
 import time
 import urllib.request
 from dataclasses import dataclass
@@ -45,6 +46,7 @@ NEGATIVE_CACHE_SECONDS = 24 * 3600
 REHASH_BELOW_BYTES = 200_000_000
 _LOCK_STALE_SECONDS = 6 * 3600
 _LOCK_POLL_SECONDS = 0.2
+_LOCK_HEARTBEAT_SECONDS = 30.0  # lock mtime is refreshed this often while held, so a long download is never "stale"
 
 
 class AssetIntegrityError(RuntimeError):
@@ -281,10 +283,23 @@ def _write_marker(dest: Path, spec: AssetSpec, observed: str | None, reason: str
 
 
 class _Lock:
-    """Cross-platform exclusive lock file (``O_EXCL``), broken only when stale."""
+    """Cross-platform exclusive lock file (``O_EXCL``), broken only when stale.
+
+    While held, a daemon thread refreshes the file's mtime every ``_LOCK_HEARTBEAT_SECONDS`` so a download
+    longer than the stale limit is not mistaken for a dead writer.
+    """
 
     def __init__(self, path: Path, timeout: float = 3600.0):
         self.path, self.timeout, self.fd = path, timeout, None
+        self._stop = threading.Event()
+        self._beat: threading.Thread | None = None
+
+    def _heartbeat(self) -> None:
+        while not self._stop.wait(_LOCK_HEARTBEAT_SECONDS):
+            try:
+                os.utime(self.path)
+            except OSError:
+                return
 
     def __enter__(self):
         deadline = time.time() + self.timeout
@@ -292,6 +307,8 @@ class _Lock:
             try:
                 self.fd = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
                 os.write(self.fd, str(os.getpid()).encode())
+                self._beat = threading.Thread(target=self._heartbeat, daemon=True)
+                self._beat.start()
                 return self
             except FileExistsError:
                 try:
@@ -305,6 +322,9 @@ class _Lock:
                 time.sleep(_LOCK_POLL_SECONDS)
 
     def __exit__(self, *exc):
+        self._stop.set()
+        if self._beat is not None:
+            self._beat.join(timeout=2)
         if self.fd is not None:
             os.close(self.fd)
         self.path.unlink(missing_ok=True)
@@ -361,8 +381,18 @@ def fetch_verified(
             fd, name = tempfile.mkstemp(prefix=f"{dest.name}.", suffix=".part", dir=dest.parent)
             os.close(fd)
             part = Path(name)
+        state: dict[str, bool] = {}
         try:
-            digest = _download_into(part, spec, open_, progress_cb)
+            try:
+                digest = _download_into(part, spec, open_, progress_cb, state)
+            except AssetIntegrityError:
+                if not state.get("resumed"):
+                    raise
+                # A resumed file can fail only because of the stale bytes we appended to: retry once from zero.
+                log.info("%s: resumed download failed verification; retrying from zero", spec.name)
+                part.write_bytes(b"")
+                state.clear()
+                digest = _download_into(part, spec, open_, progress_cb, state)
         except AssetIntegrityError as exc:
             part.unlink(missing_ok=True)
             _write_marker(dest, spec, getattr(exc, "observed", None), str(exc))
@@ -381,10 +411,11 @@ def _download_into(
     spec: AssetSpec,
     open_: Opener,
     progress_cb: Callable[[int, int], None] | None,
+    state: dict[str, bool] | None = None,
 ) -> str:
     size = spec.size_bytes or 0
     have = part.stat().st_size if part.exists() else 0
-    if have > size:
+    if have >= size:  # a full-size (or larger) partial cannot be resumed (a Range request would 416): start over
         have = 0
     sha = hashlib.sha256()
     blob = hashlib.sha1(f"blob {size}\0".encode())
@@ -396,6 +427,8 @@ def _download_into(
                     sha.update(chunk)
                     blob.update(chunk)
             mode = "ab"
+            if state is not None:
+                state["resumed"] = True
         else:
             have, mode = 0, "wb"
         got = have

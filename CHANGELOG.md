@@ -1,5 +1,16 @@
 # Changelog — aihydro-watershed
 
+## [Unreleased]
+
+### Changed (BREAKING-BEHAVIOUR): `slope_from_dem` fails closed
+
+Audit C8 latent sibling (`docs/vision-2040/findings/slope-mean-diagnosis-2026-11-05.md`, section 6).
+
+- `aihydro_watershed.characterize._dem.slope_from_dem` now raises the new `SlopeUnavailableError` (a `ValueError`) unless the DEM is in a projected CRS with a readable pixel size. It refuses a missing CRS, a geographic CRS (spacing in degrees) and an unreadable or non-positive resolution. Before, a DEM still in EPSG:4326 (the callers keep the native CRS when the EPSG:5070/UTM reprojection fails, with only a warning) produced a "slope" from metres of rise per degree of run, close to 90 degrees everywhere, and a resolution that could not be read silently became a spacing of 1.0. Pixel size in a non-metre projected CRS (feet) is now converted to metres.
+- Valid input (a metric grid) gives the same values as before. The returned DataArray still carries `units="degrees"`.
+- Callers: `characterize/twi.py` (non-CONUS path and the CONUS fallback when the 3DEP slope fetch fails) now ends in `ValueError("Failed to compute TWI: ...")` when the reprojection had failed, instead of a TWI built on degrees. The two reprojection fallbacks in `twi.py` themselves ("keeping native CRS") are unchanged and still feed a degrees `cell_size` into the specific-catchment-area term; they are a follow-up.
+- Tests: `tests/test_slope_from_dem.py` (analytic plane gives 1000 t within 1 % at 10, 30, 73 and 90 m; resampling invariance; UTM at two latitudes; feet CRS; geographic, unknown-CRS and unreadable-resolution inputs raise; units metadata).
+
 ## [0.3.0] - unreleased (2026-10-30) BREAKING-VALUE
 
 Version 0.3.0, not 0.2.2: a `<0.3` pin on an installed 2.8.4 would otherwise take these changed values.

@@ -1,5 +1,15 @@
 # Changelog — aihydro-watershed
 
+## [Unreleased]
+
+### Added
+
+- `aihydro-watershed` console script with one subcommand, `signatures`: the CAMELS-style hydrological signatures from a local daily
+  streamflow CSV, a basin polygon (GeoJSON) and a drainage area, offline (`precipitation="skip"`; `runoff_ratio` / `stream_elas` are null).
+  A new entry point ships only with a release (bump needed). Delineation stays in the Python API.
+- `install-alone` CI workflow: builds the wheel, installs only it plus its PyPI dependencies in a fresh venv outside the checkout, and runs
+  that CLI task with every socket connection refused (AGU ecosystem audit C1).
+
 ## [0.3.0] - unreleased (2026-10-30) BREAKING-VALUE
 
 Version 0.3.0, not 0.2.2: a `<0.3` pin on an installed 2.8.4 would otherwise take these changed values.

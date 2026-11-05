@@ -117,6 +117,10 @@ Documentation = "https://github.com/AI-Hydro/AI-Hydro/wiki"
 Repository    = "https://github.com/AI-Hydro/aihydro-watershed"
 Issues        = "https://github.com/AI-Hydro/aihydro-watershed/issues"
 
+# Offline signatures from local files (delineation stays in the Python API).
+[project.scripts]
+aihydro-watershed = "aihydro_watershed.cli:main"
+
 # ── Plug-in entry point — auto-register watershed_* MCP tools when both this
 # package and aihydro-tools are installed (wired in Wave A3). ────────────────
 # [project.entry-points."aihydro.tools"]

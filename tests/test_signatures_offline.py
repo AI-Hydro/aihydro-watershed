@@ -14,6 +14,19 @@ from aihydro_watershed.signatures.signatures import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _no_precipitation_fetch(request, monkeypatch):
+    """This module is offline: any precipitation fetch is a test bug, so fail loudly
+    instead of reaching the network (a blocked socket hangs rather than fails)."""
+    if request.node.name == "test_precipitation_fetch_has_bounded_timeout":
+        return  # exercises the real fetch wrapper against a stubbed aihydro_data.fetch
+    from aihydro_watershed.signatures import signatures as sig
+
+    def _forbidden(*a, **k):
+        raise AssertionError("offline test attempted a precipitation fetch; pass precipitation='skip'")
+    monkeypatch.setattr(sig, "_fetch_precipitation_data_bygeom", _forbidden)
+
+
 def test_missing_day_splits_high_flow_events():
     days = pd.date_range("2010-01-01", periods=30, freq="D")
     q = pd.Series(1.0, index=days)
@@ -40,7 +53,7 @@ def test_supplied_series_preserves_dates(monkeypatch):
     ]]}
     sig.extract_hydrological_signatures(
         gauge_id=None, watershed_geojson=square, area_km2=250.0,
-        q_cms_series=q,
+        q_cms_series=q, precipitation="skip",
     )
     assert observed["index"].equals(days)
 
@@ -124,6 +137,7 @@ def test_extract_signatures_records_baseflow_method_in_params():
         watershed_geojson=square,
         area_km2=250.0,
         q_cms_series=q_series,
+        precipitation="skip",
     )
 
     assert result.meta.params.get("baseflow_method") == BASEFLOW_SEPARATION_METHOD
@@ -169,3 +183,25 @@ def test_baseflow_index_ci_is_refused_with_too_few_water_years():
     q = pd.Series(np.ones(400), index=pd.date_range("2000-10-01", periods=400, freq="D"))
     u = _baseflow_index_uncertainty(q)["baseflow_index"]
     assert u["ci_refused"] and u["ci_low"] is None and "groups" in u["ci_reason"]
+
+
+def test_precipitation_fetch_has_bounded_timeout(monkeypatch):
+    """A fetch that never returns must fail with a clear reason, not hang."""
+    import threading
+    import aihydro_data
+    from aihydro_watershed.signatures import signatures as sig
+
+    release = threading.Event()
+    monkeypatch.setattr(aihydro_data, "fetch", lambda **k: release.wait(30))
+    monkeypatch.setenv("AIHYDRO_PRECIP_FETCH_TIMEOUT_S", "0.2")
+    square = {"type": "Polygon", "coordinates": [[
+        [-77.5, 39.2], [-77.4, 39.2], [-77.4, 39.3], [-77.5, 39.3], [-77.5, 39.2]]]}
+    from shapely.geometry import shape
+    try:
+        out = sig._fetch_precipitation_data_bygeom(shape(square), "2010-01-01", "2010-12-31")
+        diag = dict(sig._PRECIP_DIAG.d)
+    finally:
+        release.set()
+    assert out is None
+    assert "did not complete within 0.2 s" in diag["reason"]
+    assert "TimeoutError" in diag["reason"]

@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-11-06
+
 ### Fixed
 
 - **CONUS `method="auto"` no longer falls back silently to the 3DEP small-catchment tier when NLDI is throttled or down.** In the CAMELS evaluation (aihydro-tools 2.8.9 / watershed 0.4.0)

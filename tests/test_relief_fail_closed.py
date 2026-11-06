@@ -60,3 +60,47 @@ def test_unreadable_resolution_no_longer_defaults_to_30_m(served, monkeypatch):
 def test_utm_zone_number_wraps_at_60(lon, epsg):
     from shapely.geometry import Point
     assert G._metric_crs_for_geom(Point(lon, 10.0)) == epsg
+
+
+# ── propagation: stream metrics and the surfaced flag ─────────────────────────
+
+def test_stream_metrics_are_nan_when_relief_is_nan_not_a_made_up_drainage_density():
+    out = G._compute_stream_metrics_approximate(
+        DA_km2=100.0, Lp_km=40.0,
+        relief_metrics={"H_m": float("nan"), "Lb_m": 12.0},
+    )
+    for k in ("D_km_per_km2", "Rn", "C_km2_per_km", "Rf", "Cf_per_km2", "Cs", "Slope_10_85"):
+        assert math.isnan(out[k]), k
+    assert out["MCh_km"] == pytest.approx(18.0)          # depends on Lb only, not on relief
+
+
+def test_stream_metrics_with_finite_relief_are_unchanged():
+    out = G._compute_stream_metrics_approximate(
+        DA_km2=100.0, Lp_km=40.0, relief_metrics={"H_m": 1000.0, "Lb_m": 12.0})
+    assert out["D_km_per_km2"] == pytest.approx(1.5)
+
+
+def test_relief_flag_is_surfaced_in_the_extract_output_and_nothing_made_up(served, monkeypatch):
+    monkeypatch.setattr(type(_dem().rio), "reproject",
+                        lambda self, *a, **k: (_ for _ in ()).throw(RuntimeError("proj db")))
+    import geopandas as gpd
+    gdf = gpd.GeoDataFrame(geometry=[GEOM], crs="EPSG:4326")
+    params, _ = G.extract_geomorphic_parameters(gdf, 50.0, 10.0)
+    assert params["relief_flag"].startswith("relief_unavailable:SlopeUnavailableError")
+    for k in ("H_m", "Rh", "Rp", "Ls_pct", "D_km_per_km2", "Rn", "C_km2_per_km", "Rf", "Cf_per_km2"):
+        assert math.isnan(params[k]), k
+
+
+def test_no_flag_key_when_relief_is_fine(served):
+    import geopandas as gpd
+    gdf = gpd.GeoDataFrame(geometry=[GEOM], crs="EPSG:4326")
+    params, _ = G.extract_geomorphic_parameters(gdf, 50.0, 10.0)
+    assert "relief_flag" not in params and math.isfinite(params["Ls_pct"])
+
+
+def test_result_wrapper_keeps_the_flag_string(served, monkeypatch):
+    monkeypatch.setattr(type(_dem().rio), "reproject",
+                        lambda self, *a, **k: (_ for _ in ()).throw(RuntimeError("proj db")))
+    from shapely.geometry import mapping
+    res = G.extract_geomorphic_parameters_result(mapping(GEOM), 50.0, 10.0)
+    assert str(res.data["relief_flag"]).startswith("relief_unavailable:")

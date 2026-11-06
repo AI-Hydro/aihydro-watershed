@@ -271,6 +271,10 @@ def extract_geomorphic_parameters(
             "pct_sinks": pct_sinks,
         }
         
+        # Surface "relief unavailable" so a consumer can tell it from "not computed".
+        if relief_metrics.get('flag'):
+            geomorph_attrs["relief_flag"] = relief_metrics['flag']
+
         # Units dictionary
         geomorph_units = {
             "DA_km2": "km²",
@@ -642,6 +646,16 @@ def _compute_stream_metrics_approximate(
         
         H_m = relief_metrics.get('H_m', 0)
         Lb_km = relief_metrics.get('Lb_m', np.nan)
+
+        # Relief unavailable (NaN H_m): max(0.5, min(nan, 5.0)) would turn it into a made-up
+        # drainage density of 0.5 and with it D, C, Rf, Cf. Everything derived from H_m is NaN.
+        if H_m is None or not np.isfinite(H_m):
+            MCh = 1.5 * Lb_km if (Lb_km is not None and np.isfinite(Lb_km)) else np.nan
+            out = {k: np.nan for k in [
+                'D_km_per_km2', 'Rn', 'C_km2_per_km', 'Rf', 'Cf_per_km2', 'Cs', 'Slope_10_85'
+            ]}
+            out['MCh_km'] = MCh
+            return out
         
         # Drainage density approximation (increases with relief and decreases with area)
         D_km_per_km2 = 0.5 + (H_m / 1000.0)  # Rough approximation
@@ -842,6 +856,9 @@ def extract_geomorphic_parameters_result(
         # Convert all values to JSON-serializable floats
         clean = {}
         for k, v in params.items():
+            if isinstance(v, str):          # relief_flag: keep the reason, do not null it
+                clean[k] = v
+                continue
             try:
                 fv = float(v)
                 clean[k] = fv if np.isfinite(fv) else None

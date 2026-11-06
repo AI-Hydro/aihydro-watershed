@@ -82,6 +82,14 @@ Live evidence for this section: `docs/evidence/merit-gee-native-grid-2026-11/` (
   polygon mean -1.78%, with the error correlating -0.85 with the fabric/`area_gages2` ratio. The polygon area is 0.08-0.19% above MERIT's own UPA at the snapped cell, and equals the pixel-area sum
   and the WGS84 geodesic area to under 0.1% (unit test). No bias correction was added.
 
+- `delineate_from_point`: a `ToolError` raised after one or more tiers were tried now carries `details["fallback_history"]`, the same
+  list a successful result returns (it reaches `to_dict()` and so the error envelope). Before, a total failure kept only the last
+  tier's message. A history already set on the error is not overwritten; a failure before any tier ran (invalid coordinates) is unchanged.
+  The NLDI tier now appends a row for failed, skipped and served, and the raw-DEM tier a `served` (or `rejected`/`failed`) row, so a result
+  names the tier that served it; a result returned early by NLDI carries the history. An unexpected (non-`ToolError`) exception escaping the
+  body keeps the trail as `exc.fallback_history`.
+  The body moved into a private `_delineate_from_point`; the public signature and behaviour on success are unchanged.
+
 ## [0.3.0] - unreleased (2026-10-30) BREAKING-VALUE
 
 Version 0.3.0, not 0.2.2: a `<0.3` pin on an installed 2.8.4 would otherwise take these changed values.

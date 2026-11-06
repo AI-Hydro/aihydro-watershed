@@ -1,5 +1,21 @@
 # Changelog — aihydro-watershed
 
+## [Unreleased]
+
+### Fixed
+
+- **CONUS `method="auto"` no longer falls back silently to the 3DEP small-catchment tier when NLDI is throttled or down.** In the CAMELS evaluation (aihydro-tools 2.8.9 / watershed 0.4.0)
+  27 of 158 `auto` gauges were served by `small_catchment_3dep` after an NLDI failure (21 of them with a 429 in the same run); 19 were the wrong basin (`auto` wrong-basin 12.7% vs 1.8% for forced NLDI).
+  That tier is built for culvert-scale catchments: with a 10 km half-width window it returns a truncated basin (`BASIN_TOUCHES_MAX_WINDOW`) or a roadside-ditch snap (`LIKELY_DITCH_SNAP`) on river-scale basins,
+  and the router served it regardless. Now, when NLDI raises, `auto` tries the MERIT-Basins hybrid first (also when `expected_area_km2` is given, ahead of `merit_gee`), then the other MERIT tiers, then
+  the 3DEP tier only if its result carries neither flag (otherwise the trail row is `rejected`), then raw DEM. 3DEP is unchanged where it fits: `expected_area_km2 < 5`, and NLDI answering with a sub-km2 reach.
+  Offline re-score of the 27 gauges with the forced-hybrid arm as proxy: wrong-basin 19 -> 2, within 5% of `area_gages2` 3 -> 24 (live behaviour not re-run).
+
+### Added
+
+- Quality flags `FALLBACK_AFTER_TRANSIENT_NLDI` and `FALLBACK_AFTER_NLDI_NOT_USABLE` on any CONUS `auto` result not served by NLDI; the failed NLDI trail row carries `transient: true` and the serving row's `reason` names the NLDI failure.
+- Quality flag `SOURCE_DISAGREEMENT` and `source_disagreement` in the result: an earlier tier's partial area (NLDI upstream area, MERIT `uparea` of a rejected GEE result, a rejected 3DEP area) differs from the served polygon's area by more than 25%.
+
 ## [0.4.0] - 2026-11-06
 
 **Defaults changed in this release.** (1) Outside CONUS, `delineate_from_point(method="auto")` now starts with the MERIT-Basins hybrid

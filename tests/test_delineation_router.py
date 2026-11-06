@@ -100,7 +100,7 @@ def test_nldi_failed_and_skipped_rows_precede_the_tier_that_serves(monkeypatch):
     with pytest.raises(ToolError) as caught:
         delineate_from_point(40.0, -100.0, method="nldi")
     rows = caught.value.details["fallback_history"]
-    assert rows == [{"method": "nldi_comid", "outcome": "failed", "reason": "NLDI 503"}]
+    assert rows == [{"method": "nldi_comid", "outcome": "failed", "reason": "NLDI 503", "transient": True}]
 
     monkeypatch.setattr(nldi_point, "delineate_nldi_at_point", lambda *a, **k: _nldi_result(0.2))
     with pytest.raises(ToolError) as caught:

@@ -43,6 +43,23 @@ _NLDI_QUICK_MAX_KM2 = 15_000.0
 _SMALL_CATCHMENT_MAX_KM2 = 5.0
 _SMALL_CATCHMENT_MIN_KM2 = 0.001
 _SMALL_CATCHMENT_METHOD = "small_catchment_3dep"
+# Quality flags the small-catchment tier raises when its own result is a known failure signature (basin cut by
+# the 10 km window, or a roadside-ditch snap). When that tier is only a stand-in for a failed NLDI call, a result
+# carrying either is not served (see ``_try_small_catchment(strict=True)``).
+_SMALL_CATCHMENT_REJECT_FLAGS = ("BASIN_TOUCHES_MAX_WINDOW", "LIKELY_DITCH_SNAP")
+# Two tiers' areas that differ by more than this fraction of the served polygon raise SOURCE_DISAGREEMENT.
+# Same 25 % as ``_AREA_MISMATCH_FRAC``: in the CAMELS evaluation NLDI-vs-USGS area error had P90 4.6 %, so 25 %
+# is far outside the noise between two honest sources and inside the errors of a wrong basin.
+_SOURCE_DISAGREEMENT_FRAC = 0.25
+# What a throttled or down NLDI looks like from the caller: HTTP 429 / 5xx, no response, timeouts, the fail-fast
+# memo, and the two shapes pynhd raises when a throttled reply is not the expected JSON/GeoJSON
+# ("Service returned no features", "string indices must be integers"). Seen in the CAMELS evaluation:
+# every gauge with one of those messages had a 429 in the same run.
+_TRANSIENT_NLDI_RE = re.compile(
+    r"\bHTTP\s*(429|5\d\d)\b|\b(429|5\d\d)\b|time[d ]?-?out|connect|DNS|failing fast|deadline|"
+    r"too many requests|unavailable|no response|Service returned no features|string indices must be integers",
+    re.I,
+)
 
 _SOURCES_3DEP = [
     DataSource(
@@ -428,6 +445,21 @@ def _attach_workflow_steps(
     return result
 
 
+def _nldi_failure_is_transient(exc: BaseException) -> bool:
+    """True when an NLDI failure says "the service could not answer" rather than "NLDI has no data here".
+
+    ``NLDI_UNAVAILABLE`` is transient by construction (429 / 5xx / no response / hung call / fail-fast memo);
+    ``NLDI_NOT_FOUND`` is an answer (nothing indexed at the point). Any other exception is transient when its
+    text matches a known throttling signature (``_TRANSIENT_NLDI_RE``).
+    """
+    code = getattr(exc, "code", None)
+    if code == "NLDI_UNAVAILABLE":
+        return True
+    if code == "NLDI_NOT_FOUND":
+        return False
+    return bool(_TRANSIENT_NLDI_RE.search(str(exc)))
+
+
 def _with_trail(result: HydroResult, history: list[dict[str, Any]], method: str, outcome: str, reason: str) -> HydroResult:
     """Append the winning tier's row to ``history`` and carry the whole history on a result that returns early."""
     history.append({"method": method, "outcome": outcome, "reason": reason})
@@ -472,6 +504,10 @@ def delineate_from_point(
         Without an expected area, ``auto`` in CONUS trusts NLDI, which returns
         whole NHDPlus catchments; for culverts pass ``expected_area_km2`` or
         ``method="small_catchment"``.
+        If NLDI raises in CONUS, ``auto`` falls back to the MERIT-Basins hybrid (then the other MERIT tiers,
+        then the 3DEP tier only when its result has no ``BASIN_TOUCHES_MAX_WINDOW`` / ``LIKELY_DITCH_SNAP``
+        flag, then raw DEM) and flags the result ``FALLBACK_AFTER_TRANSIENT_NLDI``; an earlier tier's partial
+        area that differs from the served area by more than 25% adds ``SOURCE_DISAGREEMENT``.
     allow_downstream_expansion : bool
         NLDI, no expected area, nearest reach draining < 80 km2: by default the
         nearest reach's basin is returned with ``outlet_ambiguity`` (candidate
@@ -577,8 +613,28 @@ def _delineate_from_point(
     raster_data_source: str | None = None
     data_provenance: dict[str, Any] | None = None
     hybrid_tried = False
+    # CONUS auto: set when the primary tier (NLDI) raised, so the served polygon comes from a fallback.
+    nldi_failure: str | None = None      # "transient" | "not_usable" (NLDI raised without being throttled / down)
+    nldi_failure_is_exception = False
+    nldi_reason = "NLDI failure"
+    # Partial evidence from tiers that ran but did not serve: [{source, kind, area_km2}].
+    evidence: list[dict[str, Any]] = []
+    policy_flags: list[str] = []         # flags the router itself raises; merged at the end (tiers replace quality_flags)
 
-    def _try_small_catchment(reason: str | None) -> bool:
+    def _note_nldi_failure(exc: BaseException) -> str:
+        """Record an NLDI exception for the fallback policy; returns the escalation reason to carry on the trail."""
+        nonlocal nldi_failure, nldi_failure_is_exception, nldi_reason
+        transient = _nldi_failure_is_transient(exc)
+        nldi_failure = "transient" if transient else "not_usable"
+        nldi_failure_is_exception = True
+        nldi_reason = f"NLDI {'transient failure' if transient else 'failure'}: {exc}"
+        row = {"method": "nldi_comid", "outcome": "failed", "reason": str(exc)}
+        if transient:
+            row["transient"] = True
+        fallback_history.append(row)
+        return nldi_reason
+
+    def _try_small_catchment(reason: str | None, *, strict: bool = False) -> bool:
         """Run the 3DEP small-catchment tier; on success fill the result state."""
         nonlocal gdf, area, method_used, routing_dataset, routing_resolution_m
         nonlocal snap_distance_m, polygon_area_km2, area_validation, snapped_outlet
@@ -615,6 +671,23 @@ def _delineate_from_point(
                 }
             )
             return False
+        if strict:
+            bad = [f for f in _SMALL_CATCHMENT_REJECT_FLAGS if f in sc.quality_flags]
+            if bad:
+                fallback_history.append(
+                    {
+                        "method": _SMALL_CATCHMENT_METHOD,
+                        "outcome": "rejected",
+                        "reason": (
+                            f"area {sc.area_km2:.3f} km2 carries {', '.join(bad)}; not served as a stand-in "
+                            "for an unavailable NLDI"
+                        ),
+                    }
+                )
+                evidence.append(
+                    {"source": _SMALL_CATCHMENT_METHOD, "kind": "rejected_polygon_area", "area_km2": sc.area_km2}
+                )
+                return False
         gdf = sc.gdf
         area = sc.area_km2
         polygon_area_km2 = sc.area_km2
@@ -726,10 +799,12 @@ def _delineate_from_point(
             fallback_history.append(
                 {"method": "nldi_comid", "outcome": "skipped", "reason": escalation_reason}
             )
+            if method == "auto":
+                nldi_failure = "not_usable"
+                evidence.append({"source": "nldi_comid", "kind": "upstream_area", "area_km2": float(nldi_area)})
         except Exception as e:
             log.info("NLDI COMID tier unavailable: %s", e)
-            escalation_reason = str(e)
-            fallback_history.append({"method": "nldi_comid", "outcome": "failed", "reason": str(e)})
+            escalation_reason = _note_nldi_failure(e)
             if method == "nldi":
                 raise ToolError(
                     code="DELINEATION_FAILED",
@@ -775,12 +850,15 @@ def _delineate_from_point(
             fallback_history.append(
                 {"method": "nldi_comid", "outcome": "skipped", "reason": escalation_reason}
             )
+            if method == "auto":
+                nldi_failure = "not_usable"
+                evidence.append({"source": "nldi_comid", "kind": "upstream_area", "area_km2": nldi_area})
+            # NLDI answered with a sub-km2 reach: that is the culvert-scale case the 3DEP tier is for.
             if method == "auto" and nldi_area < _NLDI_QUICK_MIN_KM2:
                 _try_small_catchment(escalation_reason)
         except Exception as e:
             log.info("NLDI quick tier unavailable: %s", e)
-            escalation_reason = str(e)
-            fallback_history.append({"method": "nldi_comid", "outcome": "failed", "reason": str(e)})
+            escalation_reason = _note_nldi_failure(e)
             if method == "nldi":
                 raise ToolError(
                     code="DELINEATION_FAILED",
@@ -788,8 +866,9 @@ def _delineate_from_point(
                     tool=_TOOL_PATH,
                     recovery="NLDI is CONUS-only and network-dependent; try method='merit_gee'.",
                 ) from e
-            if method == "auto":
-                _try_small_catchment(f"NLDI unavailable: {e}")
+            # No small-catchment hand-off here: the 3DEP tier is not known to be right for a basin of unknown
+            # size (CAMELS: 19 of 27 such hand-offs were the wrong basin). ``hybrid_first`` below tries the
+            # MERIT-Basins hybrid, and the 3DEP tier remains only as a guarded last resort.
 
     if method == "nldi" and gdf is None:
         raise ToolError(
@@ -804,7 +883,9 @@ def _delineate_from_point(
     # The default global tier snaps and refines itself (staged rasters first), so the Earth Engine
     # snap reference is only prepared up front when a different tier runs first.
     hybrid_first = gdf is None and (
-        method == "merit_basins" or (method == "auto" and not is_conus(lat, lon))
+        method == "merit_basins"
+        or (method == "auto" and not is_conus(lat, lon))
+        or (method == "auto" and nldi_failure_is_exception)
     )
 
     def _prepare_merit_context() -> None:
@@ -1098,6 +1179,10 @@ def _delineate_from_point(
                     }
                 )
                 escalation_reason = escalation_reason or "merit_gee_degenerate_result"
+                if official_merit_upa_km2:
+                    evidence.append(
+                        {"source": "merit_gee_pyflwdir", "kind": "merit_uparea", "area_km2": float(official_merit_upa_km2)}
+                    )
                 gdf = None
                 method_used = None
                 run_fast = True
@@ -1252,6 +1337,17 @@ def _delineate_from_point(
     if method == "auto" and gdf is None and run_fast and not is_conus(lat, lon):
         _try_hybrid_result(escalation_reason or "merit_gee_unavailable")
 
+    # After a failed NLDI the MERIT tiers above come first; the guarded 3DEP tier is the next stand-in, ahead of
+    # the experimental raw-DEM fallback. It is served only if its own result shows no known failure signature.
+    if (
+        method == "auto"
+        and gdf is None
+        and nldi_failure_is_exception
+        and is_conus(lat, lon)
+        and _try_small_catchment(f"last resort after {nldi_reason}", strict=True)
+    ):
+        run_fast = False
+
     if run_fast:
         try:
             from aihydro_watershed.delineation.pysheds_pipeline import delineate_fast
@@ -1346,6 +1442,34 @@ def _delineate_from_point(
             message="No valid watershed polygon produced. Try moving the outlet slightly.",
             tool=_TOOL_PATH,
         )
+
+    # Router-level honesty flags (merged after the tiers, which own and may replace ``quality_flags``).
+    if method == "auto" and nldi_failure and method_used != "nldi_comid":
+        policy_flags.append(
+            "FALLBACK_AFTER_TRANSIENT_NLDI" if nldi_failure == "transient" else "FALLBACK_AFTER_NLDI_NOT_USABLE"
+        )
+    source_disagreement: list[dict[str, Any]] = []
+    for ev in evidence:
+        ev_area = ev.get("area_km2")
+        if not ev_area or ev_area <= 0 or not area or ev["source"] == method_used:
+            continue
+        rel = abs(ev_area - area) / area
+        if rel > _SOURCE_DISAGREEMENT_FRAC:
+            source_disagreement.append(
+                {
+                    **ev,
+                    "area_km2": round(float(ev_area), 3),
+                    "served_method": method_used,
+                    "served_area_km2": round(float(area), 3),
+                    "relative_difference": round(rel, 3),
+                    "threshold": _SOURCE_DISAGREEMENT_FRAC,
+                }
+            )
+    if source_disagreement:
+        policy_flags.append("SOURCE_DISAGREEMENT")
+    for f in policy_flags:
+        if f not in quality_flags:
+            quality_flags.append(f)
 
     geojson = _gdf_to_geojson(gdf)
     # Surface the headline delineation stats on the Feature itself so the map's
@@ -1466,6 +1590,7 @@ def _delineate_from_point(
                 else None
             ),
             "fallback_history": fallback_history,
+            "source_disagreement": source_disagreement or None,
             "quality_flags": quality_flags,
             "cache_key": cache_key,
             "license": license_note,

@@ -128,6 +128,15 @@ Audit C8 latent sibling (`docs/vision-2040/findings/slope-mean-diagnosis-2026-11
 - **UTM zone number** is now `% 60 + 1` (`geomorphic._metric_crs_for_geom`, `_compute_relief_metrics`, `twi.py`): longitude +180 gave zone 61 (invalid EPSG).
 - Tests: `tests/test_relief_fail_closed.py` (the reviewer's repro now gives NaN + flag; the metric path still gives the right slope; unreadable resolution does not default to 30 m; zone wraps at 60); `tests/test_twi_fail_closed.py` (both branches raise, cause is `SlopeUnavailableError`); `tests/test_slope_from_dem.py` (analytic plane gives 1000 t within 1 % at 10, 30, 73 and 90 m; resampling invariance; UTM at two latitudes; feet CRS; geographic, unknown-CRS and unreadable-resolution inputs raise; units metadata).
 
+### Added
+
+- `aihydro-watershed` console script with one subcommand, `signatures`: the CAMELS-style hydrological signatures from a local daily
+  streamflow CSV, a basin polygon (GeoJSON) and a drainage area, offline (`precipitation="skip"`; `runoff_ratio` / `stream_elas` are null).
+  A new entry point ships only with a release (bump needed). Delineation stays in the Python API. Input handling is explicit: negative discharge is refused, `--na-values` (default `-999,-9999`) are read as missing,
+  duplicate dates keep the first row, and the JSON result carries a `cli` block (`n_missing`, `n_duplicate_dates`, `duplicate_dates`, absent calendar days, `warnings`).
+- `install-alone` CI workflow: builds the wheel, installs only it plus its PyPI dependencies in a fresh venv outside the checkout, and runs
+  that CLI task with every socket connection refused (AGU ecosystem audit C1).
+
 ## [0.3.0] - unreleased (2026-10-30) BREAKING-VALUE
 
 Version 0.3.0, not 0.2.2: a `<0.3` pin on an installed 2.8.4 would otherwise take these changed values.

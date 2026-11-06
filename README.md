@@ -59,6 +59,21 @@ print(result.data["area_km2"], result.data["quality_flags"])
 Results are typed `HydroResult` (from `aihydro-core`) — provenance-stamped with
 tool path, version, parameters, and data sources.
 
+### Command line (offline)
+
+One console script, `aihydro-watershed`, runs the offline slice of the package: the
+CAMELS-style signatures from a daily streamflow CSV you already hold. It makes no
+network request and never asks for precipitation (so `runoff_ratio` and
+`stream_elas` are null). Delineation needs DEM/NLDI/MERIT services and stays in the
+Python API; the CLI takes the polygon it produced as a GeoJSON file.
+
+```bash
+aihydro-watershed signatures --flow-csv q.csv --area-km2 250 --geojson basin.geojson
+# CSV columns default to `date` and `q_cms` (m3/s); override with --date-col / --flow-col.
+# Negative discharge is refused; missing-data codes go in --na-values (default -999,-9999).
+# The JSON has a `cli` block: missing/duplicate rows, absent days, warnings (also on stderr).
+```
+
 ## What's inside
 
 | Subpackage | Capability |

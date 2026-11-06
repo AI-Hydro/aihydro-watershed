@@ -41,6 +41,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
+from aihydro_watershed._paths import aihydro_home
 from aihydro_core.records.place import (
     UNVERSIONED,
     BasinAnchor,
@@ -171,12 +172,8 @@ class GeoconnexLookup:
     uri: Optional[str] = None
 
 
-def _home() -> Path:
-    return Path(os.environ.get("AIHYDRO_HOME") or (Path.home() / ".aihydro"))
-
-
 def _cache_path() -> Path:
-    return _home() / "cache" / "place" / "geoconnex.json"
+    return aihydro_home() / "cache" / "place" / "geoconnex.json"
 
 
 def _read_cache() -> Dict[str, Any]:

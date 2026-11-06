@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import sys
+import threading
 import types
 from pathlib import Path
 
@@ -222,6 +223,19 @@ def test_ambiguity_flag_is_in_the_nldi_trail_row(monkeypatch):
 def reset_memo(monkeypatch):
     monkeypatch.setattr(nl, "_unavailable_until", 0.0)
     monkeypatch.setattr(nl, "_exhausted_calls", 0)
+
+
+def test_bounded_timeouts_and_full_pool_count_toward_the_outage_streak(monkeypatch):
+    import time
+
+    monkeypatch.setattr(nl, "_UNAVAILABLE_TRIP_AFTER", 2)
+    with pytest.raises(ToolError):
+        nl._bounded(lambda: time.sleep(0.5), end=time.monotonic())  # times out
+    assert nl._exhausted_calls == 1 and nl._unavailable_until == 0.0
+    monkeypatch.setattr(nl, "_pool_slots", threading.BoundedSemaphore(0))  # every slot busy
+    with pytest.raises(ToolError):
+        nl._bounded(lambda: None, end=time.monotonic() + 5)
+    assert nl._exhausted_calls == 2 and nl._unavailable_until > time.monotonic()
 
 
 def _exhaust(session=None):

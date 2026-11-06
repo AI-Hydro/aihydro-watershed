@@ -32,6 +32,23 @@ _deadline: contextvars.ContextVar[float | None] = contextvars.ContextVar("nldi_d
 _unavailable_until = 0.0  # time.monotonic() until which hydrolocation fails fast
 _exhausted_calls = 0  # consecutive hydrolocation calls that ran out of transient failures; reset by any HTTP 200
 _UNAVAILABLE_TRIP_AFTER = 2
+_streak_lock = threading.Lock()  # guards _unavailable_until / _exhausted_calls (bounded calls run on worker threads)
+
+
+def _record_outage() -> None:
+    """One more transient failure (no response, 429, 5xx, hung call, full pool); two in a row trip the fail-fast memo."""
+    global _unavailable_until, _exhausted_calls
+    with _streak_lock:
+        _exhausted_calls += 1
+        if _exhausted_calls >= _UNAVAILABLE_TRIP_AFTER:
+            _unavailable_until = time.monotonic() + _UNAVAILABLE_MEMO_S
+
+
+def _record_answered() -> None:
+    """The service answered (HTTP 200 or a 4xx): the outage streak is broken."""
+    global _exhausted_calls
+    with _streak_lock:
+        _exhausted_calls = 0
 
 _SOURCES = [
     DataSource(
@@ -91,6 +108,7 @@ def _bounded(fn, *args, end: float, **kwargs):
     import concurrent.futures as cf
 
     if not _pool_slots.acquire(blocking=False):
+        _record_outage()
         raise ToolError(
             code="NLDI_UNAVAILABLE",
             message=f"NLDI worker threads are all busy ({_POOL_MAX_THREADS} hung calls); failing fast.",
@@ -115,6 +133,7 @@ def _bounded(fn, *args, end: float, **kwargs):
     try:
         return fut.result(timeout=max(0.1, end - time.monotonic()))
     except cf.TimeoutError as e:
+        _record_outage()
         raise ToolError(
             code="NLDI_UNAVAILABLE",
             message="NLDI call exceeded the total NLDI deadline (api.water.usgs.gov not answering).",
@@ -178,7 +197,6 @@ def hydrolocation_comid(
     """
     import requests
 
-    global _unavailable_until, _exhausted_calls
     sess = session or requests
     url = hydrolocation_url(lon, lat)
     if time.monotonic() < _unavailable_until:
@@ -212,7 +230,7 @@ def hydrolocation_comid(
             resp = sess.get(url, timeout=timeout, headers={"Accept": "application/json"})
             status = resp.status_code
             if status == 200:
-                _exhausted_calls = 0  # the service answered: not an outage
+                _record_answered()  # the service answered: not an outage
                 hit = _parse_hydrolocation(resp.json())
                 if hit is None:
                     raise ToolError(
@@ -246,11 +264,9 @@ def hydrolocation_comid(
     # Remember an outage only on evidence of one: a request was sent and failed transiently
     # (no response, 429, 5xx) as its LAST attempt, and the previous call did too.
     if sent and last_transient:
-        _exhausted_calls += 1
-        if _exhausted_calls >= _UNAVAILABLE_TRIP_AFTER:
-            _unavailable_until = time.monotonic() + _UNAVAILABLE_MEMO_S
+        _record_outage()
     elif sent:
-        _exhausted_calls = 0  # the call ended on a 4xx (the service answered): the streak is broken
+        _record_answered()  # the call ended on a 4xx (the service answered): the streak is broken
     raise ToolError(
         code="NLDI_UNAVAILABLE",
         message=f"NLDI hydrolocation failed for ({lat}, {lon}): {last} (host api.water.usgs.gov).",
@@ -298,12 +314,14 @@ def resolve_comid_for_area(
 
     for navigation in ("upstreamMain", "upstreamTributaries", "downstreamMain"):
         try:
-            flowlines = nldi.navigate_byid(
+            flowlines = _bounded(
+                nldi.navigate_byid,
                 "comid",
                 start,
                 navigation,
                 "flowlines",
                 distance=search_distance_km,
+                end=end,
             )
             col = "nhdplus_comid" if "nhdplus_comid" in flowlines.columns else "comid"
             if col in flowlines.columns:
@@ -373,12 +391,14 @@ def quick_comid_resolution(
 
     candidates: list[int] = []
     try:
-        flowlines = nldi.navigate_byid(
+        flowlines = _bounded(
+            nldi.navigate_byid,
             "comid",
             start,
             "downstreamMain",
             "flowlines",
             distance=search_distance_km,
+            end=end,
         )
         col = "nhdplus_comid" if "nhdplus_comid" in flowlines.columns else "comid"
         if col in flowlines.columns:

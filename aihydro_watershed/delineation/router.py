@@ -459,8 +459,9 @@ def delineate_from_point(
         Prior drainage area for validation / adaptive snapping. In CONUS, a
         value below 5 km2 sends ``auto`` to the small-catchment tier first.
     method : str
-        ``auto`` (NLDI in CONUS; globally the MERIT-Basins hybrid first, then
-        ``merit_gee`` / ``local_merit`` / raw DEM), ``nldi``, ``merit_gee``,
+        ``auto`` (NLDI in CONUS; globally the MERIT-Basins hybrid first, then local MERIT
+        routing when a regional flowdir is cached, else ``merit_gee`` (which falls back to
+        local MERIT after staging), then raw DEM), ``nldi``, ``merit_gee``,
         ``local_merit``, ``merit_hybrid`` (alias ``merit_basins``; MERIT-Basins vector
         assembly with terminal-catchment refinement, also usable in CONUS),
         ``dem_raw_fallback``, or

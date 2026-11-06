@@ -34,7 +34,7 @@ This release merges aihydro-watershed PRs #11, #12, #7, #10, #8, #9 and #13. The
 - `AIHYDRO_HOME` is honoured for the MERIT data root and the auto-stage config (`config.json`); `AIHYDRO_MERIT_AUTO_STAGE` overrides the policy.
   The Earth Engine window cache path in `merit_flowdir_pipeline` is unchanged here.
 
-### Changed (review round 1 of PR #11)
+**Changed: review round 1 of PR #11**
 
 - **Disclosure.** A call that downloads data flags `MERIT_AUTO_STAGED` and lists `data_provenance.downloaded` (`name`, `bytes`, `url`, `sha256`) and
   `acquisition_policy`. First-call cost per region (basins + rivers, pinned sizes): min 14 MB, median 530 MB, max 2015 MB over 60 regions
@@ -57,6 +57,40 @@ This release merges aihydro-watershed PRs #11, #12, #7, #10, #8, #9 and #13. The
   aihydro-tools `scripts/install_merit_minimal.py` and a tools test import it; it stages the verified files.
 - `tests/nonet.py`: a `-p nonet` pytest plugin that blocks non-loopback network access (`PYTHONPATH=tests pytest -p nonet ...`).
 
+- `fetch_merit_gee_bbox`: `scale_m` is deprecated and ignored (a `DeprecationWarning` if passed); the returned window is `bbox` rounded out to whole MERIT cells and clamped to the
+  asset's extent (lon -180..180, lat -60..85; no antimeridian wrap). New `native_window()`.
+- Area, from the live run above (14 gauges, 14158500 excluded for the CAMELS fabric/USGS inconsistency): MERIT polygon vs `area_gages2` mean +0.32%, median -0.06%; vs the CAMELS
+  polygon mean -1.78%, with the error correlating -0.85 with the fabric/`area_gages2` ratio. The polygon area is 0.08-0.19% above MERIT's own UPA at the snapped cell, and equals the pixel-area sum
+  and the WGS84 geodesic area to under 0.1% (unit test). No bias correction was added.
+
+- `delineate_from_point`: a `ToolError` raised after one or more tiers were tried now carries `details["fallback_history"]`, the same
+  list a successful result returns (it reaches `to_dict()` and so the error envelope). Before, a total failure kept only the last
+  tier's message. A history already set on the error is not overwritten; a failure before any tier ran (invalid coordinates) is unchanged.
+  The NLDI tier now appends a row for failed, skipped and served, and the raw-DEM tier a `served` (or `rejected`/`failed`) row, so a result
+  names the tier that served it; a result returned early by NLDI carries the history. An unexpected (non-`ToolError`) exception escaping the
+  body keeps the trail as `exc.fallback_history`.
+  The body moved into a private `_delineate_from_point`; the public signature and behaviour on success are unchanged.
+
+**Changed: BREAKING-BEHAVIOUR): `slope_from_dem` fails closed**
+
+Audit C8 latent sibling (`docs/vision-2040/findings/slope-mean-diagnosis-2026-11-05.md`, section 6).
+
+- `aihydro_watershed.characterize._dem.slope_from_dem` now raises the new `SlopeUnavailableError` (a `ValueError`) unless the DEM is in a projected CRS with a readable pixel size. It refuses a missing CRS, a geographic CRS (spacing in degrees) and an unreadable or non-positive resolution. Before, a DEM still in EPSG:4326 (the callers keep the native CRS when the EPSG:5070/UTM reprojection fails, with only a warning) produced a "slope" from metres of rise per degree of run, close to 90 degrees everywhere, and a resolution that could not be read silently became a spacing of 1.0. Pixel size in a non-metre projected CRS (feet) is now converted to metres.
+- Valid input (a metric grid) gives the same values as before. The returned DataArray still carries `units="degrees"`.
+- `compute_twi` (`characterize/twi.py`): the two "keeping native CRS" fallbacks (EPSG:5070 and UTM reprojection failure) now raise (`SlopeUnavailableError`, surfaced as `ValueError("Failed to compute TWI: ...")`) instead of running flow accumulation, slope and the specific-catchment-area term on a native degree grid.
+- **`geomorphic._compute_relief_metrics` (and so `Ls_pct`, `Rh`, `Rp`) was NOT unaffected, contrary to the earlier diagnosis.** When the UTM reprojection failed it kept the native CRS and, when the resolution could not be read, defaulted the cell size to 30.0 m, so a 7.2 % slope read `mean_slope_pct = 564648.6` and `Rh`/`Rp` were in degrees. Now it requires a metric grid via `_metric_spacing` (no 30 m default) and returns NaN for the relief metrics with a `flag` of the form `relief_unavailable:<reason>` when reprojection or spacing fails. On a working metric grid the values are unchanged. The earlier statement "lsh `Ls_pct` ... is a correct percent" holds only when the reprojection succeeded.
+- **Propagation.** `_compute_stream_metrics_approximate` turned a NaN `H_m` into a drainage density of 0.5 (`max(0.5, min(nan, 5.0))`) and so into made-up `D_km_per_km2`, `Rn`, `C_km2_per_km`, `Rf`, `Cf_per_km2`; they (and `Cs`, `Slope_10_85`) are now NaN when relief is not finite (`MCh_km` depends on `Lb` only). The relief `flag` is surfaced as `relief_flag` in the output of `extract_geomorphic_parameters` and `..._result` (key present only when relief was unavailable), so "relief unavailable" can be told from "not computed".
+- **UTM zone number** is now `% 60 + 1` (`geomorphic._metric_crs_for_geom`, `_compute_relief_metrics`, `twi.py`): longitude +180 gave zone 61 (invalid EPSG).
+- Tests: `tests/test_relief_fail_closed.py` (the reviewer's repro now gives NaN + flag; the metric path still gives the right slope; unreadable resolution does not default to 30 m; zone wraps at 60); `tests/test_twi_fail_closed.py` (both branches raise, cause is `SlopeUnavailableError`); `tests/test_slope_from_dem.py` (analytic plane gives 1000 t within 1 % at 10, 30, 73 and 90 m; resampling invariance; UTM at two latitudes; feet CRS; geographic, unknown-CRS and unreadable-resolution inputs raise; units metadata).
+
+- **Removed names** (replaced by the SHA-256-verified `merit/verified_fetch.py`, `merit/basins_store.py` and `delineation/merit_hybrid.py`).
+  From `delineation/merit_flowdir_pipeline.py`: `merit_load_catchment_topology`, `merit_identify_terminal_catchment`, `merit_traverse_upstream_catchments`
+  (and the shapefile-field constants they used). From `MeritDataManager`: `_try_download`, `_try_download_with_progress`, `_estimate_flowdir_size_bytes`
+  (module-level helper), `configure_delineator_env`. Callers importing them must move to the hybrid / verified-fetch API
+  (aihydro-tools `merit_ensure_basin` still imports the deprecated `merit/merit_download.py` shim).
+- **`auto` order, global:** MERIT-Basins hybrid, then local MERIT routing when a regional flowdir is already cached (it runs before Earth Engine), else `merit_gee`
+  (after a `merit_gee` failure, local MERIT is retried, staging the flowdir first outside CONUS), then raw DEM.
+
 ### Added
 
 - `merit/verified_fetch.py`, `merit/basins_store.py`, `delineation/merit_hybrid.py`; `MeritDataManager.auto_stage_vectors`, `ensure_level2_index`, `verified_asset`.
@@ -65,6 +99,17 @@ This release merges aihydro-watershed PRs #11, #12, #7, #10, #8, #9 and #13. The
 - `tests/test_merit_hybrid_default.py` (35 offline tests on a synthetic fixture); `tests/conftest.py` sends `HOME`/`AIHYDRO_HOME` to a temp dir and blocks downloads.
 
 Live evidence for this section: `docs/evidence/merit-gee-native-grid-2026-11/` (README lists what was not recorded).
+
+- Quality flag `NLDI_OUTLET_AMBIGUOUS`: the nearest NHDPlus reach drains < 80 km2, so the point may sit on a tributary reach or on a larger stem; the basin returned is the nearest reach's, candidates are in `outlet_ambiguity`.
+- `requests>=2.31.0` declared as a dependency.
+- `nldi_point.hydrolocation_url`, `hydrolocation_comid`, `HydrolocationHit`, `quick_comid_resolution`.
+
+- `aihydro-watershed` console script with one subcommand, `signatures`: the CAMELS-style hydrological signatures from a local daily
+  streamflow CSV, a basin polygon (GeoJSON) and a drainage area, offline (`precipitation="skip"`; `runoff_ratio` / `stream_elas` are null).
+  A new entry point ships only with a release (bump needed). Delineation stays in the Python API. Input handling is explicit: negative discharge is refused, `--na-values` (default `-999,-9999`) are read as missing,
+  duplicate dates keep the first row, and the JSON result carries a `cli` block (`n_missing`, `n_duplicate_dates`, `duplicate_dates`, absent calendar days, `warnings`).
+- `install-alone` CI workflow: builds the wheel, installs only it plus its PyPI dependencies in a fresh venv outside the checkout, and runs
+  that CLI task with every socket connection refused (AGU ecosystem audit C1).
 
 ### Fixed
 
@@ -83,24 +128,6 @@ Live evidence for this section: `docs/evidence/merit-gee-native-grid-2026-11/` (
 - `merit_flowdir_pipeline` created and used `~/.aihydro/cache/...` at import, ignoring `AIHYDRO_HOME`; `merit_manager` read `~/.aihydro/config.json` and defaulted its
   root to `~/.aihydro/merit` the same way. Both now use `$AIHYDRO_HOME` (default `~/.aihydro`); the cache directory is created on first use. Both use the single shared helper `aihydro_watershed/_paths.py:aihydro_home` (from #11).
 
-### Changed
-
-- `fetch_merit_gee_bbox`: `scale_m` is deprecated and ignored (a `DeprecationWarning` if passed); the returned window is `bbox` rounded out to whole MERIT cells and clamped to the
-  asset's extent (lon -180..180, lat -60..85; no antimeridian wrap). New `native_window()`.
-- Area, from the live run above (14 gauges, 14158500 excluded for the CAMELS fabric/USGS inconsistency): MERIT polygon vs `area_gages2` mean +0.32%, median -0.06%; vs the CAMELS
-  polygon mean -1.78%, with the error correlating -0.85 with the fabric/`area_gages2` ratio. The polygon area is 0.08-0.19% above MERIT's own UPA at the snapped cell, and equals the pixel-area sum
-  and the WGS84 geodesic area to under 0.1% (unit test). No bias correction was added.
-
-- `delineate_from_point`: a `ToolError` raised after one or more tiers were tried now carries `details["fallback_history"]`, the same
-  list a successful result returns (it reaches `to_dict()` and so the error envelope). Before, a total failure kept only the last
-  tier's message. A history already set on the error is not overwritten; a failure before any tier ran (invalid coordinates) is unchanged.
-  The NLDI tier now appends a row for failed, skipped and served, and the raw-DEM tier a `served` (or `rejected`/`failed`) row, so a result
-  names the tier that served it; a result returned early by NLDI carries the history. An unexpected (non-`ToolError`) exception escaping the
-  body keeps the trail as `exc.fallback_history`.
-  The body moved into a private `_delineate_from_point`; the public signature and behaviour on success are unchanged.
-
-### Fixed
-
 - **NLDI `hydrolocation` request form (CAMELS pilot, 11/20 gauges got HTTP 502).** pynhd 0.19.4 (`NLDI.comid_byloc`) sends `coords=POINT(lon lat)`
   with the space encoded as `+`. The USGS service answers some points in that form with 502 (CAMELS 08155200: 502 in 6/6 `+` requests, 200 in 8/8
   `%20` requests, same session; body: "Error executing process ... Read timed out (read timeout=5)", `upstream_status` 400). `nldi_point.hydrolocation_comid`
@@ -118,35 +145,6 @@ Live evidence for this section: `docs/evidence/merit-gee-native-grid-2026-11/` (
   `NLDI_OUTLET_AMBIGUOUS` quality flag and `outlet_ambiguity` (selected COMID, candidate downstream COMIDs with areas, how to resolve). The outlet moves downstream only with
   `allow_downstream_expansion=True` (new argument of `delineate_from_point` and `delineate_nldi_at_point`; the result then says `outlet_moved_downstream`).
   `resolve_comid_for_quick` keeps its signature (new keyword) and its default behaviour changes accordingly.
-
-### Added
-
-- Quality flag `NLDI_OUTLET_AMBIGUOUS`: the nearest NHDPlus reach drains < 80 km2, so the point may sit on a tributary reach or on a larger stem; the basin returned is the nearest reach's, candidates are in `outlet_ambiguity`.
-- `requests>=2.31.0` declared as a dependency.
-- `nldi_point.hydrolocation_url`, `hydrolocation_comid`, `HydrolocationHit`, `quick_comid_resolution`.
-
-### Changed (BREAKING-BEHAVIOUR): `slope_from_dem` fails closed
-
-Audit C8 latent sibling (`docs/vision-2040/findings/slope-mean-diagnosis-2026-11-05.md`, section 6).
-
-- `aihydro_watershed.characterize._dem.slope_from_dem` now raises the new `SlopeUnavailableError` (a `ValueError`) unless the DEM is in a projected CRS with a readable pixel size. It refuses a missing CRS, a geographic CRS (spacing in degrees) and an unreadable or non-positive resolution. Before, a DEM still in EPSG:4326 (the callers keep the native CRS when the EPSG:5070/UTM reprojection fails, with only a warning) produced a "slope" from metres of rise per degree of run, close to 90 degrees everywhere, and a resolution that could not be read silently became a spacing of 1.0. Pixel size in a non-metre projected CRS (feet) is now converted to metres.
-- Valid input (a metric grid) gives the same values as before. The returned DataArray still carries `units="degrees"`.
-- `compute_twi` (`characterize/twi.py`): the two "keeping native CRS" fallbacks (EPSG:5070 and UTM reprojection failure) now raise (`SlopeUnavailableError`, surfaced as `ValueError("Failed to compute TWI: ...")`) instead of running flow accumulation, slope and the specific-catchment-area term on a native degree grid.
-- **`geomorphic._compute_relief_metrics` (and so `Ls_pct`, `Rh`, `Rp`) was NOT unaffected, contrary to the earlier diagnosis.** When the UTM reprojection failed it kept the native CRS and, when the resolution could not be read, defaulted the cell size to 30.0 m, so a 7.2 % slope read `mean_slope_pct = 564648.6` and `Rh`/`Rp` were in degrees. Now it requires a metric grid via `_metric_spacing` (no 30 m default) and returns NaN for the relief metrics with a `flag` of the form `relief_unavailable:<reason>` when reprojection or spacing fails. On a working metric grid the values are unchanged. The earlier statement "lsh `Ls_pct` ... is a correct percent" holds only when the reprojection succeeded.
-- **Propagation.** `_compute_stream_metrics_approximate` turned a NaN `H_m` into a drainage density of 0.5 (`max(0.5, min(nan, 5.0))`) and so into made-up `D_km_per_km2`, `Rn`, `C_km2_per_km`, `Rf`, `Cf_per_km2`; they (and `Cs`, `Slope_10_85`) are now NaN when relief is not finite (`MCh_km` depends on `Lb` only). The relief `flag` is surfaced as `relief_flag` in the output of `extract_geomorphic_parameters` and `..._result` (key present only when relief was unavailable), so "relief unavailable" can be told from "not computed".
-- **UTM zone number** is now `% 60 + 1` (`geomorphic._metric_crs_for_geom`, `_compute_relief_metrics`, `twi.py`): longitude +180 gave zone 61 (invalid EPSG).
-- Tests: `tests/test_relief_fail_closed.py` (the reviewer's repro now gives NaN + flag; the metric path still gives the right slope; unreadable resolution does not default to 30 m; zone wraps at 60); `tests/test_twi_fail_closed.py` (both branches raise, cause is `SlopeUnavailableError`); `tests/test_slope_from_dem.py` (analytic plane gives 1000 t within 1 % at 10, 30, 73 and 90 m; resampling invariance; UTM at two latitudes; feet CRS; geographic, unknown-CRS and unreadable-resolution inputs raise; units metadata).
-
-### Added
-
-- `aihydro-watershed` console script with one subcommand, `signatures`: the CAMELS-style hydrological signatures from a local daily
-  streamflow CSV, a basin polygon (GeoJSON) and a drainage area, offline (`precipitation="skip"`; `runoff_ratio` / `stream_elas` are null).
-  A new entry point ships only with a release (bump needed). Delineation stays in the Python API. Input handling is explicit: negative discharge is refused, `--na-values` (default `-999,-9999`) are read as missing,
-  duplicate dates keep the first row, and the JSON result carries a `cli` block (`n_missing`, `n_duplicate_dates`, `duplicate_dates`, absent calendar days, `warnings`).
-- `install-alone` CI workflow: builds the wheel, installs only it plus its PyPI dependencies in a fresh venv outside the checkout, and runs
-  that CLI task with every socket connection refused (AGU ecosystem audit C1).
-
-### Fixed
 
 - The precipitation fetch in `extract_hydrological_signatures` now has a wall-clock bound (default 600 s, `AIHYDRO_PRECIP_FETCH_TIMEOUT_S`
   to override). Before, an unreachable network blocked the caller indefinitely inside the data layer's HTTP client; now the fetch fails with

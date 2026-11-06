@@ -415,6 +415,35 @@ def test_router_falls_back_to_merit_gee_when_hybrid_cannot_serve(calls, monkeypa
     assert "not staged" in d["fallback_history"][0]["reason"]
 
 
+def test_router_gee_window_limit_is_recorded_and_falls_through(calls, monkeypatch):
+    """merit_gee over the window cap: a MERIT_GEE_WINDOW_LIMIT trail row, then the raw-DEM tier is tried."""
+    def hybrid(lat, lon, **kw):
+        calls["hybrid"].append(kw)
+        raise RuntimeError("MERIT_BASINS_NOT_STAGED HYBRID_ROUTING_REQUIRED: not staged")
+
+    def gee(lat, lon, **kw):
+        calls["gee"].append(kw)
+        raise pipe.MeritGeeWindowLimit("MERIT_GEE_WINDOW_LIMIT: basin needs 9.0M cells > cap 4.5M")
+
+    dem = []
+
+    def fast(*a, **k):
+        dem.append(1)
+        raise RuntimeError("dem down")
+
+    import aihydro_watershed.delineation.pysheds_pipeline as ps
+
+    monkeypatch.setattr(pipe, "merit_basins_hybrid_delineate", hybrid)
+    monkeypatch.setattr(pipe, "delineate_merit_gee", gee)
+    monkeypatch.setattr(ps, "delineate_fast", fast)
+    with pytest.raises(Exception) as ei:
+        router.delineate_from_point(-3.0, -60.0)
+    rows = ei.value.details["fallback_history"]
+    gee_rows = [r for r in rows if r["method"] == "merit_gee_pyflwdir"]
+    assert gee_rows == [{"method": "merit_gee_pyflwdir", "outcome": "failed", "reason": "MERIT_GEE_WINDOW_LIMIT"}]
+    assert len(calls["gee"]) == 1 and dem == [1]  # the raw-DEM tier ran after the cap
+
+
 def test_router_integrity_failure_is_flagged_and_hybrid_tried_once(calls, monkeypatch):
     def hybrid(lat, lon, **kw):
         calls["hybrid"].append(kw)

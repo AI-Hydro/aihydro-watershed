@@ -12,7 +12,7 @@ import tempfile
 import time
 import warnings
 import zipfile
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -386,6 +386,76 @@ def snap_outlet_on_merit(
     )
 
 
+# The snapped outlet is off the terminal reach when its drainage area is below this fraction of the
+# upstream unit catchments' total area (they would all have to drain through it).
+OFF_REACH_FRACTION = 0.9
+
+AREA_GATE_RADIUS_M = 1_000.0
+AREA_GATE_TOLERANCE = 0.10
+AREA_GATE_DISTANT_M = 500.0
+AREA_GATE_NO_MATCH_SUFFIX = "_area_gate_no_match"
+
+
+def snap_outlet_area_gated(
+    lat: float,
+    lon: float,
+    *,
+    upa: np.ndarray,
+    transform: Affine,
+    expected_area_km2: float,
+    wth: np.ndarray | None = None,
+    gate_radius_m: float = AREA_GATE_RADIUS_M,
+    tolerance: float = AREA_GATE_TOLERANCE,
+) -> MeritSnap:
+    """Snap to the nearest stream cell within ``gate_radius_m`` whose UPA is within ``tolerance`` of ``expected_area_km2``.
+
+    This is deliberately narrow. The wide area-targeted scorer in :func:`snap_outlet_on_merit`
+    (radius up to 30 km) moved snaps by up to 7.7 km on small basins and turned right basins wrong
+    (camels-delineation-1 replay); GSIM likewise warns that area matching alone can pick a wrong
+    channel of similar size under 50 km2. So the search never goes wider than the gate: when no cell
+    qualifies the result is the plain no-area snap, unchanged, and the caller flags the mismatch.
+
+    A gated snap has ``snap_quality == "area_gated"``; when the gate found nothing the plain snap's
+    quality gets the suffix ``AREA_GATE_NO_MATCH_SUFFIX``.
+    """
+    if not (expected_area_km2 and expected_area_km2 > 0):
+        raise ValueError("snap_outlet_area_gated needs a positive expected_area_km2.")
+    upa_arr = np.asarray(upa, dtype=float)
+    if upa_arr.ndim != 2:
+        raise ValueError("MERIT UPA band must be a 2D array.")
+    col_f, row_f = ~transform * (lon, lat)
+    row0, col0 = int(round(row_f)), int(round(col_f))
+    if not (0 <= row0 < upa_arr.shape[0] and 0 <= col0 < upa_arr.shape[1]):
+        raise ValueError("Outlet is outside the fetched MERIT raster window.")
+    lons, lats = _cell_centers(transform, upa_arr.shape)
+    dist = _distance_m(lon, lat, lons, lats)
+    finite_upa = np.isfinite(upa_arr) & (upa_arr > 0)
+    if wth is not None:
+        stream = finite_upa & ((np.asarray(wth, dtype=float) > 0) | (upa_arr >= 1.0))
+    else:
+        stream = finite_upa & (upa_arr >= 1.0)
+    with np.errstate(invalid="ignore"):
+        rel = np.abs(upa_arr - expected_area_km2) / expected_area_km2
+    ok = stream & (dist <= gate_radius_m) & (rel <= tolerance)
+    if not ok.any():
+        plain = snap_outlet_on_merit(lat, lon, upa=upa_arr, transform=transform, wth=wth)
+        # same cell as the plain snap; the suffix records that the gate ran and found nothing
+        return replace(plain, snap_quality=plain.snap_quality + AREA_GATE_NO_MATCH_SUFFIX)
+    # nearest qualifying cell; ties (equal to the metre) go to the closer area match
+    key = np.where(ok, np.round(dist, 3) + 1e-6 * rel, np.inf)
+    r, c = np.unravel_index(int(np.argmin(key)), key.shape)
+    snap_lon, snap_lat = transform * (c + 0.5, r + 0.5)
+    return MeritSnap(
+        lat=float(snap_lat),
+        lon=float(snap_lon),
+        row=int(r),
+        col=int(c),
+        distance_m=float(dist[r, c]),
+        snapped_upa_km2=float(upa_arr[r, c]),
+        snap_quality="area_gated",
+    )
+
+
 def _cache_dir() -> Path:
     """GEE raster cache, under ``AIHYDRO_HOME`` like the rest of the package."""
     d = aihydro_home() / "cache" / "delineation" / "merit_gee"
@@ -738,9 +808,15 @@ def merit_get_snap_reference(
     expected_area_km2: float | None = None,
     project_id: str | None = None,
     half_side_km: float = 8.0,
+    area_gate: bool = False,
 ) -> MeritSnapReference:
-    """Fetch a tiny GEE MERIT upa/wth window and snap to an official drainage cell."""
-    if expected_area_km2 and expected_area_km2 > 0:
+    """Fetch a tiny GEE MERIT upa/wth window and snap to an official drainage cell.
+
+    With ``area_gate`` and an ``expected_area_km2`` the snap is :func:`snap_outlet_area_gated` (1 km,
+    +/-10%) on the same small window; otherwise an expected area selects the wide area-targeted scorer.
+    """
+    gated = bool(area_gate and expected_area_km2 and expected_area_km2 > 0)
+    if expected_area_km2 and expected_area_km2 > 0 and not gated:
         snap_radius_km = min(30.0, max(3.0, 1.5 * math.sqrt(expected_area_km2)))
         half_side_km = max(half_side_km, snap_radius_km * 1.2)
     bbox = bbox_from_point(lat, lon, half_side_km)
@@ -749,14 +825,24 @@ def merit_get_snap_reference(
         bands=_SNAP_REFERENCE_BANDS,
         project_id=project_id,
     )
-    snap = snap_outlet_on_merit(
-        lat,
-        lon,
-        upa=np.asarray(bundle.bands["upa"], dtype=float),
-        wth=bundle.bands.get("wth"),
-        transform=bundle.transform,
-        expected_area_km2=expected_area_km2,
-    )
+    if gated:
+        snap = snap_outlet_area_gated(
+            lat,
+            lon,
+            upa=np.asarray(bundle.bands["upa"], dtype=float),
+            wth=bundle.bands.get("wth"),
+            transform=bundle.transform,
+            expected_area_km2=float(expected_area_km2),
+        )
+    else:
+        snap = snap_outlet_on_merit(
+            lat,
+            lon,
+            upa=np.asarray(bundle.bands["upa"], dtype=float),
+            wth=bundle.bands.get("wth"),
+            transform=bundle.transform,
+            expected_area_km2=expected_area_km2,
+        )
     return MeritSnapReference(
         snap=snap,
         source=bundle.source,
@@ -1251,8 +1337,12 @@ def merit_basins_hybrid_delineate(
 
     # -- snap -----------------------------------------------------------------------------------
     snap_origin = mh.ORIGIN_NONE
+    caller_supplied_snap = snap_reference is not None
     if accum_path is not None:
-        snap = mh.snap_on_local_accum(accum_path, lat, lon, expected_area_km2=expected_area_km2)
+        caller_supplied_snap = False  # a staged accumulation raster overrides any supplied reference
+        snap = mh.snap_on_local_accum(
+            accum_path, lat, lon, expected_area_km2=expected_area_km2, area_gate=True
+        )
         snap_reference = MeritSnapReference(
             snap=snap,
             source="local_accum_mghydro",
@@ -1267,7 +1357,7 @@ def merit_basins_hybrid_delineate(
                 if force_offline:
                     raise RuntimeError("forced offline hybrid routing")
                 snap_reference = merit_get_snap_reference(
-                    lat, lon, expected_area_km2=expected_area_km2
+                    lat, lon, expected_area_km2=expected_area_km2, area_gate=True
                 )
             except Exception:
                 if not allow_offline:
@@ -1287,6 +1377,39 @@ def merit_basins_hybrid_delineate(
             snap_origin = mh.ORIGIN_EE
     snap = snap_reference.snap
     unsnapped = snap.snap_quality == "offline_unsnapped"
+    area_gate_info: dict[str, Any] | None = None
+    if expected_area_km2 and expected_area_km2 > 0 and not unsnapped:
+        # A gated snap is tagged "area_gated". The gate was evaluated only when this function made the snap
+        # (local accum, or a reference it fetched itself with ``area_gate=True``) or the snap carries the tag.
+        # A caller-supplied reference made with another scorer was never gated: say so, and raise nothing.
+        gate_hit = snap.snap_quality == "area_gated"
+        gate_nomatch = snap.snap_quality.endswith(AREA_GATE_NO_MATCH_SUFFIX)
+        gate_evaluated = gate_hit or gate_nomatch or not caller_supplied_snap
+        area_gate_info = {
+            "gate_applied": gate_evaluated,
+            "radius_m": AREA_GATE_RADIUS_M,
+            "tolerance": AREA_GATE_TOLERANCE,
+            "expected_area_km2": expected_area_km2,
+            "matched": gate_hit if gate_evaluated else None,
+        }
+        if gate_hit and snap.distance_m > AREA_GATE_DISTANT_M:
+            # the gate accepts up to 1 km; a match this far from the gauge may be another river of similar size
+            _flag("AREA_GATE_SNAP_DISTANT")
+        if gate_evaluated and not gate_hit:
+            _flag("AREA_GATE_NO_MATCH")
+            snap_upa = snap.snapped_upa_km2
+            if snap_upa and abs(snap_upa - expected_area_km2) / expected_area_km2 > AREA_GATE_TOLERANCE:
+                _flag("SNAP_UPA_DIFFERS_FROM_EXPECTED")
+            fallback_history.append(
+                {
+                    "method": "area_gated_snap",
+                    "outcome": "no_match",
+                    "reason": (
+                        f"no stream cell within {AREA_GATE_RADIUS_M:.0f} m has an upstream area within "
+                        f"{AREA_GATE_TOLERANCE:.0%} of {expected_area_km2:g} km2; the plain snap is kept"
+                    ),
+                }
+            )
     if snap_reference.official_merit_upa_km2 is not None:
         validation_sources.append(
             "local_accum_upa" if snap_origin == mh.ORIGIN_LOCAL else "gee_official_upa"
@@ -1319,6 +1442,25 @@ def merit_basins_hybrid_delineate(
         validation_sources.append("merit_basins_rivers_uparea")
     else:
         rel = None
+
+    # Does the snapped outlet sit on the terminal catchment's main reach? The upstream unit catchments
+    # drain to the terminal's downstream end. An outlet on a side tributary inside the terminal catchment
+    # is cut off from them: its basin cannot contain their area, so unioning them in over-counts it
+    # (camels-delineation-1: 11 small basins up to 117x too large). Its drainage area is then smaller than
+    # the inflow the upstream catchments would add.
+    inflow_km2 = (
+        float(upstream.loc[upstream["comid"] != terminal_id, "area_km2"].sum())
+        if "area_km2" in upstream and not nonterminal.empty
+        else (area_km2(nonterminal) if not nonterminal.empty else 0.0)
+    )
+    terminal_total_km2 = area_km2(terminal)
+    snap_upa_vec = snap_reference.official_merit_upa_km2
+    off_reach = bool(
+        not unsnapped
+        and inflow_km2 > 0
+        and snap_upa_vec is not None
+        and snap_upa_vec < OFF_REACH_FRACTION * inflow_km2
+    )
 
     # -- terminal refinement ------------------------------------------------------------------------
     refine_origin = mh.ORIGIN_NONE
@@ -1364,11 +1506,104 @@ def merit_basins_hybrid_delineate(
     if consistency["mixed"]:
         _flag("MERIT_VERSION_MIX")
 
+    # -- outlet / polygon consistency ---------------------------------------------------------------------
+    # Local-only: the polygon must be the basin of the snapped outlet, not the main stem's. That holds when
+    # the outlet is off the terminal reach (no upstream catchments reach it) or when the terminal catchment is
+    # a headwater; in both the polygon is the terminal-catchment component alone.
+    outlet_assembly: dict[str, Any] = {"mode": "union_upstream", "off_terminal_reach": off_reach}
+    local_only = off_reach or nonterminal.empty
+    keep_upstream = not off_reach
+    if off_reach:
+        _flag("OUTLET_OFF_TERMINAL_REACH")
+        outlet_assembly.update(
+            {
+                "upstream_inflow_km2": round(inflow_km2, 3),
+                "terminal_catchment_area_km2": round(terminal_total_km2, 3),
+                "snapped_upa_km2": round(float(snap_upa_vec), 3),
+                "mainstem_alternative": {
+                    "area_km2": round(official_uparea, 3) if official_uparea else round(vector_area, 3),
+                    "assembly_area_km2": round(vector_area, 3),
+                    "source": "merit_basins_rivers_uparea" if official_uparea else "vector_assembly",
+                    "note": (
+                        "The snapped outlet is on a tributary inside the terminal unit catchment, so the "
+                        f"{len(upstream_ids) - 1} upstream unit catchment(s) ({inflow_km2:.1f} km2) do not drain "
+                        "to it. The polygon is the local catchment only; the area above is the main-stem "
+                        "basin at the terminal catchment's downstream end, which a gauge on the main reach "
+                        "would have."
+                    ),
+                },
+            }
+        )
+    if local_only and not terminal_refinement_used and snap_upa_vec and not unsnapped:
+        # Refinement failed (any reason) and the outlet drains only part of the terminal catchment: do
+        # not return the whole terminal catchment. Delineate on a window centred on the outlet instead.
+        if snap_upa_vec < OFF_REACH_FRACTION * terminal_total_km2:
+            try:
+                terminal_component, win_info = mh.delineate_on_local_window(
+                    snap, snapped_upa_km2=float(snap_upa_vec)
+                )
+                refine_origin = win_info["origin"]
+                terminal_refinement_used = True
+                refinement_area = area_km2(terminal_component.to_crs(4326))
+                refine_info = {**win_info, "kind": "outlet_centred_window"}
+                _flag("TERMINAL_CATCHMENT_LOCAL_WINDOW_USED")
+                fallback_history.append(
+                    {
+                        "method": "outlet_centred_window",
+                        "outcome": "succeeded",
+                        "reason": "terminal refinement failed; the outlet drains part of the terminal catchment",
+                    }
+                )
+                consistency = mh.version_consistency(
+                    vector_version=MERIT_BASINS_VECTOR_VERSION,
+                    snap_origin=snap_origin,
+                    refine_origin=refine_origin,
+                )
+                if consistency["mixed"]:
+                    _flag("MERIT_VERSION_MIX")
+            except Exception as exc:
+                fallback_history.append(
+                    {"method": "outlet_centred_window", "outcome": "failed", "reason": str(exc)}
+                )
+    if off_reach:
+        # Local-only is the answer for this outlet. With a known area, keep whichever of the two areas is
+        # closer to it, so a gauge truly on the main stem whose snap landed on a tributary is still answered
+        # with the main stem.
+        local_area = refinement_area if refinement_area is not None else terminal_total_km2
+        outlet_assembly["local_polygon"] = (
+            "refined" if terminal_refinement_used else "whole_terminal_catchment_unrefined"
+        )
+        outlet_assembly["local_area_km2"] = round(local_area, 3)
+        if expected_area_km2 and expected_area_km2 > 0 and local_area > 0 and vector_area > 0:
+            if abs(math.log(vector_area / expected_area_km2)) < abs(math.log(local_area / expected_area_km2)):
+                keep_upstream = True
+                outlet_assembly["tiebreak"] = (
+                    f"expected {expected_area_km2:g} km2 is closer to the main-stem basin "
+                    f"({vector_area:.1f} km2) than to the local catchment ({local_area:.1f} km2)"
+                )
+        if keep_upstream:
+            outlet_assembly["mode"] = "union_upstream_kept_by_expected_area"
+        else:
+            outlet_assembly["mode"] = "local_only"
+            _flag("HYBRID_LOCAL_ONLY")
+        fallback_history.append(
+            {
+                "method": "outlet_assembly",
+                "outcome": outlet_assembly["mode"],
+                "reason": "snapped outlet is off the terminal unit catchment's main reach",
+            }
+        )
+    outlet_assembly["area_gate"] = area_gate_info
+
     # -- merge ---------------------------------------------------------------------------------------------
     pieces = []
-    if not nonterminal.empty:
+    if not nonterminal.empty and keep_upstream:
         pieces.append(nonterminal.to_crs(4326))
-    pieces.append(terminal_component.to_crs(4326))
+    # The kept main-stem union is the whole assembly (upstream catchments plus the whole terminal catchment).
+    # The refined terminal piece belongs to the other (local) basin; adding it to the inflow would build a
+    # polygon that is neither basin.
+    main_stem_kept = off_reach and keep_upstream
+    pieces.append((terminal if main_stem_kept else terminal_component).to_crs(4326))
     merged = gpd.GeoDataFrame(
         geometry=gpd.GeoSeries(
             [gpd.GeoDataFrame(pd.concat(pieces, ignore_index=True), crs=4326).union_all()], crs=4326
@@ -1388,6 +1623,7 @@ def merit_basins_hybrid_delineate(
         touches_edge=False,
     )
     snap_validation, more_snap_flags = validate_snap(snap, expected_area_km2=expected_area_km2)
+    area_validation["outlet_assembly"] = outlet_assembly
     if official_uparea:
         area_validation["merit_basins_uparea_km2"] = round(official_uparea, 3)
         area_validation["catchment_area_sum_km2"] = round(catchment_area_sum or 0.0, 3)
@@ -1449,6 +1685,10 @@ def merit_basins_hybrid_delineate(
         },
         "version_consistency": consistency,
         "refinement": {k: v for k, v in refine_info.items() if k != "bounds"} or None,
+        "outlet_assembly": outlet_assembly,
+        # the hybrid's own tier trail (the router keeps its own trail; this is the reason a refinement or
+        # window fallback failed)
+        "hybrid_fallback_history": [dict(row) for row in fallback_history],
     }
 
     cache_key = hashlib.sha256(

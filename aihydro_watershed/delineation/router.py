@@ -940,6 +940,8 @@ def _delineate_from_point(
                 lat,
                 lon,
                 expected_area_km2=expected_area_km2,
+                # with a known area: the narrow 1 km / +/-10% gate on the small window, not the wide scorer
+                area_gate=bool(expected_area_km2 and expected_area_km2 > 0),
             )
         except Exception as e:
             log.info("MERIT GEE snap-reference unavailable: %s", e)
@@ -1050,6 +1052,18 @@ def _delineate_from_point(
             _apply_merit_result(hybrid, used_method="merit_basins_hybrid")
             license_note = MERIT_BASINS_LICENSE
             citation = MERIT_CITATION
+            # The hybrid's own steps (refinement, local-window fallback, outlet assembly, area-gated snap), so a
+            # failed refinement keeps its reason in the record. Namespaced so they are not read as served tiers;
+            # a step's "succeeded" is written "completed" for the same reason.
+            for step in (hybrid.data_provenance or {}).get("hybrid_fallback_history") or []:
+                outcome = str(step.get("outcome", ""))
+                fallback_history.append(
+                    {
+                        "method": f"merit_basins_hybrid/{step.get('method', '')}",
+                        "outcome": "completed" if outcome == "succeeded" else outcome,
+                        "reason": str(step.get("reason", "")),
+                    }
+                )
             fallback_history.append(
                 {
                     "method": "merit_basins_hybrid",

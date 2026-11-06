@@ -35,6 +35,52 @@
 - Quality flag `LAST_RESORT_UNVERIFIED` (see Fixed).
 - Quality flag `SOURCE_DISAGREEMENT` and `source_disagreement` in the result: an earlier tier's partial area (NLDI upstream area, MERIT `uparea` of a rejected GEE result, a rejected 3DEP area) differs from the served polygon's area by more than 25%.
 
+### Hybrid polygon agrees with its own snapped outlet (PR #17; finding `small-basin-delineation-2026-11-06` P1, P2)
+
+**Fixed**
+
+
+- **`merit_basins_hybrid_delineate` no longer unions upstream unit catchments onto an outlet that is not on their reach.** When the snapped outlet's
+  MERIT drainage area is below 0.9x the total area of the upstream unit catchments, the outlet sits on a tributary inside the terminal catchment and
+  none of that inflow drains to it. The result is now the local (refined) terminal piece only, flagged `OUTLET_OFF_TERMINAL_REACH` and
+  `HYBRID_LOCAL_ONLY`. The main-stem alternative (area from the MERIT-Basins `uparea`, the union's assembly area, and a note) is in
+  `area_validation["outlet_assembly"]["mainstem_alternative"]` and `data_provenance["outlet_assembly"]`. With `expected_area_km2`, whichever of the
+  two areas is closer in |ln(A/E)| is kept, so a gauge truly on the main stem whose snap fell on a tributary still gets the main-stem basin
+  (`mode: "union_upstream_kept_by_expected_area"`; the polygon is then the whole assembly, upstream catchments plus the whole terminal catchment, i.e.
+  `polygon_area == vector_assembly_area`; `HYBRID_AREA_VALIDATION_MISMATCH` then still fires). The 0.9 rule only catches clear tributary cases: an
+  outlet on a tributary whose area is 0.9x the inflow or more is treated as on-reach. `HYBRID_AREA_VALIDATION_MISMATCH` is unchanged.
+- **Terminal refinement failure no longer returns the whole terminal catchment when the outlet drains only part of it** (off-reach, or a headwater
+  terminal with no upstream catchments, snapped area below 0.9x the terminal area). The basin is delineated on an Earth Engine `dir` window centred on
+  the outlet (half-side `max(3 km, 2*sqrt(upa))`, grown 1.6x while the basin touches the edge, capped at 20 km) and flagged
+  `TERMINAL_CATCHMENT_LOCAL_WINDOW_USED`. If that fails too the previous behaviour stands (whole terminal) and the failure is in the trail.
+  `TERMINAL_CATCHMENT_REFINEMENT_FAILED` is kept either way.
+
+**Added**
+
+- **Area-gated snap** (`snap_outlet_area_gated`, `merit_hybrid.snap_on_local_accum(area_gate=True)`, `merit_get_snap_reference(area_gate=True)`): with
+  an `expected_area_km2`, the hybrid snaps to the nearest stream cell within 1 km whose upstream area is within +/-10% of it (`snap_quality`
+  `"area_gated"`). The gate result is recorded in `area_validation["outlet_assembly"]["area_gate"]` (`gate_applied` is false, with no flag or trail row, when the caller
+  supplied a snap reference made without the gate). A gated cell more than 500 m from the gauge raises `AREA_GATE_SNAP_DISTANT`. If none qualifies the
+  plain no-area snap is kept (its `snap_quality` gets the suffix `_area_gate_no_match`) and `AREA_GATE_NO_MATCH` (plus `SNAP_UPA_DIFFERS_FROM_EXPECTED` when the kept snap is
+  more than 10% off) is raised; the search is never widened. The 30 km area-targeted scorer is untouched for the other tiers and is no longer used by
+  the hybrid.
+- The hybrid's own tier trail is exposed in the result as `data_provenance["hybrid_fallback_history"]` (a copy of `fallback_history`, with new
+  `outlet_assembly`, `outlet_centred_window` and `area_gated_snap` rows). The router appends these rows to its trail as `merit_basins_hybrid/<step>`
+  (same `method`/`outcome`/`reason` shape; a step's `succeeded` is written `completed` so it is not read as a served tier), ahead of the served
+  `merit_basins_hybrid` row.
+- `scripts/eval/rerun_hybrid.py` and `scripts/eval/score_rerun.py`: offline (sockets blocked) re-run and scoring of the hybrid over the
+  camels-delineation-1 gauges from the campaign's cached Earth Engine windows and MERIT-Basins vectors.
+
+**Not done**
+
+- Passing a gauge's published area automatically (the finding's P2 "pass it for gauges") lives where gauge resolution does, outside this package.
+- The snap-quality band record (High/Medium/Low/Caution), P3-P5 of the finding.
+
+**Changed (router)**
+
+- `_prepare_merit_context` asks `merit_get_snap_reference` for the area gate whenever an `expected_area_km2` is given (the small window is kept; the wide
+  scorer is no longer used for that reference). The default global path lets the hybrid fetch its own reference, which is gated the same way.
+
 ## [0.4.0] - 2026-11-06
 
 **Defaults changed in this release.** (1) Outside CONUS, `delineate_from_point(method="auto")` now starts with the MERIT-Basins hybrid

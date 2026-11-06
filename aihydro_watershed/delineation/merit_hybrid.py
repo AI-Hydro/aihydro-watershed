@@ -24,9 +24,11 @@ from aihydro_watershed.delineation.merit_flowdir_pipeline import (
     MERIT_SCALE_M,
     MeritSnap,
     _polygonize_mask,
+    basin_touches_edge,
     bbox_from_point,
     fetch_merit_gee_bbox,
     merit_dir_to_pyflwdir,
+    snap_outlet_area_gated,
     snap_outlet_on_merit,
 )
 
@@ -53,13 +55,23 @@ def _cell_area_km2(transform: Affine, lat: float) -> float:
 
 
 def snap_on_local_accum(
-    accum_path: Path, lat: float, lon: float, *, expected_area_km2: float | None = None
+    accum_path: Path,
+    lat: float,
+    lon: float,
+    *,
+    expected_area_km2: float | None = None,
+    area_gate: bool = False,
 ) -> MeritSnap:
-    """Snap to a stream cell on the staged accumulation raster (cells -> km2 at the point's latitude)."""
+    """Snap to a stream cell on the staged accumulation raster (cells -> km2 at the point's latitude).
+
+    ``area_gate`` with an ``expected_area_km2`` uses the narrow 1 km, +/-10% gate
+    (:func:`snap_outlet_area_gated`) on the default small window instead of the wide area scorer.
+    """
     import rasterio
     from rasterio.windows import from_bounds
 
-    bbox = bbox_from_point(lat, lon, snap_search_half_side_km(expected_area_km2))
+    gated = bool(area_gate and expected_area_km2 and expected_area_km2 > 0)
+    bbox = bbox_from_point(lat, lon, snap_search_half_side_km(None if gated else expected_area_km2))
     with rasterio.open(accum_path) as src:
         left, bottom = max(src.bounds.left, bbox[0]), max(src.bounds.bottom, bbox[1])
         right, top = min(src.bounds.right, bbox[2]), min(src.bounds.top, bbox[3])
@@ -74,6 +86,10 @@ def snap_on_local_accum(
         acc = np.where(acc == nodata, np.nan, acc)
     acc = np.where(acc < 0, np.nan, acc)  # masked/negative cells are not drainage evidence
     upa = acc * _cell_area_km2(transform, lat)
+    if gated:
+        return snap_outlet_area_gated(
+            lat, lon, upa=upa, transform=transform, expected_area_km2=float(expected_area_km2)
+        )
     return snap_outlet_on_merit(
         lat, lon, upa=upa, transform=transform, expected_area_km2=expected_area_km2
     )
@@ -178,6 +194,56 @@ def refine_ee(
         "window_km": (round(width_km, 2), round(height_km, 2)),
         "cache_key": bundle.cache_key,
     }
+
+
+LOCAL_WINDOW_MAX_HALF_SIDE_KM = 20.0
+
+
+def local_window_half_side_km(snapped_upa_km2: float) -> float:
+    """Half-side of the first outlet-centred window: ``max(3 km, 2*sqrt(upa))``, capped at 20 km."""
+    return min(LOCAL_WINDOW_MAX_HALF_SIDE_KM, max(3.0, 2.0 * math.sqrt(max(snapped_upa_km2, 0.0))))
+
+
+def delineate_on_local_window(
+    snap: MeritSnap, *, snapped_upa_km2: float
+) -> tuple[gpd.GeoDataFrame, dict[str, Any]]:
+    """Basin of the snapped cell routed on an Earth Engine ``dir`` window centred on the outlet.
+
+    Used when the terminal unit catchment could not be refined and the outlet drains only part of it,
+    so that the whole terminal catchment is not returned. The window starts at
+    :func:`local_window_half_side_km` and grows by 1.6x while the basin touches its edge, up to
+    ``LOCAL_WINDOW_MAX_HALF_SIDE_KM``; a basin that still touches the edge is refused (RuntimeError).
+    """
+    import pyflwdir
+
+    half_side = local_window_half_side_km(snapped_upa_km2)
+    while True:
+        bbox = bbox_from_point(snap.lat, snap.lon, half_side)
+        bundle = fetch_merit_gee_bbox(bbox, bands=("dir",))
+        d8 = merit_dir_to_pyflwdir(np.asarray(bundle.bands["dir"]))
+        flw = pyflwdir.from_array(
+            d8,
+            ftype="d8",
+            mask=np.isin(d8, [0, 1, 2, 4, 8, 16, 32, 64, 128]),
+            transform=bundle.transform,
+            latlon=str(bundle.crs).upper() in ("EPSG:4326", "OGC:CRS84"),
+        )
+        ids = flw.basins(xy=([snap.lon], [snap.lat]), ids=np.array([1], dtype=np.uint32))
+        mask = ids == 1
+        if not mask.any():
+            raise RuntimeError("Outlet-centred window produced an empty basin mask.")
+        if not basin_touches_edge(mask):
+            return _polygonize_mask(mask, bundle.transform, bundle.crs), {
+                "origin": ORIGIN_EE,
+                "half_side_km": round(half_side, 2),
+                "cache_key": bundle.cache_key,
+            }
+        if half_side >= LOCAL_WINDOW_MAX_HALF_SIDE_KM:
+            raise RuntimeError(
+                "LOCAL_WINDOW_TOUCHES_EDGE: the basin of the snapped outlet still touches the "
+                f"{2 * half_side:.0f} km window edge."
+            )
+        half_side = min(LOCAL_WINDOW_MAX_HALF_SIDE_KM, half_side * 1.6)
 
 
 def version_consistency(

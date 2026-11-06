@@ -253,7 +253,7 @@ def test_hybrid_not_staged_when_auto_stage_never(region, tmp_path, monkeypatch):
 # ------------------------------------------------------------ hybrid, Earth Engine window (stubbed)
 
 
-def _stub_ee(monkeypatch, region, calls: list):
+def _stub_ee(monkeypatch, region, calls: list, *, snapped_upa: float = 1.7):
     flowdir = region.files["flowdir73.tif"]
 
     def fake_fetch(bbox, *, bands, **_):
@@ -270,9 +270,9 @@ def _stub_ee(monkeypatch, region, calls: list):
 
     def fake_snap_ref(lat, lon, **_):
         snap = pipe.MeritSnap(lat=fx.SNAPPED[0], lon=fx.SNAPPED[1], row=0, col=0, distance_m=250.0,
-                              snapped_upa_km2=1.7, snap_quality="nearest_merit_stream")
+                              snapped_upa_km2=snapped_upa, snap_quality="nearest_merit_stream")
         return pipe.MeritSnapReference(snap=snap, source="gee", cache_key="stub", bbox=(lon, lat, lon, lat),
-                                       official_merit_upa_km2=1.7)
+                                       official_merit_upa_km2=snapped_upa)
 
     monkeypatch.setattr(pipe, "merit_get_snap_reference", fake_snap_ref)
 
@@ -305,7 +305,9 @@ def test_ee_window_too_large_is_refused_and_flagged(region, tmp_path, monkeypatc
     root = tmp_path / "merit"
     _stage_all(region, root, rasters=False)
     monkeypatch.setenv("AIHYDRO_MERIT_DIR", str(root))
-    _stub_ee(monkeypatch, region, [])
+    # an outlet on the terminal's main reach drains the three upstream catchments plus part of the terminal
+    # (the old 1.7 km2 stub put the outlet "off the reach"; see test_hybrid_outlet_consistency.py)
+    _stub_ee(monkeypatch, region, [], snapped_upa=13.0)
     monkeypatch.setattr(mh, "refine_ee", lambda *a, **k: (_ for _ in ()).throw(
         RuntimeError("TERMINAL_REFINEMENT_WINDOW_TOO_LARGE: 99 km")))
     res = pipe.merit_basins_hybrid_delineate(*fx.OUTLET_REQUEST)

@@ -1,5 +1,45 @@
 # Changelog — aihydro-watershed
 
+## [Unreleased] — hybrid polygon agrees with its own snapped outlet (fix/hybrid-polygon-outlet)
+
+Source: `docs/vision-2040/findings/small-basin-delineation-2026-11-06.md` (P1, P2). This section is kept separate from the router-trail work in
+PR #15 so the two merge without a CHANGELOG conflict. Wiring `fallback_history` into the router's trail is a follow-up after #15 (see "Not done").
+
+### Fixed
+
+- **`merit_basins_hybrid_delineate` no longer unions upstream unit catchments onto an outlet that is not on their reach.** When the snapped outlet's
+  MERIT drainage area is below 0.9x the total area of the upstream unit catchments, the outlet sits on a tributary inside the terminal catchment and
+  none of that inflow drains to it. The result is now the local (refined) terminal piece only, flagged `OUTLET_OFF_TERMINAL_REACH` and
+  `HYBRID_LOCAL_ONLY`. The main-stem alternative (area from the MERIT-Basins `uparea`, the union's assembly area, and a note) is in
+  `area_validation["outlet_assembly"]["mainstem_alternative"]` and `data_provenance["outlet_assembly"]`. With `expected_area_km2`, whichever of the
+  two areas is closer in |ln(A/E)| is kept, so a gauge truly on the main stem whose snap fell on a tributary still gets the main-stem basin
+  (`mode: "union_upstream_kept_by_expected_area"`; `HYBRID_AREA_VALIDATION_MISMATCH` then still fires). `HYBRID_AREA_VALIDATION_MISMATCH` is unchanged.
+- **Terminal refinement failure no longer returns the whole terminal catchment when the outlet drains only part of it** (off-reach, or a headwater
+  terminal with no upstream catchments, snapped area below 0.9x the terminal area). The basin is delineated on an Earth Engine `dir` window centred on
+  the outlet (half-side `max(3 km, 2*sqrt(upa))`, grown 1.6x while the basin touches the edge, capped at 20 km) and flagged
+  `TERMINAL_CATCHMENT_LOCAL_WINDOW_USED`. If that fails too the previous behaviour stands (whole terminal) and the failure is in the trail.
+  `TERMINAL_CATCHMENT_REFINEMENT_FAILED` is kept either way.
+
+### Added
+
+- **Area-gated snap** (`snap_outlet_area_gated`, `merit_hybrid.snap_on_local_accum(area_gate=True)`, `merit_get_snap_reference(area_gate=True)`): with
+  an `expected_area_km2`, the hybrid snaps to the nearest stream cell within 1 km whose upstream area is within +/-10% of it (`snap_quality`
+  `"area_gated"`). If none qualifies the plain no-area snap is kept and `AREA_GATE_NO_MATCH` (plus `SNAP_UPA_DIFFERS_FROM_EXPECTED` when the kept snap is
+  more than 10% off) is raised; the search is never widened. The 30 km area-targeted scorer is untouched for the other tiers and is no longer used by
+  the hybrid.
+- The hybrid's own tier trail is exposed in the result as `data_provenance["hybrid_fallback_history"]` (a copy of `fallback_history`, with new
+  `outlet_assembly`, `outlet_centred_window` and `area_gated_snap` rows), so the reason a refinement failed survives the router replacing the field.
+- `scripts/eval/rerun_hybrid.py` and `scripts/eval/score_rerun.py`: offline (sockets blocked) re-run and scoring of the hybrid over the
+  camels-delineation-1 gauges from the campaign's cached Earth Engine windows and MERIT-Basins vectors.
+
+### Not done / follow-ups
+
+- `router.py` is untouched. It (a) still replaces the hybrid's `fallback_history` with its own trail, and (b) fetches the snap reference itself with
+  the old wide area scorer (`merit_get_snap_reference(..., expected_area_km2=...)`, no `area_gate`) and hands it to the hybrid, so a router call with
+  an expected area does not yet get the gated snap. After #15 merges: pass `area_gate=True` there (or let the hybrid fetch its own reference) and
+  append `data_provenance["hybrid_fallback_history"]` rows to the router trail.
+- Passing a gauge's published area automatically (the finding's P2 "pass it for gauges") lives where gauge resolution does, outside this package.
+
 ## [0.4.0] - 2026-11-06
 
 **Defaults changed in this release.** (1) Outside CONUS, `delineate_from_point(method="auto")` now starts with the MERIT-Basins hybrid

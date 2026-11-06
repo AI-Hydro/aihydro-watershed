@@ -1075,6 +1075,55 @@ def _fetch_global_streamflow(
     return None
 
 
+# Wall-clock bound on the precipitation fetch. The data layer's HTTP clients
+# (pygridmet / tiny_retriever) have no overall deadline, so an unreachable or
+# black-holed network blocks the caller indefinitely. The bound is generous
+# (a multi-decade GridMET pull is legitimately slow) and overridable with
+# ``AIHYDRO_PRECIP_FETCH_TIMEOUT_S``.
+_PRECIP_FETCH_TIMEOUT_S = 600.0
+
+
+def _precip_fetch_timeout_s() -> float:
+    import os
+    raw = os.environ.get("AIHYDRO_PRECIP_FETCH_TIMEOUT_S")
+    if raw:
+        try:
+            v = float(raw)
+            if v > 0:
+                return v
+        except ValueError:
+            pass
+        log.warning("ignoring invalid AIHYDRO_PRECIP_FETCH_TIMEOUT_S=%r", raw)
+    return _PRECIP_FETCH_TIMEOUT_S
+
+
+def _fetch_with_deadline(fn, timeout_s: float):
+    """Run ``fn()`` in a daemon thread and return its result, re-raising its
+    exception; raise ``TimeoutError`` if it has not finished in ``timeout_s``.
+
+    A blocked socket cannot be interrupted from Python, so on timeout the worker
+    is abandoned (daemon: it cannot hold the process open) rather than killed.
+    """
+    box: dict = {}
+
+    def _run():
+        try:
+            box["value"] = fn()
+        except BaseException as e:  # noqa: BLE001 - re-raised in the caller
+            box["error"] = e
+
+    t = threading.Thread(target=_run, name="precip-fetch", daemon=True)
+    t.start()
+    t.join(timeout_s)
+    if t.is_alive():
+        raise TimeoutError(
+            f"precipitation fetch did not complete within {timeout_s:g} s "
+            "(network unreachable or data service not responding)")
+    if "error" in box:
+        raise box["error"]
+    return box["value"]
+
+
 def _fetch_precipitation_data_bygeom(
     watershed_geom,
     start_date: str,
@@ -1112,12 +1161,15 @@ def _fetch_precipitation_data_bygeom(
 
     try:
         log.info("Fetching precipitation via aihydro_data auto-routing (global)")
-        result = aihydro_data.fetch(
-            variable="precipitation",
-            geometry=gdf,
-            start=start_date,
-            end=end_date,
-            # aggregation="basin_mean" is the default — spatial mean over the watershed
+        result = _fetch_with_deadline(
+            lambda: aihydro_data.fetch(
+                variable="precipitation",
+                geometry=gdf,
+                start=start_date,
+                end=end_date,
+                # aggregation="basin_mean" is the default — spatial mean over the watershed
+            ),
+            _precip_fetch_timeout_s(),
         )
         df = result.data
         if not isinstance(df, pd.DataFrame) or df.empty:

@@ -200,15 +200,51 @@ def _to_shapely(geometry: Any) -> Any:
     return geometry
 
 
+class SlopeUnavailableError(ValueError):
+    """The DEM's CRS or pixel spacing does not allow a metric slope.
+
+    ``slope_from_dem`` raises this instead of returning a number computed on
+    degrees (or on unit spacing). Callers must treat it as "no slope", never
+    fall back to the native grid.
+    """
+
+
+def _metric_spacing(dem: "xr.DataArray") -> tuple[float, float]:  # type: ignore[name-defined]
+    """Pixel size ``(dx, dy)`` in metres, or raise ``SlopeUnavailableError``."""
+    try:
+        from pyproj import CRS
+
+        crs = dem.rio.crs
+        if crs is None:
+            raise SlopeUnavailableError("DEM has no CRS; refusing to assume a metric grid")
+        crs = CRS.from_user_input(crs)
+        if not crs.is_projected:
+            raise SlopeUnavailableError(
+                f"DEM CRS {crs.to_string()} is not projected (spacing is in degrees); "
+                "reproject to a metric CRS (EPSG:5070 in CONUS, UTM elsewhere) before computing slope"
+            )
+        factor = float(crs.axis_info[0].unit_conversion_factor)
+        dx, dy = (abs(float(v)) for v in dem.rio.resolution())
+    except SlopeUnavailableError:
+        raise
+    except Exception as exc:  # unreadable CRS / resolution: no silent unit spacing
+        raise SlopeUnavailableError(f"DEM CRS or pixel spacing could not be determined ({exc})") from exc
+    dx, dy = dx * factor, dy * factor
+    if not (dx > 0 and dy > 0) or dx != dx or dy != dy or dx == float("inf") or dy == float("inf"):
+        raise SlopeUnavailableError(f"DEM pixel spacing is not usable (dx={dx}, dy={dy})")
+    return dx, dy
+
+
 def slope_from_dem(dem: "xr.DataArray") -> "xr.DataArray":  # type: ignore[name-defined]
     """Compute slope (degrees) from a DEM using numpy's gradient.
 
     Used when ``py3dep.get_map("Slope Degrees", …)`` is unavailable (i.e.
-    outside CONUS). The DEM is assumed to be reprojected to a metric CRS
-    so the gradient pixel-size is in metres; if it's not, the result is
-    still in degrees but represents a per-pixel slope rather than a true
-    metric slope. Callers that need the metric form should reproject the
-    DEM (e.g. to EPSG:5070 for CONUS, UTM elsewhere) before calling this.
+    outside CONUS). The DEM must already be in a projected, metric CRS
+    (EPSG:5070 for CONUS, UTM elsewhere): the gradient uses its pixel size in
+    metres. **Fails closed**: if the CRS is missing, geographic (spacing in
+    degrees) or the pixel size cannot be read, ``SlopeUnavailableError`` is
+    raised. It never returns a degrees-based or unit-spacing "slope" (such
+    values saturate towards 90 degrees and depend on pixel size).
     """
     import numpy as np
     import xarray as xr
@@ -218,18 +254,15 @@ def slope_from_dem(dem: "xr.DataArray") -> "xr.DataArray":  # type: ignore[name-
     # with only two spacing arguments only works on 2-D arrays.
     dem = _normalize_dem(dem)  # rename dims, squeeze band axis, set CRS
 
+    # Metric pixel size, or raise. Checked before any array work.
+    dx, dy = _metric_spacing(dem)
+
     arr = dem.values.astype("float64")
     # At this point arr must be exactly 2-D; guard just in case.
     if arr.ndim == 3:
         arr = arr[0]
     elif arr.ndim != 2:
         arr = arr.reshape(arr.shape[-2], arr.shape[-1])
-
-    # Pixel size in the DEM's native CRS (metres for metric projections)
-    try:
-        dx, dy = (abs(v) for v in dem.rio.resolution())
-    except Exception:
-        dx = dy = 1.0
 
     # np.gradient returns (d/dy, d/dx) when axis order is (y, x), which it
     # is for rioxarray-loaded rasters (y increases downward in pixel space,

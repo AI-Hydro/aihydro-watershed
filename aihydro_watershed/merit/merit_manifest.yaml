@@ -7,11 +7,13 @@ region_presets:
   south_asia:
     label: "South Asia (India and vicinity)"
     bbox: [60, 5, 100, 40]
-# Set AIHYDRO_MERIT_BASE_URL to mirror these paths on your lab server.
+# Download URLs, sizes and SHA-256 digests live in delineator_data_manifest.json
+# (pinned to delineator 2.2.4 / data v3); this file only describes the on-disk layout.
+# Set AIHYDRO_MERIT_BASE_URL to serve the same file names from a lab mirror (still hash-verified).
 #
 # Primary public sources:
 #   - https://www.reachhydro.org/home/params/merit-basins
-#   - https://mghydro.com/data/
+#   - https://mghydro.com/watersheds/data/
 
 level2:
   description: Global Pfafstetter level-2 basin index (required for basin lookup)
@@ -36,7 +38,7 @@ basin_template:
   flowdir:
     relative_dir: raster/flowdir_basins
     filename_glob: "*pfaf_{pfaf}*.tif"
-    download_url: "https://mghydro.com/watersheds/raster/flowdir{pfaf}.tif"
+    download_url: null  # see delineator_data_manifest.json
   accumulation:
     relative_dir: raster/accum_basins
     filename_glob: "*pfaf_{pfaf}*.tif"

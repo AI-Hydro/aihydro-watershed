@@ -21,7 +21,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "aihydro-watershed"
-version = "0.3.0"
+version = "0.4.0"
 description = "Watershed delineation + characterization — global pour-point delineation (NLDI + MERIT-Hydro), geomorphics, TWI, and watershed-scale hydrological signatures"
 requires-python = ">=3.10"
 license = "Apache-2.0"
@@ -56,6 +56,7 @@ dependencies = [
     "shapely>=2.0.0",
     "pyproj>=3.6.0",
     "affine>=2.4.0",
+    "requests>=2.31.0",                      # NLDI hydrolocation request (nldi_point.hydrolocation_comid)
 ]
 
 [project.optional-dependencies]
@@ -77,10 +78,10 @@ delineation = [
     "earthengine-api>=0.1.390",
 ]
 
-# Accurate MERIT-Basins hybrid tier (adds upstream-delineator)
+# Retained alias. The MERIT-Basins hybrid tier (default global delineation) needs no extra
+# package: its data is downloaded on demand, SHA-256 verified, from the pinned manifest.
 delineation-full = [
     "aihydro-watershed[delineation]",
-    # upstream-delineator is installed from GitHub; see README install notes.
 ]
 
 # Watershed characterization + signatures (geomorphics, TWI, baseflow, FDC)
@@ -117,6 +118,10 @@ Documentation = "https://github.com/AI-Hydro/AI-Hydro/wiki"
 Repository    = "https://github.com/AI-Hydro/aihydro-watershed"
 Issues        = "https://github.com/AI-Hydro/aihydro-watershed/issues"
 
+# Offline signatures from local files (delineation stays in the Python API).
+[project.scripts]
+aihydro-watershed = "aihydro_watershed.cli:main"
+
 # ── Plug-in entry point — auto-register watershed_* MCP tools when both this
 # package and aihydro-tools are installed (wired in Wave A3). ────────────────
 # [project.entry-points."aihydro.tools"]
@@ -128,7 +133,7 @@ where = ["."]
 include = ["aihydro_watershed*"]
 
 [tool.setuptools.package-data]
-"aihydro_watershed.merit" = ["*.yaml"]
+"aihydro_watershed.merit" = ["*.yaml", "*.json"]
 
 # ── Pytest ─────────────────────────────────────────────────────────────────
 [tool.pytest.ini_options]

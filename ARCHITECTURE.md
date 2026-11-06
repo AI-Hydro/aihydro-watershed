@@ -85,7 +85,9 @@ aihydro_watershed/
 │
 ├── merit/                   MERIT-HYDRO DATA MANAGEMENT
 │   ├── merit_manager.py     Tile inventory, download, local cache (~/.aihydro/merit/)
-│   ├── merit_download.py    HydroSHEDS / MERIT-Hydro tile downloader
+│   ├── verified_fetch.py    SHA-256-pinned download + verification of MERIT region files
+│   ├── basins_store.py      basins##.db reader (unit-catchment topology, geometries, uparea)
+│   ├── delineator_data_manifest.json  pinned file digests, sizes, licence (delineator 2.2.4)
 │   ├── merit_map_layers.py  GeoDataFrame overlays (river network, basins)
 │   ├── merit_manifest.yaml  Tile URL catalogue (5° tiles, global coverage)
 │   ├── region_presets.py    Named region bboxes for batch prefetch
@@ -261,3 +263,19 @@ one geometry realisation only.
   a `ref/gages/<n>` PID comes only from `resolve_geoconnex_gage` (one GET, 5 s,
   cached at `$AIHYDRO_HOME|~/.aihydro/cache/place/geoconnex.json`) and is never
   constructed. No PID available: flag `geoconnex_unresolved`. Minting does no I/O.
+
+## NLDI request form and outlet ambiguity (camels-delineation-1, 2026-11-05)
+
+Decision record. Evidence: `docs/vision-2040/evidence/camels-delineation-1/` (outside this repo).
+
+- **Request form.** We do not call pynhd's `comid_byloc` for the nearest-flowline lookup. pynhd 0.19.4 `NLDI.__byloc` formats `POINT({lon:.6f} {lat:.6f})` and its
+  HTTP stack puts `+` on the wire; the USGS NLDI service returns 502 for that form at some points (08155200: 6/6 502 vs 8/8 200 with `%20`). `nldi_point.hydrolocation_comid` sends `%20`.
+  Separately the service has a transient upstream read-timeout fault that returns 502 in either form at some points (02298608, about half of requests), handled by retry/back-off.
+  Upstream issue (not filed anywhere, by instruction): pynhd should percent-encode the WKT space, and the NLDI service should accept `+` or return 400, not 502. Installed site-packages are not patched.
+- **Outlet ambiguity.** The pour point is the caller's. A nearest reach draining < 80 km2 may be a tributary reach or the head of a larger stem; the tool no longer decides.
+  It returns the nearest reach with `NLDI_OUTLET_AMBIGUOUS` and the candidate COMIDs (areas included). Moving downstream needs `expected_area_km2` or `allow_downstream_expansion=True`, and only to a candidate larger than the nearest reach.
+  `NLDI_OUTLET_AMBIGUOUS` (quality flag): the nearest reach drains < 80 km2, so the outlet may be a tributary reach or a larger stem; the returned basin is the nearest reach's and `outlet_ambiguity` lists the alternatives.
+  Side effect: map-click quick delineation now returns the small reach's basin plus the flag, not the former larger stem.
+- **Not changed.** CAMELS 14158500's WRONG_BASIN is a reference defect (CAMELS' own list gives a 48% size error; the NLDI area is within 3% of the USGS area), not a tool fault.
+  Using the NLDI `nwissite/USGS-<id>` feature when a gauge id is known is already the path of `delineate_watershed(gauge_id)`; `delineate_from_point` takes no gauge id and was not extended here.
+

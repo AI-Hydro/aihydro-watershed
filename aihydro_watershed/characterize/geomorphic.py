@@ -20,6 +20,8 @@ import os
 from typing import Tuple, Dict, Optional, Union
 import numpy as np
 
+from aihydro_watershed.characterize._dem import SlopeUnavailableError, _metric_spacing
+
 try:
     import geopandas as gpd
     from shapely.geometry import Point, LineString
@@ -50,7 +52,7 @@ def _metric_crs_for_geom(geom) -> str:
     lat, lon = c.y, c.x
     if -126 <= lon <= -65 and 23 <= lat <= 50.5:
         return "EPSG:5070"
-    zone = int((lon + 180) // 6) + 1
+    zone = int((lon + 180) // 6) % 60 + 1
     return f"EPSG:{32600 + zone if lat >= 0 else 32700 + zone}"
 
 
@@ -269,6 +271,10 @@ def extract_geomorphic_parameters(
             "pct_sinks": pct_sinks,
         }
         
+        # Surface "relief unavailable" so a consumer can tell it from "not computed".
+        if relief_metrics.get('flag'):
+            geomorph_attrs["relief_flag"] = relief_metrics['flag']
+
         # Units dictionary
         geomorph_units = {
             "DA_km2": "km²",
@@ -466,17 +472,23 @@ def _compute_relief_metrics(
         else:
             # Project to UTM zone derived from the DEM centroid so the
             # outlet-pixel index math below uses metric coordinates.
+            # Fail closed: without a metric grid the outlet-index math, cell size, Rh/Rp and
+            # slope would all be in degrees. The outer handler returns NaN plus a flag.
+            lat0 = float(dem.y.mean()) if hasattr(dem, "y") else outlet_lat
+            lon0 = float(dem.x.mean()) if hasattr(dem, "x") else outlet_lon
+            zone = int((lon0 + 180) // 6) % 60 + 1
+            epsg = 32600 + zone if lat0 >= 0 else 32700 + zone
             try:
-                lat0 = float(dem.y.mean()) if hasattr(dem, "y") else outlet_lat
-                lon0 = float(dem.x.mean()) if hasattr(dem, "x") else outlet_lon
-                zone = int((lon0 + 180) // 6) + 1
-                epsg = 32600 + zone if lat0 >= 0 else 32700 + zone
                 dem_proj = dem.rio.reproject(f"EPSG:{epsg}")
-            except Exception:
-                # Last resort — keep native CRS; downstream math may be off
-                # but the function still returns rather than crashing.
-                dem_proj = dem
-        
+            except Exception as _proj_exc:
+                raise SlopeUnavailableError(
+                    f"DEM reprojection to UTM (EPSG:{epsg}) failed ({_proj_exc}); "
+                    "refusing to compute relief metrics on the native grid"
+                ) from _proj_exc
+
+        # Metric pixel size, or SlopeUnavailableError (never a 30 m default)
+        _cell_dx, _cell_dy = _metric_spacing(dem_proj)
+
         # Get outlet elevation
         outlet_pt = gpd.GeoSeries(
             [Point(outlet_lon, outlet_lat)], crs="EPSG:4326"
@@ -517,11 +529,7 @@ def _compute_relief_metrics(
         # Compute slope — chunked path for large DEMs to avoid OOM.
         # xrspatial.slope uses a 3×3 neighbourhood (Horn 1981), so
         # kernel_pad=1 is correct for the chunked applier.
-        try:
-            res = dem_proj.rio.resolution()
-            _cell_m = abs(float(res[0]))
-        except Exception:
-            _cell_m = 30.0  # default 30 m if resolution unavailable
+        _cell_m = _cell_dx
 
         if dem_proj.size > _SLOPE_CHUNK_TRIGGER:
             # Build a projected watershed polygon in the DEM's native CRS so
@@ -609,6 +617,7 @@ def _compute_relief_metrics(
     except Exception as e:
         print(f"    Warning: Relief metrics calculation failed: {e}")
         return {
+            'flag': f"relief_unavailable:{type(e).__name__}: {e}",
             'H_m': np.nan,
             'Rh': np.nan,
             'Rp': np.nan,
@@ -637,6 +646,16 @@ def _compute_stream_metrics_approximate(
         
         H_m = relief_metrics.get('H_m', 0)
         Lb_km = relief_metrics.get('Lb_m', np.nan)
+
+        # Relief unavailable (NaN H_m): max(0.5, min(nan, 5.0)) would turn it into a made-up
+        # drainage density of 0.5 and with it D, C, Rf, Cf. Everything derived from H_m is NaN.
+        if H_m is None or not np.isfinite(H_m):
+            MCh = 1.5 * Lb_km if (Lb_km is not None and np.isfinite(Lb_km)) else np.nan
+            out = {k: np.nan for k in [
+                'D_km_per_km2', 'Rn', 'C_km2_per_km', 'Rf', 'Cf_per_km2', 'Cs', 'Slope_10_85'
+            ]}
+            out['MCh_km'] = MCh
+            return out
         
         # Drainage density approximation (increases with relief and decreases with area)
         D_km_per_km2 = 0.5 + (H_m / 1000.0)  # Rough approximation
@@ -837,6 +856,9 @@ def extract_geomorphic_parameters_result(
         # Convert all values to JSON-serializable floats
         clean = {}
         for k, v in params.items():
+            if isinstance(v, str):          # relief_flag: keep the reason, do not null it
+                clean[k] = v
+                continue
             try:
                 fv = float(v)
                 clean[k] = fv if np.isfinite(fv) else None

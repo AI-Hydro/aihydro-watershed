@@ -137,7 +137,9 @@ def _get_nldi_basin_for_gauge_ex(nldi: NLDI, gauge_id: str):
     except ToolError as e:
         raise e from first_error
     lat, lon = loc.lat, loc.lon
-    comid = int(nldi.comid_byloc((lon, lat)).comid.iloc[0])
+    from aihydro_watershed.delineation.nldi_point import hydrolocation_comid
+
+    comid = hydrolocation_comid(lon, lat).comid
     gdf = nldi.get_basins(comid, fsource="comid")
     return _normalize_nldi_basins(gdf), "comid_fallback", comid
 

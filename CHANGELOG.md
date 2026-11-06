@@ -1,6 +1,159 @@
 # Changelog — aihydro-watershed
 
-## [0.3.0] - unreleased (2026-10-30) BREAKING-VALUE
+## [0.4.0] - 2026-11-06
+
+**Defaults changed in this release.** (1) Outside CONUS, `delineate_from_point(method="auto")` now starts with the MERIT-Basins hybrid
+(`merit_basins_hybrid`) instead of `merit_gee`; the first call per region downloads pinned, SHA-256-verified data (see the disclosure notes below;
+`merit_manager.DEFAULT_AUTO_STAGE_POLICY = "never"` makes it confirm-first). (2) NLDI no longer moves the outlet downstream on its own: with no
+`expected_area_km2` and a nearest reach draining < 80 km2, it returns that reach's basin with `outlet_ambiguity` and the `NLDI_OUTLET_AMBIGUOUS` flag
+(also written to the NLDI row of `fallback_history`); pass `allow_downstream_expansion=True` to opt in to the old behaviour. Other behaviour changes below:
+`slope_from_dem` fails closed, and the MERIT shapefile layout is no longer read.
+
+This release merges aihydro-watershed PRs #11, #12, #7, #10, #8, #9 and #13. The sections below keep each PR's notes, in merge order.
+
+### Changed
+
+- **MERIT-Basins hybrid is the default global delineation tier.** `delineate_from_point(method="auto")` outside CONUS tries
+  `merit_basins_hybrid` first (before `merit_gee` / `local_merit` / raw DEM, which remain as fallbacks). `method="merit_hybrid"`
+  (alias `merit_basins`) forces it anywhere, including CONUS, so the CAMELS evaluation can score it; in CONUS `auto` still starts with NLDI.
+  The tier is attempted once per call; the trail row is `merit_basins_hybrid` (`succeeded` / `failed`) and `method_used` reads `merit_basins_hybrid`.
+- Data source replaced: the unhashed Google Drive download, the runtime `pip install gdown` and the `git clone` of delineator into `/tmp` are gone
+  (`merit/merit_download.py` reduced to a deprecated shim). Per-region files come from mghydro.com's `delineator` 2.2.4 / data v3 set, pinned by SHA-256 and size in
+  `merit/delineator_data_manifest.json`, streamed to `.part` and installed only if the digest matches. A mismatch raises
+  `MERIT_ASSET_INTEGRITY_FAILED` (fail closed); an on-disk file that no longer matches is refused. `megabasins.db` (not served by mghydro.com) is pinned by
+  the git blob SHA-1 at the v2.2.4 tag, and its SHA-256 is recorded on first verification and enforced afterwards.
+  The old shapefile layout (`cat_pfaf_##` / `riv_pfaf_##`) is no longer read; re-stage with `merit_ensure_basins_region`.
+- Vector assembly reads `basins##.db` (SQLite `nextdown` topology, `where`-filtered geometries) instead of loading a whole regional shapefile;
+  the assembled area is checked against MERIT-Basins' own `uparea` (`VECTOR_ASSEMBLY_UPAREA_MISMATCH` above 2%).
+- Terminal-catchment refinement reads a small window: the staged `flowdir##.tif` if present, otherwise one Earth Engine `dir` request limited to 40 km
+  (larger terminals keep the whole unit catchment and raise `TERMINAL_REFINEMENT_WINDOW_TOO_LARGE`). An outlet that could not be snapped is no longer
+  refined from an off-channel point (`TERMINAL_CATCHMENT_REFINEMENT_SKIPPED_UNSNAPPED`).
+- Snapping uses the staged `accum##.tif` when present. Otherwise the Earth Engine reference (MERIT Hydro v1.0.1, against v0.7-based vectors) is used and
+  the result is flagged `MERIT_VERSION_MIX`; `data_provenance.version_consistency` records the dataset of each step.
+- `MeritDataManager` flowdir staging (`ensure_routing_region`, `auto_stage_flowdir`) now uses the same verified download (the old mghydro `raster/` URL was dead).
+- `AIHYDRO_HOME` is honoured for the MERIT data root and the auto-stage config (`config.json`); `AIHYDRO_MERIT_AUTO_STAGE` overrides the policy.
+  The Earth Engine window cache path in `merit_flowdir_pipeline` is unchanged here.
+
+**Changed: review round 1 of PR #11**
+
+- **Disclosure.** A call that downloads data flags `MERIT_AUTO_STAGED` and lists `data_provenance.downloaded` (`name`, `bytes`, `url`, `sha256`) and
+  `acquisition_policy`. First-call cost per region (basins + rivers, pinned sizes): min 14 MB, median 530 MB, max 2015 MB over 60 regions
+  (North America: 60 / 502 / 916 MB); +52.9 MB for the level-2 index on the first call ever. The default policy is the single constant
+  `merit_manager.DEFAULT_AUTO_STAGE_POLICY = "tiered"` (`"never"` = confirm-first). Vector staging checks for 2x the pending bytes free on disk.
+- **Download robustness.** An integrity mismatch writes a negative-cache marker (file, observed digest, time) and refuses automatic retry for 24 h
+  with `MERIT_ASSET_INTEGRITY_FAILED` (surfaced through staging, never as `MERIT_BASINS_NOT_STAGED`; `force_retry=True` overrides). `.part` files are
+  resumed with HTTP Range when the server answers 206. Each destination has a lock file and a `mkstemp` partial file so concurrent first downloads cannot interleave.
+- **Pins.** `scripts/gen_delineator_manifest.py` regenerates the manifest deterministically from `constants.py` at the v2.2.4 tag commit
+  (`c56095e8625d1ee3534217b0462a8ed43027c77c`; `source.tag_commit`, `source.constants_blob_sha1`, `source.hashes_file` is the commit URL). An unmodified
+  copy of that file (MIT, with its LICENSE) is vendored under `tests/fixtures/delineator_v2.2.4/`; a test checks the manifest against it.
+- **Sidecar.** The provenance fast path also checks `st_ino` and `ctime_ns`; `megabasins.db` and every `.db` under 200 MB are always re-hashed.
+  A tamper that restores size and mtime is caught.
+- `BasinsStore.locate` resolves several hits deterministically (nearest, then max `uparea`, then lowest comid). `geometries()` reports ids without a polygon
+  (`VECTOR_ASSEMBLY_INCOMPLETE`).
+- The licence string and `data_provenance.share_alike` state "share-alike" explicitly.
+- `basins_region_cache` says "legacy layout found, not read; re-stage with ..." when the shapefile layout exists. `configure_delineator_env` is removed;
+  `delineator_ready` now means verified `basins##.db` + `rivers##.db` (aihydro-tools `merit_ensure_basin` still calls it).
+  `merit/merit_download.py` is kept only as a deprecated shim (`ensure_level2_index`, `download_river_shapefile`, `download_catchment_shapefile`) because
+  aihydro-tools `scripts/install_merit_minimal.py` and a tools test import it; it stages the verified files.
+- `tests/nonet.py`: a `-p nonet` pytest plugin that blocks non-loopback network access (`PYTHONPATH=tests pytest -p nonet ...`).
+
+- `fetch_merit_gee_bbox`: `scale_m` is deprecated and ignored (a `DeprecationWarning` if passed); the returned window is `bbox` rounded out to whole MERIT cells and clamped to the
+  asset's extent (lon -180..180, lat -60..85; no antimeridian wrap). New `native_window()`.
+- Area, from the live run above (14 gauges, 14158500 excluded for the CAMELS fabric/USGS inconsistency): MERIT polygon vs `area_gages2` mean +0.32%, median -0.06%; vs the CAMELS
+  polygon mean -1.78%, with the error correlating -0.85 with the fabric/`area_gages2` ratio. The polygon area is 0.08-0.19% above MERIT's own UPA at the snapped cell, and equals the pixel-area sum
+  and the WGS84 geodesic area to under 0.1% (unit test). No bias correction was added.
+
+- `delineate_from_point`: a `ToolError` raised after one or more tiers were tried now carries `details["fallback_history"]`, the same
+  list a successful result returns (it reaches `to_dict()` and so the error envelope). Before, a total failure kept only the last
+  tier's message. A history already set on the error is not overwritten; a failure before any tier ran (invalid coordinates) is unchanged.
+  The NLDI tier now appends a row for failed, skipped and served, and the raw-DEM tier a `served` (or `rejected`/`failed`) row, so a result
+  names the tier that served it; a result returned early by NLDI carries the history. An unexpected (non-`ToolError`) exception escaping the
+  body keeps the trail as `exc.fallback_history`.
+  The body moved into a private `_delineate_from_point`; the public signature and behaviour on success are unchanged.
+
+**Changed: BREAKING-BEHAVIOUR): `slope_from_dem` fails closed**
+
+Audit C8 latent sibling (`docs/vision-2040/findings/slope-mean-diagnosis-2026-11-05.md`, section 6).
+
+- `aihydro_watershed.characterize._dem.slope_from_dem` now raises the new `SlopeUnavailableError` (a `ValueError`) unless the DEM is in a projected CRS with a readable pixel size. It refuses a missing CRS, a geographic CRS (spacing in degrees) and an unreadable or non-positive resolution. Before, a DEM still in EPSG:4326 (the callers keep the native CRS when the EPSG:5070/UTM reprojection fails, with only a warning) produced a "slope" from metres of rise per degree of run, close to 90 degrees everywhere, and a resolution that could not be read silently became a spacing of 1.0. Pixel size in a non-metre projected CRS (feet) is now converted to metres.
+- Valid input (a metric grid) gives the same values as before. The returned DataArray still carries `units="degrees"`.
+- `compute_twi` (`characterize/twi.py`): the two "keeping native CRS" fallbacks (EPSG:5070 and UTM reprojection failure) now raise (`SlopeUnavailableError`, surfaced as `ValueError("Failed to compute TWI: ...")`) instead of running flow accumulation, slope and the specific-catchment-area term on a native degree grid.
+- **`geomorphic._compute_relief_metrics` (and so `Ls_pct`, `Rh`, `Rp`) was NOT unaffected, contrary to the earlier diagnosis.** When the UTM reprojection failed it kept the native CRS and, when the resolution could not be read, defaulted the cell size to 30.0 m, so a 7.2 % slope read `mean_slope_pct = 564648.6` and `Rh`/`Rp` were in degrees. Now it requires a metric grid via `_metric_spacing` (no 30 m default) and returns NaN for the relief metrics with a `flag` of the form `relief_unavailable:<reason>` when reprojection or spacing fails. On a working metric grid the values are unchanged. The earlier statement "lsh `Ls_pct` ... is a correct percent" holds only when the reprojection succeeded.
+- **Propagation.** `_compute_stream_metrics_approximate` turned a NaN `H_m` into a drainage density of 0.5 (`max(0.5, min(nan, 5.0))`) and so into made-up `D_km_per_km2`, `Rn`, `C_km2_per_km`, `Rf`, `Cf_per_km2`; they (and `Cs`, `Slope_10_85`) are now NaN when relief is not finite (`MCh_km` depends on `Lb` only). The relief `flag` is surfaced as `relief_flag` in the output of `extract_geomorphic_parameters` and `..._result` (key present only when relief was unavailable), so "relief unavailable" can be told from "not computed".
+- **UTM zone number** is now `% 60 + 1` (`geomorphic._metric_crs_for_geom`, `_compute_relief_metrics`, `twi.py`): longitude +180 gave zone 61 (invalid EPSG).
+- Tests: `tests/test_relief_fail_closed.py` (the reviewer's repro now gives NaN + flag; the metric path still gives the right slope; unreadable resolution does not default to 30 m; zone wraps at 60); `tests/test_twi_fail_closed.py` (both branches raise, cause is `SlopeUnavailableError`); `tests/test_slope_from_dem.py` (analytic plane gives 1000 t within 1 % at 10, 30, 73 and 90 m; resampling invariance; UTM at two latitudes; feet CRS; geographic, unknown-CRS and unreadable-resolution inputs raise; units metadata).
+
+- **Removed names** (replaced by the SHA-256-verified `merit/verified_fetch.py`, `merit/basins_store.py` and `delineation/merit_hybrid.py`).
+  From `delineation/merit_flowdir_pipeline.py`: `merit_load_catchment_topology`, `merit_identify_terminal_catchment`, `merit_traverse_upstream_catchments`
+  (and the shapefile-field constants they used). From `MeritDataManager`: `_try_download`, `_try_download_with_progress`, `_estimate_flowdir_size_bytes`
+  (module-level helper), `configure_delineator_env`. Callers importing them must move to the hybrid / verified-fetch API
+  (aihydro-tools `merit_ensure_basin` still imports the deprecated `merit/merit_download.py` shim).
+- **`auto` order, global:** MERIT-Basins hybrid, then local MERIT routing when a regional flowdir is already cached (it runs before Earth Engine), else `merit_gee`
+  (after a `merit_gee` failure, local MERIT is retried, staging the flowdir first outside CONUS), then raw DEM.
+
+### Added
+
+- `merit/verified_fetch.py`, `merit/basins_store.py`, `delineation/merit_hybrid.py`; `MeritDataManager.auto_stage_vectors`, `ensure_level2_index`, `verified_asset`.
+- Result field `data_provenance` (file name, SHA-256, size, URL of every file used; licence; pinned manifest version; version consistency).
+  The result `license` is now the non-commercial MERIT-Basins/mghydro/MERIT Hydro statement.
+- `tests/test_merit_hybrid_default.py` (35 offline tests on a synthetic fixture); `tests/conftest.py` sends `HOME`/`AIHYDRO_HOME` to a temp dir and blocks downloads.
+
+Live evidence for this section: `docs/evidence/merit-gee-native-grid-2026-11/` (README lists what was not recorded).
+
+- Quality flag `NLDI_OUTLET_AMBIGUOUS`: the nearest NHDPlus reach drains < 80 km2, so the point may sit on a tributary reach or on a larger stem; the basin returned is the nearest reach's, candidates are in `outlet_ambiguity`.
+- `requests>=2.31.0` declared as a dependency.
+- `nldi_point.hydrolocation_url`, `hydrolocation_comid`, `HydrolocationHit`, `quick_comid_resolution`.
+
+- `aihydro-watershed` console script with one subcommand, `signatures`: the CAMELS-style hydrological signatures from a local daily
+  streamflow CSV, a basin polygon (GeoJSON) and a drainage area, offline (`precipitation="skip"`; `runoff_ratio` / `stream_elas` are null).
+  A new entry point ships only with a release (bump needed). Delineation stays in the Python API. Input handling is explicit: negative discharge is refused, `--na-values` (default `-999,-9999`) are read as missing,
+  duplicate dates keep the first row, and the JSON result carries a `cli` block (`n_missing`, `n_duplicate_dates`, `duplicate_dates`, absent calendar days, `warnings`).
+- `install-alone` CI workflow: builds the wheel, installs only it plus its PyPI dependencies in a fresh venv outside the checkout, and runs
+  that CLI task with every socket connection refused (AGU ecosystem audit C1).
+
+### Fixed
+
+- `method="merit_gee"` failed for 13 of 20 CAMELS pilot gauges with Earth Engine HTTP 400 "User memory limit exceeded" (12) or HTTP 503
+  "memory capacity exceeded" (1). The raster request was `getDownloadURL` with `crs="EPSG:4326"`, `scale=92.77` and `.clip(rectangle)`, which makes Earth Engine
+  resample onto a grid 0.004% off MERIT's native 3 arc-second cell; it failed at the first window expansion (about 32 km half-side). The request is now
+  MERIT's own grid (`crs_transform` + `dimensions`, whole cells, no clip, no region). Live: that request succeeded on gauge 01547700 at 32, 51, 64 and 82 km
+  half-side (4.1M cells) where the old one failed from 32 km; on the 16 pilot gauges 15 return a polygon (05495000 hits the window cap). Largest window verified live: 4.1M cells.
+- Earth Engine is initialised once per process, thread-safely (was every fetch; the API discovery document was 64% of pilot traffic). `reset_ee()` forces re-initialisation after a credentials or project change.
+- A basin needing more than `MERIT_GEE_MAX_WINDOW_CELLS` (4.5M cells) raises `MeritGeeWindowLimit` ("MERIT_GEE_WINDOW_LIMIT: ...") before any request instead of an Earth Engine
+  memory error; the router records `MERIT_GEE_WINDOW_LIMIT` as the fallback reason. The 4.5M value was not run live (4.1M is the largest verified; above that is untested).
+- `snap_outlet_on_merit` normalised its "nearest stream" score by the whole window's maximum UPA, so the snapped cell could change when the adaptive window grew. It now normalises
+  by the candidates inside the search radius.
+- Every returned (and every cached) GeoTIFF is checked against the requested native window (shape and transform); a mismatch raises on fetch and discards a cache entry.
+  The cache key carries `"grid": "merit-native-v1"` and no longer includes `scale_m`, so old resampled entries are not reused.
+- `merit_flowdir_pipeline` created and used `~/.aihydro/cache/...` at import, ignoring `AIHYDRO_HOME`; `merit_manager` read `~/.aihydro/config.json` and defaulted its
+  root to `~/.aihydro/merit` the same way. Both now use `$AIHYDRO_HOME` (default `~/.aihydro`); the cache directory is created on first use. Both use the single shared helper `aihydro_watershed/_paths.py:aihydro_home` (from #11).
+
+- **NLDI `hydrolocation` request form (CAMELS pilot, 11/20 gauges got HTTP 502).** pynhd 0.19.4 (`NLDI.comid_byloc`) sends `coords=POINT(lon lat)`
+  with the space encoded as `+`. The USGS service answers some points in that form with 502 (CAMELS 08155200: 502 in 6/6 `+` requests, 200 in 8/8
+  `%20` requests, same session; body: "Error executing process ... Read timed out (read timeout=5)", `upstream_status` 400). `nldi_point.hydrolocation_comid`
+  now builds the `%20` request itself (used by the snap, COMID resolution, point delineation and the gauge COMID fallback), retries 5xx / 429 /
+  connection errors with back-off (3, 8, 15 s; honours `Retry-After`) and raises `NLDI_UNAVAILABLE` carrying the HTTP status and host, or
+  `NLDI_NOT_FOUND`, instead of a geopandas "no active geometry" error. The service also has a separate transient fault (upstream 5 s read timeout, about half of requests
+  for 02298608 even in the `%20` form), which the retries absorb but cannot remove. See ARCHITECTURE.md "NLDI request form and outlet ambiguity".
+- **Latency bound.** Our NLDI request loop has a total deadline of 90 s per router NLDI tier call (`nldi_deadline`), and an outage is remembered for
+  60 s once two consecutive lookups have exhausted their retries on transient failures (no response, 429, 5xx; a 4xx, a deadline spent before any request, or any HTTP 200 never counts or resets the count), during which `hydrolocation_comid` fails immediately (`NLDI_UNAVAILABLE`) so repeated calls fall through to the next tier. Worst case: one NLDI tier call
+  spends at most about 90 s in hydrolocation requests (a request started near the limit is capped to the time left, minimum 1 s) before `NLDI_UNAVAILABLE`; `delineate_from_point` has up to two NLDI tiers
+  (expected-area, then quick), so about 180 s worst case, and the second is skipped by the memo after the first failure. Without the deadline the worst case was 4 x 30 s + 26 s back-off = 146 s per call.
+  A lookup made outside a router tier (worker threads, snap) gets the same 90 s cap. Every `get_basins` wait in the NLDI delineation path is abandoned at the deadline (`NLDI_UNAVAILABLE`; remaining candidates skipped) and runs on at most 4 shared daemon threads, failing fast with `NLDI_UNAVAILABLE` when all are hung. A lookup counts toward the outage streak only if its last attempt was transient, and a 4xx resets the streak. pynhd's navigation calls keep pynhd's timeouts.
+- **No silent downstream jump (CAMELS 10336660: 29.8 km2 gauge returned a 1414 km2 basin, x43.6).** With no `expected_area_km2` and a nearest reach draining
+  < 80 km2, NLDI point delineation used to walk 30 km downstream and keep the largest basin. It now returns the nearest reach's basin, adds the
+  `NLDI_OUTLET_AMBIGUOUS` quality flag and `outlet_ambiguity` (selected COMID, candidate downstream COMIDs with areas, how to resolve). The outlet moves downstream only with
+  `allow_downstream_expansion=True` (new argument of `delineate_from_point` and `delineate_nldi_at_point`; the result then says `outlet_moved_downstream`).
+  `resolve_comid_for_quick` keeps its signature (new keyword) and its default behaviour changes accordingly.
+
+- The precipitation fetch in `extract_hydrological_signatures` now has a wall-clock bound (default 600 s, `AIHYDRO_PRECIP_FETCH_TIMEOUT_S`
+  to override). Before, an unreachable network blocked the caller indefinitely inside the data layer's HTTP client; now the fetch fails with
+  "precipitation fetch did not complete within N s (network unreachable or data service not responding)" in the precipitation provenance record,
+  and the signatures that need precipitation are reported as unavailable, as for any other fetch failure.
+- `tests/test_signatures_offline.py`: the two tests that hung without a network now pass `precipitation="skip"`, and an autouse fixture
+  makes any precipitation fetch in that module fail loudly.
+
+## [0.3.0] - 2026-10-30 BREAKING-VALUE
 
 Version 0.3.0, not 0.2.2: a `<0.3` pin on an installed 2.8.4 would otherwise take these changed values.
 

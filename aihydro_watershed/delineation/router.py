@@ -23,6 +23,7 @@ Method = Literal[
     "merit_gee",
     "local_merit",
     "merit_basins",
+    "merit_hybrid",
     "dem_raw_fallback",
     "fast",
     "small_catchment",
@@ -82,10 +83,15 @@ _SOURCES_MERIT = [
     DataSource(
         name="MERIT-Basins",
         url="https://www.reachhydro.org/home/params/merit-basins",
+        citation="@article{Lin2019MERITBasins}",
     ),
     DataSource(
-        name="MERIT Hydro regional flow-direction rasters",
-        url="https://mghydro.com/watersheds/raster/",
+        name="MERIT-Basins / MERIT Hydro regional files (mghydro.com, SHA-256 pinned to delineator 2.2.4)",
+        url="https://mghydro.com/watersheds/data/",
+    ),
+    DataSource(
+        name="Heberger (2025) hybrid raster and vector delineation",
+        url="https://mghydro.com/pages/Heberger_delineation_2025.pdf",
     ),
 ]
 
@@ -422,6 +428,16 @@ def _attach_workflow_steps(
     return result
 
 
+def _with_trail(result: HydroResult, history: list[dict[str, Any]], method: str, outcome: str, reason: str) -> HydroResult:
+    """Append the winning tier's row to ``history`` and carry the whole history on a result that returns early."""
+    history.append({"method": method, "outcome": outcome, "reason": reason})
+    try:
+        result.data["fallback_history"] = list(history)
+    except Exception:  # pragma: no cover - data is a dict on every tier
+        pass
+    return result
+
+
 def delineate_from_point(
     lat: float,
     lon: float,
@@ -430,6 +446,7 @@ def delineate_from_point(
     method: Method = "auto",
     verbose: bool = False,
     name: str | None = None,
+    allow_downstream_expansion: bool = False,
 ) -> HydroResult:
     """
     Delineate a watershed from a pour point (WGS84 decimal degrees).
@@ -442,8 +459,12 @@ def delineate_from_point(
         Prior drainage area for validation / adaptive snapping. In CONUS, a
         value below 5 km2 sends ``auto`` to the small-catchment tier first.
     method : str
-        ``auto`` (NLDI in CONUS, MERIT GEE globally), ``nldi``, ``merit_gee``,
-        ``local_merit``, ``merit_basins``, ``dem_raw_fallback``, or
+        ``auto`` (NLDI in CONUS; globally the MERIT-Basins hybrid first, then local MERIT
+        routing when a regional flowdir is cached, else ``merit_gee`` (which falls back to
+        local MERIT after staging), then raw DEM), ``nldi``, ``merit_gee``,
+        ``local_merit``, ``merit_hybrid`` (alias ``merit_basins``; MERIT-Basins vector
+        assembly with terminal-catchment refinement, also usable in CONUS),
+        ``dem_raw_fallback``, or
         ``small_catchment`` (CONUS culvert-scale catchments on USGS 3DEP 10 m
         with an embankment notch; see
         :mod:`aihydro_watershed.delineation.small_catchment`). ``fast`` is an
@@ -451,7 +472,48 @@ def delineate_from_point(
         Without an expected area, ``auto`` in CONUS trusts NLDI, which returns
         whole NHDPlus catchments; for culverts pass ``expected_area_km2`` or
         ``method="small_catchment"``.
+    allow_downstream_expansion : bool
+        NLDI, no expected area, nearest reach draining < 80 km2: by default the
+        nearest reach's basin is returned with ``outlet_ambiguity`` (candidate
+        downstream COMIDs and areas) and the ``NLDI_OUTLET_AMBIGUOUS`` flag. True
+        moves the outlet downstream to the largest nearby basin (explicit consent).
     """
+    trail: list[dict[str, Any]] = []
+    try:
+        return _delineate_from_point(
+            lat, lon, expected_area_km2=expected_area_km2, method=method,
+            verbose=verbose, name=name, _trail=trail,
+            allow_downstream_expansion=allow_downstream_expansion,
+        )
+    except ToolError as exc:
+        # A failed delineation keeps the tiers it tried: the same ``fallback_history`` a success returns,
+        # carried in ``details`` so it reaches the error envelope. Never overwrites a history already set.
+        if trail and "fallback_history" not in exc.details:
+            exc.details = {**exc.details, "fallback_history": list(trail)}
+        raise
+    except Exception as exc:
+        # An unexpected exception keeps the trail too, as an attribute a consumer can read
+        # (``exc.fallback_history``); the exception type and message are untouched.
+        if trail:
+            try:
+                exc.fallback_history = list(trail)  # type: ignore[attr-defined]
+            except Exception:  # pragma: no cover - an exception type that refuses attributes
+                pass
+        raise
+
+
+def _delineate_from_point(
+    lat: float,
+    lon: float,
+    *,
+    expected_area_km2: float | None,
+    method: Method,
+    verbose: bool,
+    name: str | None,
+    _trail: list[dict[str, Any]],
+    allow_downstream_expansion: bool = False,
+) -> HydroResult:
+    """Implementation of :func:`delineate_from_point`; ``_trail`` is the caller-owned ``fallback_history``."""
     if not (-90 <= lat <= 90 and -180 <= lon <= 180):
         raise ToolError(
             code="INVALID_COORDS",
@@ -463,6 +525,8 @@ def delineate_from_point(
         method = "dem_raw_fallback"
     if method == "3dep":
         method = "small_catchment"
+    if method == "merit_hybrid":
+        method = "merit_basins"
 
     method_used = method
     escalation_reason: str | None = None
@@ -497,7 +561,7 @@ def delineate_from_point(
     peak_memory_mb: float | None = None
     runtime_seconds: float | None = None
     memory_telemetry: dict[str, float] | None = None
-    fallback_history: list[dict[str, Any]] = []
+    fallback_history = _trail
     safe_envelope_version: str | None = None
     snapped_outlet: tuple[float, float] | None = None  # (lon, lat) of the snapped pour point, if the tier reports it
     snap_grid_crs: str | None = None  # CRS / resolution of the grid that point sits on
@@ -511,6 +575,8 @@ def delineate_from_point(
     raster_dataset_version: str | None = None
     vector_data_source: str | None = None
     raster_data_source: str | None = None
+    data_provenance: dict[str, Any] | None = None
+    hybrid_tried = False
 
     def _try_small_catchment(reason: str | None) -> bool:
         """Run the 3DEP small-catchment tier; on success fill the result state."""
@@ -627,11 +693,12 @@ def delineate_from_point(
     # CONUS auto with known drainage area: NLDI COMID search vs expected_area_km2.
     if run_nldi and is_conus(lat, lon) and expected_area_km2 and expected_area_km2 > 0:
         try:
-            from aihydro_watershed.delineation.nldi_point import delineate_nldi_at_point
+            from aihydro_watershed.delineation.nldi_point import delineate_nldi_at_point, nldi_deadline
 
-            nldi_result = delineate_nldi_at_point(
-                lat, lon, expected_area_km2=expected_area_km2
-            )
+            with nldi_deadline():
+                nldi_result = delineate_nldi_at_point(
+                    lat, lon, expected_area_km2=expected_area_km2
+                )
             nldi_area = nldi_result.data.get("area_km2", 0)
             nldi_ok = nldi_area >= _MIN_AREA_KM2
             if expected_area_km2 and expected_area_km2 > 0:
@@ -640,6 +707,7 @@ def delineate_from_point(
                     <= _AREA_MISMATCH_FRAC
                 )
             if nldi_ok:
+                nldi_result = _with_trail(nldi_result, fallback_history, "nldi_comid", "served", "")
                 return _attach_workflow_steps(
                     nldi_result,
                     method_used="nldi_comid",
@@ -655,9 +723,13 @@ def delineate_from_point(
                 else f"NLDI COMID area {nldi_area:.0f} km² too small"
             )
             log.info("NLDI COMID tier skipped: %s", escalation_reason)
+            fallback_history.append(
+                {"method": "nldi_comid", "outcome": "skipped", "reason": escalation_reason}
+            )
         except Exception as e:
             log.info("NLDI COMID tier unavailable: %s", e)
             escalation_reason = str(e)
+            fallback_history.append({"method": "nldi_comid", "outcome": "failed", "reason": str(e)})
             if method == "nldi":
                 raise ToolError(
                     code="DELINEATION_FAILED",
@@ -673,11 +745,19 @@ def delineate_from_point(
         and not (expected_area_km2 and expected_area_km2 > 0)
     ):
         try:
-            from aihydro_watershed.delineation.nldi_point import delineate_nldi_at_point
+            from aihydro_watershed.delineation.nldi_point import delineate_nldi_at_point, nldi_deadline
 
-            nldi_result = delineate_nldi_at_point(lat, lon)
+            with nldi_deadline():
+                nldi_result = delineate_nldi_at_point(
+                    lat, lon, allow_downstream_expansion=allow_downstream_expansion
+                )
             nldi_area = float(nldi_result.data.get("area_km2", 0))
+            # The ambiguity flag rides on the NLDI row so the attempt trail shows the outlet was not moved.
+            nldi_flag = "NLDI_OUTLET_AMBIGUOUS" if "NLDI_OUTLET_AMBIGUOUS" in (
+                nldi_result.data.get("quality_flags") or []
+            ) else ""
             if _NLDI_QUICK_MIN_KM2 <= nldi_area <= _NLDI_QUICK_MAX_KM2:
+                nldi_result = _with_trail(nldi_result, fallback_history, "nldi_comid", "served", nldi_flag)
                 return _attach_workflow_steps(
                     nldi_result,
                     method_used="nldi_comid",
@@ -689,13 +769,18 @@ def delineate_from_point(
             escalation_reason = (
                 f"NLDI quick area {nldi_area:.0f} km² outside "
                 f"{_NLDI_QUICK_MIN_KM2:.0f}–{_NLDI_QUICK_MAX_KM2:.0f} km²"
+                + (f" ({nldi_flag})" if nldi_flag else "")
             )
             log.info("NLDI quick tier skipped: %s", escalation_reason)
+            fallback_history.append(
+                {"method": "nldi_comid", "outcome": "skipped", "reason": escalation_reason}
+            )
             if method == "auto" and nldi_area < _NLDI_QUICK_MIN_KM2:
                 _try_small_catchment(escalation_reason)
         except Exception as e:
             log.info("NLDI quick tier unavailable: %s", e)
             escalation_reason = str(e)
+            fallback_history.append({"method": "nldi_comid", "outcome": "failed", "reason": str(e)})
             if method == "nldi":
                 raise ToolError(
                     code="DELINEATION_FAILED",
@@ -716,7 +801,14 @@ def delineate_from_point(
 
     snap_reference = None
     local_cache_status: dict[str, Any] | None = None
-    if (method in ("auto", "local_merit", "merit_gee", "merit_basins")) and gdf is None:
+    # The default global tier snaps and refines itself (staged rasters first), so the Earth Engine
+    # snap reference is only prepared up front when a different tier runs first.
+    hybrid_first = gdf is None and (
+        method == "merit_basins" or (method == "auto" and not is_conus(lat, lon))
+    )
+
+    def _prepare_merit_context() -> None:
+        nonlocal snap_reference, local_cache_status, pfaf_code, regional_flowdir_cached
         try:
             from aihydro_watershed.delineation.merit_flowdir_pipeline import (
                 merit_get_snap_reference,
@@ -745,6 +837,9 @@ def delineate_from_point(
         except Exception as e:
             log.info("MERIT regional cache status unavailable: %s", e)
 
+    if (method in ("auto", "local_merit", "merit_gee", "merit_basins")) and gdf is None and not hybrid_first:
+        _prepare_merit_context()
+
     run_cached_local_merit = (
         (method in ("auto", "local_merit"))
         and gdf is None
@@ -765,7 +860,7 @@ def delineate_from_point(
         nonlocal safe_envelope_version, terminal_catchment_id, upstream_catchment_count
         nonlocal terminal_refinement_used, vector_assembly_area_km2, refined_polygon_area_km2
         nonlocal vector_dataset_version, raster_dataset_version
-        nonlocal vector_data_source, raster_data_source
+        nonlocal vector_data_source, raster_data_source, data_provenance
 
         gdf = local.gdf
         area = local.area_km2
@@ -808,14 +903,18 @@ def delineate_from_point(
         raster_dataset_version = local.raster_dataset_version
         vector_data_source = local.vector_data_source
         raster_data_source = local.raster_data_source
+        data_provenance = local.data_provenance
         method_used = used_method
 
     def _try_hybrid_result(reason: str) -> bool:
-        nonlocal license_note, citation, run_fast, quality_flags
+        nonlocal license_note, citation, run_fast, quality_flags, hybrid_tried
+        if hybrid_tried:  # one attempt per call; the failed row is already in fallback_history
+            return False
+        hybrid_tried = True
         try:
             from aihydro_watershed.delineation.merit_flowdir_pipeline import (
+                MERIT_BASINS_LICENSE,
                 MERIT_CITATION,
-                MERIT_LICENSE,
                 merit_basins_hybrid_delineate,
             )
 
@@ -827,7 +926,7 @@ def delineate_from_point(
                 allow_offline=True,
             )
             _apply_merit_result(hybrid, used_method="merit_basins_hybrid")
-            license_note = MERIT_LICENSE
+            license_note = MERIT_BASINS_LICENSE
             citation = MERIT_CITATION
             fallback_history.append(
                 {
@@ -849,6 +948,11 @@ def delineate_from_point(
                 and "HYBRID_ROUTING_REQUIRED" not in quality_flags
             ):
                 quality_flags.append("HYBRID_ROUTING_REQUIRED")
+            if (
+                "MERIT_ASSET_INTEGRITY_FAILED" in str(hybrid_exc)
+                and "MERIT_ASSET_INTEGRITY_FAILED" not in quality_flags
+            ):
+                quality_flags.append("MERIT_ASSET_INTEGRITY_FAILED")
             fallback_history.append(
                 {
                     "method": "merit_basins_hybrid",
@@ -857,6 +961,15 @@ def delineate_from_point(
                 }
             )
             return False
+
+    # Default global tier (and forced method="merit_hybrid"/"merit_basins", also in CONUS): MERIT-Basins
+    # vector assembly with terminal-catchment refinement. If it cannot serve, the older tiers follow.
+    if hybrid_first and not _try_hybrid_result(escalation_reason or "default_global_tier"):
+        if method == "auto":
+            _prepare_merit_context()
+            run_cached_local_merit = bool(
+                gdf is None and local_cache_status and local_cache_status.get("flowdir_ready")
+            )
 
     if run_cached_local_merit or (run_local_merit and gdf is None):
         try:
@@ -994,7 +1107,9 @@ def delineate_from_point(
             if not regional_flowdir_cached:
                 quality_flags.append("REGIONAL_FLOWDIR_STAGING_REQUIRED")
             reason = (
-                "GEE_MEMORY_LIMIT"
+                "MERIT_GEE_WINDOW_LIMIT"
+                if "MERIT_GEE_WINDOW_LIMIT" in str(e)
+                else "GEE_MEMORY_LIMIT"
                 if re.search(r"memory limit|User memory limit|HTTP 400", str(e), re.I)
                 else str(e)
             )
@@ -1129,8 +1244,8 @@ def delineate_from_point(
     # topology, ~MERIT accuracy) over raw DEM when GEE + local_merit couldn't
     # serve. This restores the documented tier order
     # (… → merit_basins → dem_raw_fallback) for the no-expected-area case, where
-    # escalation-from-fast never fires (it requires expected_area_km2). CONUS
-    # deliberately stays on NLDI + raw DEM — no MERIT machinery there.
+    # escalation-from-fast never fires (it requires expected_area_km2). In auto mode
+    # CONUS stays on NLDI + raw DEM; the hybrid there is opt-in (method="merit_hybrid").
     # _try_hybrid_result sets gdf + method_used + run_fast=False on success; on
     # failure (e.g. basins not staged → MERIT_BASINS_NOT_STAGED) run_fast stays
     # True so raw DEM remains the final fallback.
@@ -1165,11 +1280,18 @@ def delineate_from_point(
                 routing_dataset = "raw DEM (NASADEM/Copernicus)"
                 routing_resolution_m = 30.0
                 quality_flags.append("RAW_DEM_EXPERIMENTAL_FALLBACK")
+                fallback_history.append(
+                    {"method": "dem_raw_fallback", "outcome": "served", "reason": "requested" if method == "dem_raw_fallback" else "no better tier served"}
+                )
             elif method == "auto":
                 log.info("Escalating to merit_basins: %s", escalation_reason)
+                fallback_history.append(
+                    {"method": "dem_raw_fallback", "outcome": "rejected", "reason": str(escalation_reason)}
+                )
                 run_merit = True
         except Exception as e:
             log.warning("Fast tier failed: %s", e)
+            fallback_history.append({"method": "dem_raw_fallback", "outcome": "failed", "reason": str(e)})
             if method == "dem_raw_fallback":
                 raise ToolError(
                     code="DELINEATION_FAILED",
@@ -1314,6 +1436,7 @@ def delineate_from_point(
             "raster_dataset_version": raster_dataset_version,
             "vector_data_source": vector_data_source,
             "raster_data_source": raster_data_source,
+            "data_provenance": data_provenance,
             "routing_resolution_m": routing_resolution_m,
             "area_validation": area_validation,
             "validation_sources": validation_sources,

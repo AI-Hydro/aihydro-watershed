@@ -222,8 +222,6 @@ def _gauge_run(monkeypatch, index_fails):
             if fsource is None and index_fails:
                 raise RuntimeError("shape")
             return gdf
-        def comid_byloc(self, xy):
-            return SimpleNamespace(comid=SimpleNamespace(iloc=[777]))
 
     def locations(ids=None, **kw):
         assert ids == [SITE]
@@ -232,6 +230,9 @@ def _gauge_run(monkeypatch, index_fails):
                                 geometry_crs_note="api states no CRS")]
 
     monkeypatch.setattr(w, "NLDI", NLDI, raising=False)
+    from aihydro_watershed.delineation import nldi_point
+    monkeypatch.setattr(nldi_point, "hydrolocation_comid",
+                        lambda lon, lat, **k: nldi_point.HydrolocationHit(777, lon, lat))
     monkeypatch.setattr(w._uw, "get_monitoring_locations", locations)
     monkeypatch.setattr(w, "_DEPS_OK", True)
     monkeypatch.setattr("aihydro_watershed.delineation.nldi_point._normalize_nldi_basins", lambda g: g)

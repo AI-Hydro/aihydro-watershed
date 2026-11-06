@@ -11,7 +11,7 @@
   (a cached-flowdir tier that raises no longer ends the chain), then the 3DEP tier only if its result carries neither flag (otherwise the trail row is `rejected`), then raw DEM.
   If every later tier also fails, the rejected 3DEP polygon is served as a last resort with `LAST_RESORT_UNVERIFIED` plus its own flags; its trail row is `succeeded_unverified`
   (reads as served in the tools attempt trail). 3DEP is unchanged where it fits: `expected_area_km2 < 5`, and NLDI answering with a sub-km2 reach.
-- Transient-failure classifier: HTTP status codes are matched only as `HTTP <code>` / `status <code>`, not as bare numbers (coordinates, distances and areas no longer match); timeouts and connection errors
+- Transient-failure classifier: HTTP status codes are matched as `HTTP <code>` / `status <code>`, a leading code (`502, message=...`, `500 Server Error: ...` as aiohttp and requests word it) or an exception's `status` / `response.status_code`, never as bare numbers elsewhere in the text (coordinates, distances and areas no longer match); timeouts and connection errors
   are recognised by exception type (and cause chain) as well as by message, so an empty-message `TimeoutError` counts.
 
 ### Evidence and limits

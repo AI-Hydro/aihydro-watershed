@@ -57,6 +57,8 @@ _SOURCE_DISAGREEMENT_FRAC = 0.25
 # every gauge with one of those messages had a 429 in the same run.
 _TRANSIENT_NLDI_RE = re.compile(
     r"\bHTTP\s*(?:429|5\d\d)\b|\bstatus(?:\s*code)?[ =:]*(?:429|5\d\d)\b|\btimed?[ -]?out\b|"
+    # aiohttp / async_retriever ("502, message='Bad Gateway'") and requests ("500 Server Error: ...") lead with the code.
+    r"^\s*(?:429|5\d\d)\b[,:]|\b(?:429|5\d\d) Server Error\b|"
     r"\bconnection (?:reset|refused|aborted|closed|error)\b|\bcannot connect to host\b|\bDNS\b|failing fast|"
     r"\bdeadline\b|too many requests|\bservice unavailable\b|\bno response\b|"
     r"Service returned no features|string indices must be integers",
@@ -483,6 +485,10 @@ def _nldi_failure_is_transient(exc: BaseException) -> bool:
         if seen is None:
             break
         if isinstance(seen, _transient_exception_types()):
+            return True
+        response = getattr(seen, "response", None)
+        status = getattr(seen, "status", None) or getattr(response, "status_code", None)
+        if isinstance(status, int) and (status == 429 or 500 <= status < 600):
             return True
         seen = seen.__cause__ or seen.__context__
     return bool(_TRANSIENT_NLDI_RE.search(str(exc)))

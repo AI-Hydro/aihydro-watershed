@@ -285,6 +285,13 @@ def test_transient_classifier():
     assert _nldi_failure_is_transient(RuntimeError("HTTP 502"))
     assert _nldi_failure_is_transient(RuntimeError("server replied status code: 503"))
     assert _nldi_failure_is_transient(RuntimeError("connection reset by peer"))
+    # Real library text leads with the bare code and never says "HTTP".
+    assert _nldi_failure_is_transient(RuntimeError("502, message='Bad Gateway', url='https://api.water.usgs.gov/nldi'"))
+    assert _nldi_failure_is_transient(RuntimeError("500, message='Internal Server Error', url='https://x'"))
+    assert _nldi_failure_is_transient(RuntimeError("502 Server Error: Bad Gateway for url: https://x"))
+    status_exc = RuntimeError("")
+    status_exc.status = 503
+    assert _nldi_failure_is_transient(status_exc)
     assert not _nldi_failure_is_transient(ToolError(code="NLDI_NOT_FOUND", message="No NHD COMID indexed near", tool="t"))
     assert not _nldi_failure_is_transient(KeyError("comid"))
 

@@ -12,7 +12,7 @@ import tempfile
 import time
 import warnings
 import zipfile
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -392,6 +392,8 @@ OFF_REACH_FRACTION = 0.9
 
 AREA_GATE_RADIUS_M = 1_000.0
 AREA_GATE_TOLERANCE = 0.10
+AREA_GATE_DISTANT_M = 500.0
+AREA_GATE_NO_MATCH_SUFFIX = "_area_gate_no_match"
 
 
 def snap_outlet_area_gated(
@@ -413,7 +415,8 @@ def snap_outlet_area_gated(
     channel of similar size under 50 km2. So the search never goes wider than the gate: when no cell
     qualifies the result is the plain no-area snap, unchanged, and the caller flags the mismatch.
 
-    A gated snap has ``snap_quality == "area_gated"``; any other quality means the gate found nothing.
+    A gated snap has ``snap_quality == "area_gated"``; when the gate found nothing the plain snap's
+    quality gets the suffix ``AREA_GATE_NO_MATCH_SUFFIX``.
     """
     if not (expected_area_km2 and expected_area_km2 > 0):
         raise ValueError("snap_outlet_area_gated needs a positive expected_area_km2.")
@@ -435,7 +438,9 @@ def snap_outlet_area_gated(
         rel = np.abs(upa_arr - expected_area_km2) / expected_area_km2
     ok = stream & (dist <= gate_radius_m) & (rel <= tolerance)
     if not ok.any():
-        return snap_outlet_on_merit(lat, lon, upa=upa_arr, transform=transform, wth=wth)
+        plain = snap_outlet_on_merit(lat, lon, upa=upa_arr, transform=transform, wth=wth)
+        # same cell as the plain snap; the suffix records that the gate ran and found nothing
+        return replace(plain, snap_quality=plain.snap_quality + AREA_GATE_NO_MATCH_SUFFIX)
     # nearest qualifying cell; ties (equal to the metre) go to the closer area match
     key = np.where(ok, np.round(dist, 3) + 1e-6 * rel, np.inf)
     r, c = np.unravel_index(int(np.argmin(key)), key.shape)
@@ -1305,7 +1310,13 @@ def merit_basins_hybrid_delineate(
             if mgr.ensure_level2_index(download=True) is not None:
                 downloaded_names.append("megabasins.db")
             pfaf = mgr.resolve_pfaf_region(lat, lon)
-        status = mgr.auto_stage_vectors(pfaf) if auto_stage else mgr.basins_region_cache(pfaf)
+        status = (
+            mgr.auto_stage_vectors(
+                pfaf, progress_cb=lambda msg, done, tot: log.info("MERIT-Basins staging [Pfaf %s] %s", pfaf, msg)
+            )
+            if auto_stage
+            else mgr.basins_region_cache(pfaf)
+        )
         downloaded_names += status.downloaded or []
         if status.integrity_error:
             raise vf.AssetIntegrityError(
@@ -1326,7 +1337,9 @@ def merit_basins_hybrid_delineate(
 
     # -- snap -----------------------------------------------------------------------------------
     snap_origin = mh.ORIGIN_NONE
+    caller_supplied_snap = snap_reference is not None
     if accum_path is not None:
+        caller_supplied_snap = False  # a staged accumulation raster overrides any supplied reference
         snap = mh.snap_on_local_accum(
             accum_path, lat, lon, expected_area_km2=expected_area_km2, area_gate=True
         )
@@ -1366,16 +1379,23 @@ def merit_basins_hybrid_delineate(
     unsnapped = snap.snap_quality == "offline_unsnapped"
     area_gate_info: dict[str, Any] | None = None
     if expected_area_km2 and expected_area_km2 > 0 and not unsnapped:
-        # A gated snap is tagged "area_gated". Any other quality means no cell qualified (or a snap
-        # reference supplied by the caller was made with another scorer): the snap is the plain one.
+        # A gated snap is tagged "area_gated". The gate was evaluated only when this function made the snap
+        # (local accum, or a reference it fetched itself with ``area_gate=True``) or the snap carries the tag.
+        # A caller-supplied reference made with another scorer was never gated: say so, and raise nothing.
         gate_hit = snap.snap_quality == "area_gated"
+        gate_nomatch = snap.snap_quality.endswith(AREA_GATE_NO_MATCH_SUFFIX)
+        gate_evaluated = gate_hit or gate_nomatch or not caller_supplied_snap
         area_gate_info = {
+            "gate_applied": gate_evaluated,
             "radius_m": AREA_GATE_RADIUS_M,
             "tolerance": AREA_GATE_TOLERANCE,
             "expected_area_km2": expected_area_km2,
-            "matched": gate_hit,
+            "matched": gate_hit if gate_evaluated else None,
         }
-        if not gate_hit:
+        if gate_hit and snap.distance_m > AREA_GATE_DISTANT_M:
+            # the gate accepts up to 1 km; a match this far from the gauge may be another river of similar size
+            _flag("AREA_GATE_SNAP_DISTANT")
+        if gate_evaluated and not gate_hit:
             _flag("AREA_GATE_NO_MATCH")
             snap_upa = snap.snapped_upa_km2
             if snap_upa and abs(snap_upa - expected_area_km2) / expected_area_km2 > AREA_GATE_TOLERANCE:
@@ -1579,7 +1599,11 @@ def merit_basins_hybrid_delineate(
     pieces = []
     if not nonterminal.empty and keep_upstream:
         pieces.append(nonterminal.to_crs(4326))
-    pieces.append(terminal_component.to_crs(4326))
+    # The kept main-stem union is the whole assembly (upstream catchments plus the whole terminal catchment).
+    # The refined terminal piece belongs to the other (local) basin; adding it to the inflow would build a
+    # polygon that is neither basin.
+    main_stem_kept = off_reach and keep_upstream
+    pieces.append((terminal if main_stem_kept else terminal_component).to_crs(4326))
     merged = gpd.GeoDataFrame(
         geometry=gpd.GeoSeries(
             [gpd.GeoDataFrame(pd.concat(pieces, ignore_index=True), crs=4326).union_all()], crs=4326

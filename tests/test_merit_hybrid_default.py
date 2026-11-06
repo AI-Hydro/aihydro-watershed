@@ -812,3 +812,33 @@ def test_lock_heartbeat_keeps_a_long_download_from_looking_stale(region, tmp_pat
     [t.join() for t in ts]
     assert not errs and len(opens) == 1  # without the heartbeat the second thread breaks the lock and downloads too
     assert dest.read_bytes() == data and not dest.with_name("rivers73.db.lock").exists()
+
+
+def test_router_passes_area_gate_and_carries_the_hybrid_trail(calls, monkeypatch):
+    seen = {}
+
+    def snap_ref(lat, lon, **kw):
+        seen.update(kw)
+        raise RuntimeError("no EE")
+
+    monkeypatch.setattr(pipe, "merit_get_snap_reference", snap_ref)
+    # a tier that runs before the hybrid prepares the snap reference up front; with a known area it asks for the gate
+    router.delineate_from_point(-3.0, -60.0, method="merit_gee", expected_area_km2=42.0)
+    assert seen["area_gate"] is True and seen["expected_area_km2"] == 42.0
+    seen.clear()
+    router.delineate_from_point(-3.0, -60.0, method="merit_gee")
+    assert seen["area_gate"] is False
+    hist = [
+        {"method": "terminal_gee_window_refinement", "outcome": "failed", "reason": "boom"},
+        {"method": "outlet_centred_window", "outcome": "succeeded", "reason": "x"},
+        {"method": "outlet_assembly", "outcome": "local_only"},
+    ]
+    monkeypatch.setattr(pipe, "merit_basins_hybrid_delineate", lambda lat, lon, **kw: _fake_result(
+        "merit_basins_hybrid", data_provenance={"files": [], "licence": "non-commercial", "hybrid_fallback_history": hist}))
+    res = router.delineate_from_point(-3.0, -60.0, expected_area_km2=42.0)
+    rows = res.data["fallback_history"]
+    assert {"method": "merit_basins_hybrid/terminal_gee_window_refinement", "outcome": "failed", "reason": "boom"} in rows
+    assert {"method": "merit_basins_hybrid/outlet_centred_window", "outcome": "completed", "reason": "x"} in rows
+    assert {"method": "merit_basins_hybrid/outlet_assembly", "outcome": "local_only", "reason": ""} in rows
+    assert rows[-1]["method"] == "merit_basins_hybrid" and rows[-1]["outcome"] == "succeeded"  # the served row stays last
+    assert all(r["outcome"] != "succeeded" for r in rows[:-1] if r["method"].startswith("merit_basins_hybrid/"))

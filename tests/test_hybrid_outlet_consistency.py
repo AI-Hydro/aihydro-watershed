@@ -104,7 +104,9 @@ def test_hybrid_area_validation_mismatch_is_kept_when_the_union_is_returned(ee_r
     # outlet off the reach, but the caller's area says the main stem is right: union kept, mismatch reported
     _snap_ref(monkeypatch, upa=HALF_C3)
     res = pipe.merit_basins_hybrid_delineate(*fx.OUTLET_REQUEST, expected_area_km2=INFLOW + HALF_C3)
-    assert res.area_km2 == pytest.approx(INFLOW + HALF_C3, rel=0.05)
+    # the kept main-stem basin is the whole assembly, not inflow + the local tributary piece
+    assert res.area_km2 == pytest.approx(res.vector_assembly_area_km2, rel=1e-6)
+    assert res.area_km2 == pytest.approx(INFLOW + C3, rel=0.01)
     oa = res.area_validation["outlet_assembly"]
     assert oa["mode"] == "union_upstream_kept_by_expected_area" and "closer" in oa["tiebreak"]
     assert "OUTLET_OFF_TERMINAL_REACH" in res.quality_flags and "HYBRID_LOCAL_ONLY" not in res.quality_flags
@@ -219,7 +221,9 @@ def test_gated_snap_never_searches_beyond_the_gate_radius():
     plain = pipe.snap_outlet_on_merit(lat, lon, upa=upa, transform=tr)
     snap = pipe.snap_outlet_area_gated(lat, lon, upa=upa, transform=tr, expected_area_km2=far_target)
     assert snap.snap_quality != "area_gated"
-    assert (snap.row, snap.col, snap.snap_quality) == (plain.row, plain.col, plain.snap_quality)  # the plain snap, untouched
+    # the plain snap's cell, untouched; only the quality records that the gate ran and found nothing
+    assert (snap.row, snap.col) == (plain.row, plain.col)
+    assert snap.snap_quality == plain.snap_quality + pipe.AREA_GATE_NO_MATCH_SUFFIX
     assert snap.distance_m <= 3_000.0  # not the 30 km area scorer
 
 
@@ -263,7 +267,7 @@ def test_hybrid_flags_a_failed_gate_and_records_it(ee_region, monkeypatch):
     res = pipe.merit_basins_hybrid_delineate(*fx.OUTLET_REQUEST, expected_area_km2=40.0)
     assert {"AREA_GATE_NO_MATCH", "SNAP_UPA_DIFFERS_FROM_EXPECTED"} <= set(res.quality_flags)
     gate = res.area_validation["outlet_assembly"]["area_gate"]
-    assert gate["matched"] is False and gate["radius_m"] == 1000.0 and gate["tolerance"] == 0.10
+    assert gate["gate_applied"] is True and gate["matched"] is False and gate["radius_m"] == 1000.0 and gate["tolerance"] == 0.10
     assert any(h["method"] == "area_gated_snap" and h["outcome"] == "no_match" for h in res.fallback_history)
 
 
@@ -298,3 +302,35 @@ def test_local_accum_snap_uses_the_gate_when_asked(region, tmp_path):
     # without the gate an expected area still selects the wide scorer (other callers are unchanged)
     wide = mh.snap_on_local_accum(accum, lat, lon, expected_area_km2=target)
     assert wide.snap_quality == "area_targeted"
+
+
+def test_tiebreak_to_the_main_stem_has_no_gap(ee_region, monkeypatch):
+    _snap_ref(monkeypatch, upa=HALF_C3)
+    res = pipe.merit_basins_hybrid_delineate(*fx.OUTLET_REQUEST, expected_area_km2=INFLOW + C3)
+    geom = res.gdf.geometry.iloc[0]
+    assert geom.geom_type == "Polygon" and not list(geom.interiors)  # contiguous, no hole where the terminal was refined away
+    assert res.area_km2 == pytest.approx(res.vector_assembly_area_km2, rel=1e-6)
+
+
+def test_caller_supplied_snap_reference_is_not_judged_by_the_gate(ee_region, monkeypatch):
+    ref = pipe.MeritSnapReference(
+        snap=pipe.MeritSnap(lat=fx.SNAPPED[0], lon=fx.SNAPPED[1], row=0, col=0, distance_m=10.0,
+                            snapped_upa_km2=INFLOW + HALF_C3, snap_quality="nearest_merit_stream"),
+        source="gee", cache_key="s", bbox=(0, 0, 0, 0), official_merit_upa_km2=INFLOW + HALF_C3)
+    res = pipe.merit_basins_hybrid_delineate(*fx.OUTLET_REQUEST, expected_area_km2=INFLOW + HALF_C3, snap_reference=ref)
+    gate = res.area_validation["outlet_assembly"]["area_gate"]
+    assert gate["gate_applied"] is False and gate["matched"] is None
+    assert "AREA_GATE_NO_MATCH" not in res.quality_flags
+    assert not any(h["method"] == "area_gated_snap" for h in res.fallback_history)
+
+
+def test_gated_snap_far_from_the_gauge_is_flagged(ee_region, monkeypatch):
+    def fake(lat0, lon0, **_):
+        snap = pipe.MeritSnap(lat=fx.SNAPPED[0], lon=fx.SNAPPED[1], row=0, col=0, distance_m=700.0,
+                              snapped_upa_km2=INFLOW + HALF_C3, snap_quality="area_gated")
+        return pipe.MeritSnapReference(snap=snap, source="gee", cache_key="s", bbox=(0, 0, 0, 0),
+                                       official_merit_upa_km2=INFLOW + HALF_C3)
+
+    monkeypatch.setattr(pipe, "merit_get_snap_reference", fake)
+    res = pipe.merit_basins_hybrid_delineate(*fx.OUTLET_REQUEST, expected_area_km2=INFLOW + HALF_C3)
+    assert "AREA_GATE_SNAP_DISTANT" in res.quality_flags and "AREA_GATE_NO_MATCH" not in res.quality_flags

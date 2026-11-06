@@ -64,7 +64,7 @@ the old paths will be removed in a future release.
 
 | Old | New |
 |---|---|
-| `ai_hydro.data.merit_download` | `aihydro_watershed.merit.merit_download` |
+| `ai_hydro.data.merit_download` | `aihydro_watershed.merit.merit_download` (deprecated shim; the Google Drive/`gdown` downloader is gone, files are now pinned and SHA-256 verified: use `MeritDataManager.ensure_basins_region`) |
 | `ai_hydro.data.merit_manager` | `aihydro_watershed.merit.merit_manager` |
 | `ai_hydro.data.merit_map_layers` | `aihydro_watershed.merit.merit_map_layers` |
 | `ai_hydro.data.region_presets` | `aihydro_watershed.merit.region_presets` |

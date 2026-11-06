@@ -1,0 +1,1006 @@
+{
+ "dataset_versions": {
+  "earth_engine": "MERIT/Hydro/v1_0_1",
+  "rasters": "MERIT Hydro as processed by mghydro.com; the version is not stated on the data page (unverified)",
+  "vectors": "MERIT-Basins v0.7/v1.0_bugfix1 (delineator README; MERIT_Hydro_v07_Basins_v01 file family)"
+ },
+ "description": "Pinned, hash-verified per-megabasin MERIT-Basins/MERIT-Hydro files served by mghydro.com for the 'delineator' package. Hashes are copied from delineator's published HASHES table; sizes are Content-Length from HEAD requests. No file is trusted unless its SHA-256 matches.",
+ "files": {
+  "accum11.tif": {
+   "sha256": "3cbd439b5e661ca2f6d4418e812fb6ea733929e8c6863d2ae57e2b0fa75edb1d",
+   "size_bytes": 641940489
+  },
+  "accum12.tif": {
+   "sha256": "643171b96cefaf367f394fd0c953b09e1fb1787b334be5c3d043f4ab13e7dc4a",
+   "size_bytes": 664921832
+  },
+  "accum13.tif": {
+   "sha256": "ea6f7e75a39fae3ffefb17d61a3c6e986c82188d70b6ce5a19bdac5d9371a4e4",
+   "size_bytes": 771322497
+  },
+  "accum14.tif": {
+   "sha256": "4524ce1c046f9f2bebd202289823a9d74afc70746ac8e48a3b00998862dc9241",
+   "size_bytes": 630019345
+  },
+  "accum15.tif": {
+   "sha256": "256740e3a6015446960e90941f55ca162d5c9e94b3f90173c3dc65e8d330f555",
+   "size_bytes": 1114356588
+  },
+  "accum16.tif": {
+   "sha256": "a5dff7a1fa6ace66e9644ce65e882fb7f90c02208fad62a5e2bf7c30c4b8065b",
+   "size_bytes": 508862067
+  },
+  "accum17.tif": {
+   "sha256": "420025f8ab064521d9ee8e6697eec50e06dd2b7fe22441cf22450dd2a751335d",
+   "size_bytes": 688020109
+  },
+  "accum18.tif": {
+   "sha256": "b711db369419babd6306490c6a80eed321f212d42b65af76e494a4fcf6fce5d7",
+   "size_bytes": 69720820
+  },
+  "accum21.tif": {
+   "sha256": "cf6c34d85fedb0f59f893c15ec9fc98efe0c650ece81cbb2ee05eee166600b0f",
+   "size_bytes": 496279847
+  },
+  "accum22.tif": {
+   "sha256": "8a4be8d095b7991b656527b1a59806dc305ccb9f30a78303a8f2c89b16cdfef8",
+   "size_bytes": 753596224
+  },
+  "accum23.tif": {
+   "sha256": "a172e1706e6fd5fd3006dc444e629357a51527dc9701e63dd3db13a6697822ab",
+   "size_bytes": 361440237
+  },
+  "accum24.tif": {
+   "sha256": "2d5f008bd4edc767dcb828ec01c015cba48713912895193f70a454132499bd4c",
+   "size_bytes": 669036388
+  },
+  "accum25.tif": {
+   "sha256": "5afc8e12e76f05e7891e2a17987761c7a93f1bc7886bf131b651118f1015ca97",
+   "size_bytes": 365970610
+  },
+  "accum26.tif": {
+   "sha256": "f2987ec4e7ada481a2ad31ef715e7ad3b039fa1022343d1f775eaa4ddeeb456e",
+   "size_bytes": 491001714
+  },
+  "accum27.tif": {
+   "sha256": "18f5b251ffd435e0e8e1d33e85393e2819e326536c311e077193589ace746622",
+   "size_bytes": 30131130
+  },
+  "accum28.tif": {
+   "sha256": "b2c99acd6852c4228d5f3ccc0aeb8d803cf828486781186d71a8cfd3dbd0dfd8",
+   "size_bytes": 1158027794
+  },
+  "accum29.tif": {
+   "sha256": "591f1325a9b7d21a7bba7a1b9abe1195d4a0d742c09934bd725a9aa5fb0658ff",
+   "size_bytes": 898905039
+  },
+  "accum31.tif": {
+   "sha256": "5caaa9c0d061b1efe715c1292a39dbd7a61474c99be81966a54a6278fef00bb0",
+   "size_bytes": 1069494760
+  },
+  "accum32.tif": {
+   "sha256": "c8f0f33aff291df1010c1bb89f78e54fb337b9a7fbcabbd2dc2615f4529b145c",
+   "size_bytes": 936296726
+  },
+  "accum33.tif": {
+   "sha256": "d6af9794a8fdc83aa9a9667f861f76f20f402f3c7e33166646f1391ddbfeeb86",
+   "size_bytes": 593545961
+  },
+  "accum34.tif": {
+   "sha256": "02ce83a705903546b5f2c914512375fcbf95c0a9a5e9fbcb6f5e50610d5933db",
+   "size_bytes": 910368090
+  },
+  "accum35.tif": {
+   "sha256": "eb6cc9a26e9427f25fb057cc111c2893d71d9d104e97f2dabe7c5dde636388a5",
+   "size_bytes": 734254342
+  },
+  "accum36.tif": {
+   "sha256": "c256d6b3ec76ceb4433f246ba2850a8c25b83175d405d9c9d7d651e393dfc35e",
+   "size_bytes": 177218248
+  },
+  "accum41.tif": {
+   "sha256": "2b6b0f1cedc03bb95c9ff5fd55e1654b2b0439f1f9a7c8057ffc4a18b2e21487",
+   "size_bytes": 83080850
+  },
+  "accum42.tif": {
+   "sha256": "794c30afe9047d00dd8fb67fdca456ca539d12acf45fa4d3ffbb1b9c64573806",
+   "size_bytes": 680165165
+  },
+  "accum43.tif": {
+   "sha256": "baefa8317cba5748af8a8cfb3f0fc2b0c74b05dea15a86902312e68ed26b324d",
+   "size_bytes": 725545456
+  },
+  "accum44.tif": {
+   "sha256": "213d6a8b3dd6987ad65504de69dc93db19a7f58aae572a1e8e5ede8957a6c60b",
+   "size_bytes": 406172328
+  },
+  "accum45.tif": {
+   "sha256": "b6db95c629f7faad72df456d11d389b7d8f561ffef47ca6064b365bea001e74d",
+   "size_bytes": 748635020
+  },
+  "accum46.tif": {
+   "sha256": "83a542a0612eaf036f1a89bfc6279aba039fd9cfad889bc59340269612b9e090",
+   "size_bytes": 611567238
+  },
+  "accum47.tif": {
+   "sha256": "c0f152ba44d8e482ecec568b0d568abf75a8be3944b6669b40ccb341eff1a8bf",
+   "size_bytes": 588442144
+  },
+  "accum48.tif": {
+   "sha256": "aee3d63066ee9a4d76e5e4a2f9b901c54a33405628da765c5feb0696035977f2",
+   "size_bytes": 458402444
+  },
+  "accum49.tif": {
+   "sha256": "f9ef72ac5d5e0d16818cde49e571b28d2f57fbb6d99ebfd526d03663444efba4",
+   "size_bytes": 270429591
+  },
+  "accum51.tif": {
+   "sha256": "1fc5bfd33a4ffb16abe78e11e9ab167767356d28512e536496dcf97bb70a4817",
+   "size_bytes": 98864637
+  },
+  "accum52.tif": {
+   "sha256": "3d46ec6294f8630b62079bca2647fa7c7944ff173ba9d4f0d3c3016af8754344",
+   "size_bytes": 159334892
+  },
+  "accum53.tif": {
+   "sha256": "b39943080017764933cae2aa805780d6e05818895e6756a0bd98450de8980ba7",
+   "size_bytes": 104577618
+  },
+  "accum54.tif": {
+   "sha256": "cc56f51734aa2e02eb3855e9768a88d12c46dfcce0ae18d0da9b87467e31caf3",
+   "size_bytes": 8326811
+  },
+  "accum55.tif": {
+   "sha256": "3d3f8e8005e64b5e9451132d122a74dd1c1b6cad5285468cafa5348227a0deff",
+   "size_bytes": 11406247
+  },
+  "accum56.tif": {
+   "sha256": "4aebb55e9a1fbdc898b84c26997805eac819d1a9070fd93e69e5a5c1a5475447",
+   "size_bytes": 882839565
+  },
+  "accum57.tif": {
+   "sha256": "54c2de5edbe32a8ca01116113815da2d6e3f5e1bb9926f37a2634ebc99db86f3",
+   "size_bytes": 41494244
+  },
+  "accum61.tif": {
+   "sha256": "c487336b948874290ee16f9bee0905cbc029821a71d2fb0d04f5dea6c40236b0",
+   "size_bytes": 289535844
+  },
+  "accum62.tif": {
+   "sha256": "76fad8dc36ec467a085f45437c2ed2be3140d01a7751e9f81f18c24fc994196d",
+   "size_bytes": 969773232
+  },
+  "accum63.tif": {
+   "sha256": "bf1bef1478bbfd4ace04a1cab66c092ebc38dc19b70c271eab8ae0f905ca34c5",
+   "size_bytes": 309179271
+  },
+  "accum64.tif": {
+   "sha256": "e39849969d24312163d1bc2e727378d41b3e0ffe1ea72615befa973f8c924a71",
+   "size_bytes": 622707319
+  },
+  "accum65.tif": {
+   "sha256": "bfdd538f1a2410b27c911cbf377248deb86603019a3f7301a223c7043399f7c2",
+   "size_bytes": 369564133
+  },
+  "accum66.tif": {
+   "sha256": "d6a64ad529a3322377a73be40dc9e440d588f1ad8f6840ca8786a26f73e479cd",
+   "size_bytes": 336892297
+  },
+  "accum67.tif": {
+   "sha256": "e0f121baae5056552e019cce67e59375fd8f1a824bd45193cdba384f2ee68e01",
+   "size_bytes": 194146560
+  },
+  "accum71.tif": {
+   "sha256": "5ab4d6481baae8d3c19797315717dbd88353b1f02a606148b53d2dbb51994d4b",
+   "size_bytes": 647407787
+  },
+  "accum72.tif": {
+   "sha256": "a0166f4a86af90e42ba010bd850764c0f8d4410d09e5f2a46ea6b62917637e1f",
+   "size_bytes": 636204336
+  },
+  "accum73.tif": {
+   "sha256": "c608b4debd201d751439fcbcfc3802bf17414b705126a382d0c513e9f71e2755",
+   "size_bytes": 248252220
+  },
+  "accum74.tif": {
+   "sha256": "f8f534154a7334491484087b88eb7d0be4b56e7a2d29a085f8868a889ef0a25d",
+   "size_bytes": 794439517
+  },
+  "accum75.tif": {
+   "sha256": "c197887002e47a295d1fe084f0a5e46c46d8876f04bc9a22769a486012ad6e6b",
+   "size_bytes": 444372411
+  },
+  "accum76.tif": {
+   "sha256": "0e67a682622b44da4d6a277869c865359fda6d438a61e67ee3a894240725e68e",
+   "size_bytes": 29964831
+  },
+  "accum77.tif": {
+   "sha256": "948b608ff748e14bace9f4652b8981dd4e7fd03d86e8c0eceb58c93e5e5d3de1",
+   "size_bytes": 526722098
+  },
+  "accum78.tif": {
+   "sha256": "f747fbd03398553b08174bd8568f2dc50e86bc43567926e3c80f0d6bacdbb497",
+   "size_bytes": 410276677
+  },
+  "accum81.tif": {
+   "sha256": "959623d49597fb235c8edcba77398f2d6ecbfac8d375ade5d73f19603c278714",
+   "size_bytes": 480438832
+  },
+  "accum82.tif": {
+   "sha256": "254d1689c638aa3c032804dc1f08d06788ed2df8284699ad1fb900e0aea8fa9d",
+   "size_bytes": 742015632
+  },
+  "accum83.tif": {
+   "sha256": "b240e40e86831b045cef2b2c368b9f7404c10aae0def2d365d4e633c2c0a77d6",
+   "size_bytes": 485240628
+  },
+  "accum84.tif": {
+   "sha256": "d889d39c2831af19e27a9f39de79903a108f0b82a66e009c2a61629f61a5301a",
+   "size_bytes": 228658030
+  },
+  "accum85.tif": {
+   "sha256": "52169242e0cde2d60946a9a98413350516c38a626e49f808f2fce0882d46272a",
+   "size_bytes": 228963277
+  },
+  "accum86.tif": {
+   "sha256": "670f63dc2d535285eb70781fee07d931bca9ff48f2f84d473f6e443f422524ce",
+   "size_bytes": 1825794004
+  },
+  "basins11.db": {
+   "sha256": "0043a2ba3f36c866014c3a1a3fc8810978194cf16f98d2983469454ef88c0c77",
+   "size_bytes": 700297216
+  },
+  "basins12.db": {
+   "sha256": "1631738fc7bd828908fc2e09ec25fda14eafe2ba61f4ad24e1e0dedf75da1040",
+   "size_bytes": 1019695104
+  },
+  "basins13.db": {
+   "sha256": "b1be34cf533a62218828182a91b2dbd06e337afbfd5cd26137c8733e2856b070",
+   "size_bytes": 980697088
+  },
+  "basins14.db": {
+   "sha256": "5d1729a1cc1ce863c96ea1dd78f54358d1b40cc3d77b7542eafe93dbe2946b5b",
+   "size_bytes": 817803264
+  },
+  "basins15.db": {
+   "sha256": "5c072416fa2918412194fa182a98f2d28a7e1d205d40258fd0a269c2d653cc6d",
+   "size_bytes": 1541259264
+  },
+  "basins16.db": {
+   "sha256": "67adfb97eef7b5741db7773a4e6a570860704a5f7d8cc269e6e78b939d2314a8",
+   "size_bytes": 545378304
+  },
+  "basins17.db": {
+   "sha256": "aedad6953f4836a45e414e38bcb4a3393bf49d3ac2b35a484d1d7b1884b097da",
+   "size_bytes": 681168896
+  },
+  "basins18.db": {
+   "sha256": "70d9a9b53b5aa38390c95e29a4b5c2dde2ad3dae4f22e74d359068dd802010fd",
+   "size_bytes": 119296000
+  },
+  "basins21.db": {
+   "sha256": "446b544e514ffc69dad60ffe4e879ef323f65cbb03f1ebda02b7e5dbf6f3f756",
+   "size_bytes": 272601088
+  },
+  "basins22.db": {
+   "sha256": "925c08177cac5d58e25cfad7921c08d85a27b51a322429855d7934194c54ce4d",
+   "size_bytes": 585199616
+  },
+  "basins23.db": {
+   "sha256": "6a47378f2ffcb27903b5ceb8d13526e38a7a22c26920bae4fd0fbdff86b926d3",
+   "size_bytes": 364265472
+  },
+  "basins24.db": {
+   "sha256": "07ff5e1765deee6b01ae3e4a2866cc197f915e59f18dfa6f166d5242dc3394ec",
+   "size_bytes": 506171392
+  },
+  "basins25.db": {
+   "sha256": "f8be780b7972b9dc7b0fc658174f95d40c2bb684bd8782bf15b0138ffebd1d70",
+   "size_bytes": 173293568
+  },
+  "basins26.db": {
+   "sha256": "552d8d64328f292d36c7c9e27e4df49706511f8f633ed717ebc23db72d48ca1b",
+   "size_bytes": 324141056
+  },
+  "basins27.db": {
+   "sha256": "02afd9d29b53af791079e3cedd42f0b83a038bb0e8c0d4235cd859bdbc7243c5",
+   "size_bytes": 36397056
+  },
+  "basins28.db": {
+   "sha256": "7ae9769b36559d5075413faf4e5e1a735adc0621b8ef5942dc153c9937012121",
+   "size_bytes": 963497984
+  },
+  "basins29.db": {
+   "sha256": "f53e1109c53717680807e299788783d1aa6eb622cc9f12bd3e64207c120d5896",
+   "size_bytes": 1330327552
+  },
+  "basins31.db": {
+   "sha256": "0ddf222de6c34e2b1643efa649ad271fff7836cb10590888fb4c8db6715791c1",
+   "size_bytes": 1019301888
+  },
+  "basins32.db": {
+   "sha256": "6dd54bfa6be6aaa8e974f4f1ae53cbf49a88a23a344535986eb2605fa9574c24",
+   "size_bytes": 688398336
+  },
+  "basins33.db": {
+   "sha256": "7ff7c079689941ed52119563024c365d4ab186c2ca3b81803575b56f0ce62983",
+   "size_bytes": 382353408
+  },
+  "basins34.db": {
+   "sha256": "43184348e2121c6a5fdde66f45356969b5c01b1cf02a545d7679ada914e6a794",
+   "size_bytes": 674992128
+  },
+  "basins35.db": {
+   "sha256": "db17c04afd069906916341ef0f80d5d15e1a2b3f8b333727794f5b55847db98a",
+   "size_bytes": 816582656
+  },
+  "basins36.db": {
+   "sha256": "5b182181766d98c53c47d8c2713a9ab372f60df59f3853c1fd875e87ce6167d2",
+   "size_bytes": 90910720
+  },
+  "basins41.db": {
+   "sha256": "417209e074f4296475c2b6a97f4990e9af1919dd0fe0dedf587278848e1122fe",
+   "size_bytes": 90923008
+  },
+  "basins42.db": {
+   "sha256": "1031abf11af5972d92c1ec89cf587125398c9edcb86cb1fcb68be16607bcddcd",
+   "size_bytes": 710553600
+  },
+  "basins43.db": {
+   "sha256": "65eb4cd26254ccb5853d7b4df285c045f38c100dc950069108074c858c76a56c",
+   "size_bytes": 937394176
+  },
+  "basins44.db": {
+   "sha256": "4ea406ee177e2dc6155b1fdaddfef5a39a83122d5d7bb7cab6501355823cf0eb",
+   "size_bytes": 447098880
+  },
+  "basins45.db": {
+   "sha256": "f4ca8ef89b50d1c105069e40407d2adb161f29e6446637b705bfec33bdbbe235",
+   "size_bytes": 996446208
+  },
+  "basins46.db": {
+   "sha256": "7155dd74f0b581400b44ab2322ede07c79e603ad2068bc622181afd9c4c75b59",
+   "size_bytes": 569438208
+  },
+  "basins47.db": {
+   "sha256": "c0a5a8a8155aad656ee0eba78f314a8507089df4e337ab40d1fa0a5be86d8929",
+   "size_bytes": 393375744
+  },
+  "basins48.db": {
+   "sha256": "f8d3810c5b8726b5bafa44e0ead60155deb92b221b15e963fb9b0a4664ca6a02",
+   "size_bytes": 414539776
+  },
+  "basins49.db": {
+   "sha256": "71d0bcd2706d1f4c47af2be908fd77c37afa7abf3bf5dc2eb26a6bea9c27f603",
+   "size_bytes": 139776000
+  },
+  "basins51.db": {
+   "sha256": "5abb71b4b339177b73009569a5f328470bb6775fa72a3f345b2e5bc6572c28fc",
+   "size_bytes": 131854336
+  },
+  "basins52.db": {
+   "sha256": "5182540bc4a1ef8e8faf68fa405fb90fef3d3bfe89402d4fd01d64d1d78e5355",
+   "size_bytes": 218341376
+  },
+  "basins53.db": {
+   "sha256": "d4864e7a2ebb05c0fb248948cb16c6962f49ac03b741297e28ef993fc0d013fa",
+   "size_bytes": 173047808
+  },
+  "basins54.db": {
+   "sha256": "97204169b6d7127ae675052b28bd6156d61251e00aa33a2da2f3d5e493a42a73",
+   "size_bytes": 7204864
+  },
+  "basins55.db": {
+   "sha256": "9ab39be155e0c205e92419c8192c93404b492fa4893147f03ed2ac69510dd471",
+   "size_bytes": 12742656
+  },
+  "basins56.db": {
+   "sha256": "a9a711ef7533364fae4da530548b0ad5262b06fe747c41b0177311512488dd08",
+   "size_bytes": 1658990592
+  },
+  "basins57.db": {
+   "sha256": "fb66268d1e77d5d91ed344b5893bf090d4f56de6d3bea60f01eaeaccf7f72e6a",
+   "size_bytes": 60346368
+  },
+  "basins61.db": {
+   "sha256": "78641b01214f7e1add9fcec42d3eb54e9044108df97e0fbad1f64ecd0d1626b2",
+   "size_bytes": 423796736
+  },
+  "basins62.db": {
+   "sha256": "144fb0886625e26a01eabb241ce1cf1c5d2a366d2f294e8401ccbe6610113d1b",
+   "size_bytes": 1384366080
+  },
+  "basins63.db": {
+   "sha256": "486c9413f77e6487a52314f1c8474382bbab183d9130a9119a0fa30d54af430c",
+   "size_bytes": 413859840
+  },
+  "basins64.db": {
+   "sha256": "00f44fa4fa49a47d31b01e990911f1c012c7f9aee374352ed5afe857d4edb8cf",
+   "size_bytes": 773156864
+  },
+  "basins65.db": {
+   "sha256": "b4884033f5ce0a3239a2a2c90c767105bb1dc31a5f7f714b3bb7a4088a2a459e",
+   "size_bytes": 378527744
+  },
+  "basins66.db": {
+   "sha256": "ac4a6178588757afd08d328d503d4feb8f78de250d92325af9bac6bfd7363b52",
+   "size_bytes": 226504704
+  },
+  "basins67.db": {
+   "sha256": "933113462ac366453b9cf39c1e098b9b722443b181bbdf34bfe8e9eb64d85620",
+   "size_bytes": 102277120
+  },
+  "basins71.db": {
+   "sha256": "7ede865ffb9bc98ca28b259a462409c00f79353780a7c7b9977e69b0d9ddf902",
+   "size_bytes": 624545792
+  },
+  "basins72.db": {
+   "sha256": "24a33cb0afdde432f93b9c2c529938b267ce6b1752db241890fcf988b2d55298",
+   "size_bytes": 762331136
+  },
+  "basins73.db": {
+   "sha256": "2138da50551a3c2ba18042360c6ccd385476afb8c9dc04184e287aa92cfcd9a5",
+   "size_bytes": 237219840
+  },
+  "basins74.db": {
+   "sha256": "0ebd43ef117e6514c3a5f5501f3c824bb5fe41bc3c74c38cb310196a2fd5e87f",
+   "size_bytes": 754073600
+  },
+  "basins75.db": {
+   "sha256": "c98c9592ce30e80ac42f617b8784254ed1c8863a50e0e1c013b0f8220d819d0f",
+   "size_bytes": 492642304
+  },
+  "basins76.db": {
+   "sha256": "aafa130bcde965d6711ab58bf803e37c4f72015d39fe58fb38a0b3dcef4e88b5",
+   "size_bytes": 44707840
+  },
+  "basins77.db": {
+   "sha256": "0e2805fd6a783ff59106db5fa872737aa3bf5b3305426f2525ee69c02c6c7884",
+   "size_bytes": 569319424
+  },
+  "basins78.db": {
+   "sha256": "d2e3a141f3f7fc9f16f02f31a0e4ab330e45006cc1382528f008530ce2b401db",
+   "size_bytes": 323698688
+  },
+  "basins81.db": {
+   "sha256": "c139aaab9e6185488656b142c96c56a87edc3468802c7341a50a2a38e7067666",
+   "size_bytes": 494579712
+  },
+  "basins82.db": {
+   "sha256": "5c4f09a02737770514b67fdae81ae99e08c51080a6546c5d0108fb5c512caf71",
+   "size_bytes": 584249344
+  },
+  "basins83.db": {
+   "sha256": "e7946890328de6d7f924eb5bdde36999f940b91996cb7f2f4bdf740c667136ab",
+   "size_bytes": 335929344
+  },
+  "basins84.db": {
+   "sha256": "4bfc73045d5d5ded362a955ae4bde6a7381577d962a6f6f7fc666c0d113926bf",
+   "size_bytes": 112934912
+  },
+  "basins85.db": {
+   "sha256": "53140ea150462ddaa7de7e86c48744ac1c9f1432d96de042077c8f188203ada5",
+   "size_bytes": 152223744
+  },
+  "basins86.db": {
+   "sha256": "02cf3496a86ed750bd15279a9e87f592772cc67179646eda465433da4c598970",
+   "size_bytes": 123858944
+  },
+  "flowdir11.tif": {
+   "sha256": "b57f02cb5a0144b9bbff59c084441057c1d41f2077f9fbbb664fe4159c4c5838",
+   "size_bytes": 240410899
+  },
+  "flowdir12.tif": {
+   "sha256": "ce5456c1bceb20d3a9960bfee332cadc1f6da7bfdbc7c07132f5b795e6e38411",
+   "size_bytes": 247830991
+  },
+  "flowdir13.tif": {
+   "sha256": "f868229486646c5ae98162fc7a5e62ec09c06eca14c2a1e9e3f41dadb1ed5d08",
+   "size_bytes": 296182568
+  },
+  "flowdir14.tif": {
+   "sha256": "af314fa14527bc76466c72cd430b74e5875da7bd53dacc4a323ef1b55c653d98",
+   "size_bytes": 259072745
+  },
+  "flowdir15.tif": {
+   "sha256": "c2934ab0add0f178b89336e264cd91709f15ba02739bb968e9a9c8ea56d0c54a",
+   "size_bytes": 460777582
+  },
+  "flowdir16.tif": {
+   "sha256": "8d48c4bbb731093b4ca96424b05ce379632c30f45d666584aee71c1de630e5d9",
+   "size_bytes": 211411906
+  },
+  "flowdir17.tif": {
+   "sha256": "652131734093fc89059ae2fb522405e36a9540c9e973c004fb1eaadcc9389277",
+   "size_bytes": 275462509
+  },
+  "flowdir18.tif": {
+   "sha256": "d2b42edc3fee05a4ad3ddff43ae2d32e8bb0a4256c110e09ab06e8f3b8b363f7",
+   "size_bytes": 28345918
+  },
+  "flowdir21.tif": {
+   "sha256": "d31d9ff84ac93b00a53a713c734147d6ff83dfe31d2e216a2e5b01ef222b3872",
+   "size_bytes": 180771044
+  },
+  "flowdir22.tif": {
+   "sha256": "faac6b28380440528fa89bcabb90e2c577111f3664b2076fa163ff5f60b7fe69",
+   "size_bytes": 279456066
+  },
+  "flowdir23.tif": {
+   "sha256": "e2fe8ee5f78530a604a1e872d900fae8ce7cb2ec0dd0e0b9df0a838bb5d19c56",
+   "size_bytes": 134428240
+  },
+  "flowdir24.tif": {
+   "sha256": "3584ca5bdf68cb90c79de09eb3d824579936505f85d59a8796c7885bbeec72c1",
+   "size_bytes": 248083093
+  },
+  "flowdir25.tif": {
+   "sha256": "f708fe58fbf954b7d3fa8cdd3b28c0cdd8c9f39714a0e03a2e962b9b049521ff",
+   "size_bytes": 116272229
+  },
+  "flowdir26.tif": {
+   "sha256": "4e67c062d6490f82cce3cec70415421463364a88c5c6ed0d15680bd894ee6965",
+   "size_bytes": 174946853
+  },
+  "flowdir27.tif": {
+   "sha256": "31f9fba8cd54d8a1c1bf7454b65db04c44f1fa8511cad0b91ff1d524ebd6a243",
+   "size_bytes": 8552403
+  },
+  "flowdir28.tif": {
+   "sha256": "9d663673a7071a3b17cdfef1812e27020b9690ad4b19990dd70713b6f6340631",
+   "size_bytes": 413782263
+  },
+  "flowdir29.tif": {
+   "sha256": "3d7b35f6b1f16a82ad8ddcaeaadc6cf3308dbb01f839d9f42db0c1a973eda520",
+   "size_bytes": 336961906
+  },
+  "flowdir31.tif": {
+   "sha256": "0a068a62511976d33e3188526067af9831c96a3c5fc9c5ccd1bd9c0c9e1cebe0",
+   "size_bytes": 399019860
+  },
+  "flowdir32.tif": {
+   "sha256": "3f51ca0a4a9b0c2b7b465c10f46df2fea3969b80e97b61191303d0b2c3b1cebd",
+   "size_bytes": 286120177
+  },
+  "flowdir33.tif": {
+   "sha256": "bd1896129eaa5929ebe3400b165a011ed71814ece837c4e3a1ccd662a98dd614",
+   "size_bytes": 171719546
+  },
+  "flowdir34.tif": {
+   "sha256": "18fed34b6f37dda0f0631d0db011c8be7483d0281d8df983f2a1ee495c9ddb89",
+   "size_bytes": 251938212
+  },
+  "flowdir35.tif": {
+   "sha256": "dbda9ae6ab42da6d8fc18c4cb2143200b1f11418dd039f477636091472327f20",
+   "size_bytes": 211955401
+  },
+  "flowdir36.tif": {
+   "sha256": "8f0baecbc8292387a83e397aeb4e1135b9ab79902a844083b8920ed0e1695f64",
+   "size_bytes": 51294224
+  },
+  "flowdir41.tif": {
+   "sha256": "aeed0df5a1677f77a2ee8e122f716da3bbe6a47f1db3d26f35753f5b99e1c5b2",
+   "size_bytes": 32250500
+  },
+  "flowdir42.tif": {
+   "sha256": "65d2e68d07264e20418263ec5a94bd93d98730298fc320f8613d744b8401809b",
+   "size_bytes": 221423098
+  },
+  "flowdir43.tif": {
+   "sha256": "edb269e1e804f64d1990343dbc75e3e0867a436683cb657b4b57350df9b3e097",
+   "size_bytes": 268447692
+  },
+  "flowdir44.tif": {
+   "sha256": "e64e1517b86f4673295b2274adccb2f19881bff41de5f135cdacedeeb5b74857",
+   "size_bytes": 154703692
+  },
+  "flowdir45.tif": {
+   "sha256": "51834aef9beae54bbc2872a73678c8cf467688d32f2b83b8525d96a60fe17817",
+   "size_bytes": 276428799
+  },
+  "flowdir46.tif": {
+   "sha256": "b36f85b623b4f32712da1f3df9925bb4b1dd9eeb04eb3e8c6dbeeb4f0a1bd749",
+   "size_bytes": 224397677
+  },
+  "flowdir47.tif": {
+   "sha256": "a11347bc27453b5f9e0179257ad2cf211090314855a705d8fbaa1e5f1d29b68d",
+   "size_bytes": 194757442
+  },
+  "flowdir48.tif": {
+   "sha256": "e4df47715e8514ff8f1d769c40e690d367c6635c00a565726e44a2f23e9138e7",
+   "size_bytes": 149542439
+  },
+  "flowdir49.tif": {
+   "sha256": "e9a3ec5bcfa7a71de29f2799cad3b65fa7d1edb2d402a6bf3a60c595d5d9a501",
+   "size_bytes": 91996972
+  },
+  "flowdir51.tif": {
+   "sha256": "fd2f32e8d03a37a2f6c37a11a5462e229b2841e00c8b3fe0e76e71ffad3b0a5e",
+   "size_bytes": 41642616
+  },
+  "flowdir52.tif": {
+   "sha256": "a998f09494881a35578ede8a1423eac89f621def1b98eed27e0935543c6ea139",
+   "size_bytes": 66684626
+  },
+  "flowdir53.tif": {
+   "sha256": "a96f5ad00701f6722dc1c5b01567c4cfad32b87dd541b8dc2b74623ac3a60315",
+   "size_bytes": 42983622
+  },
+  "flowdir54.tif": {
+   "sha256": "ab5f079dbd143cd3684883cd1622476e05de0e61004d291794fa7aa16f7ef04b",
+   "size_bytes": 3187440
+  },
+  "flowdir55.tif": {
+   "sha256": "bf735ff9109834f237bb3f7d0bc52d996ab8fe9f8519880acace99c7dceda82a",
+   "size_bytes": 5032346
+  },
+  "flowdir56.tif": {
+   "sha256": "352c31622b64fd3b7bc6f85fc1c78b01cb3f6aae8bf28b4809bb6ce51f06ef6f",
+   "size_bytes": 357736759
+  },
+  "flowdir57.tif": {
+   "sha256": "52a3a3e43792162eaa104956547a51d3c0ddbe5bceb090ed27fc1dd1a4968d99",
+   "size_bytes": 15182269
+  },
+  "flowdir61.tif": {
+   "sha256": "317bb417616e54c6d3cd5ac527e2a990243e35643844f6eff32d411dca243ccc",
+   "size_bytes": 122779874
+  },
+  "flowdir62.tif": {
+   "sha256": "76f76af0c6f25445111d3c1d2bc776821a97bcdc7efb5d9aa6ac0e3712893bc2",
+   "size_bytes": 398814564
+  },
+  "flowdir63.tif": {
+   "sha256": "6be6082decb2a776f3e04a657b4bca2221769f9f6132d702d5519bd81f09c5cf",
+   "size_bytes": 119928240
+  },
+  "flowdir64.tif": {
+   "sha256": "782d6e2f404044d885e23d6d19f39c54f3d3cb0142d9ad0f039c59a95d1e8c3e",
+   "size_bytes": 238823309
+  },
+  "flowdir65.tif": {
+   "sha256": "f9a91e727ecd62ce85d975a2bc5adb1305ffa67aaefde1ac61b85abe1fa9b626",
+   "size_bytes": 132549166
+  },
+  "flowdir66.tif": {
+   "sha256": "ed44fe90f25376e8594087d67b79d26fd856fc48376325aa437f7f39e9fa2dd2",
+   "size_bytes": 114993639
+  },
+  "flowdir67.tif": {
+   "sha256": "748a61d745ee77e8706b994782103b6c329b19e5e114389a3a2f7e68dc6a5b7c",
+   "size_bytes": 71870117
+  },
+  "flowdir71.tif": {
+   "sha256": "a779e005b15b7439a91b5f1d0d6dba8030e592cf4a3db0d21637c3f66a686f75",
+   "size_bytes": 242351586
+  },
+  "flowdir72.tif": {
+   "sha256": "e6eee3a05e916ddb9d71018e342249ca6f7a5b05299d29eb3b21e3c7bc85fd32",
+   "size_bytes": 232755271
+  },
+  "flowdir73.tif": {
+   "sha256": "bdd3d02d5ab7aa93a7ab9a9060759953dc51c5584a8a7bdb9bb864d4c11af272",
+   "size_bytes": 98864000
+  },
+  "flowdir74.tif": {
+   "sha256": "7a44d01ebcb876a2238770b90493c3ab7ac2aa577b84c6733856ab4fe9a53015",
+   "size_bytes": 304092116
+  },
+  "flowdir75.tif": {
+   "sha256": "0e2c3f5995b8d150757445d9d8e607850337b634a5d8f8d6f8255af1df687faf",
+   "size_bytes": 171063453
+  },
+  "flowdir76.tif": {
+   "sha256": "2d263f563e978862db6f10f52c48acddca06a0e86fac5d8c7a0892f83f87f75d",
+   "size_bytes": 12691767
+  },
+  "flowdir77.tif": {
+   "sha256": "f676d47953f175882017056a78b28fc7da383a4d9e7b07f14fb2d444536baa5b",
+   "size_bytes": 187651425
+  },
+  "flowdir78.tif": {
+   "sha256": "dd62401a7f1152d1798abbabc73deb5b177a6974863c1540e928e8e13b4f913c",
+   "size_bytes": 133090883
+  },
+  "flowdir81.tif": {
+   "sha256": "da94311cc2b9ba27f0d42b9264e7fa2ed884d9216ff0fc2be7fbdef17a875f11",
+   "size_bytes": 140867133
+  },
+  "flowdir82.tif": {
+   "sha256": "eb0f15498748b5282762eff03402388156286fdadbc9b0073ccf91e22fbd3c86",
+   "size_bytes": 241243693
+  },
+  "flowdir83.tif": {
+   "sha256": "5a1dfecdb6b0b4977fca8610ccd2ded7707481fbe945f11c8a9510e12088e382",
+   "size_bytes": 172506339
+  },
+  "flowdir84.tif": {
+   "sha256": "fa4170f33459b033eb6d628e49817b4a22bf0890f5b7150276c3eae744c7da13",
+   "size_bytes": 79236114
+  },
+  "flowdir85.tif": {
+   "sha256": "f1b76d4148bbc70dc95129b26c578f16fe970b1473375a15872eb08a09ff0390",
+   "size_bytes": 75369668
+  },
+  "flowdir86.tif": {
+   "sha256": "9afd1d0cdbbc0041b376d27d15c5c7e9eb8a949c11825662ed6ffbd0683cfafd",
+   "size_bytes": 105381927
+  },
+  "rivers11.db": {
+   "sha256": "3453bd7319d92d4a5e5db15bacd201e43da59d2e7e50ddbad27b720482981cb3",
+   "size_bytes": 139833344
+  },
+  "rivers12.db": {
+   "sha256": "64aa8f5d6c17c7a4cd02393fd4fef5938ebef05ad205b81a414b6cd9ada6e7ef",
+   "size_bytes": 205918208
+  },
+  "rivers13.db": {
+   "sha256": "443f945b53e4c6aa147ae5e405f221da39c00c3a2de6df64f666997ae49a0371",
+   "size_bytes": 188489728
+  },
+  "rivers14.db": {
+   "sha256": "147015eebaba09523548347e99f2f4815492398cfd0b18b70f35cdb9e58d6572",
+   "size_bytes": 164102144
+  },
+  "rivers15.db": {
+   "sha256": "c1ea3e82fdc66c771f15a09e50346851e4a6b8b2bcc8d53af29b9e5e5b6e07ef",
+   "size_bytes": 337629184
+  },
+  "rivers16.db": {
+   "sha256": "1373fdbbae831439896ef71db1977edc9c51b223799a2f526465e376dffb4f16",
+   "size_bytes": 124014592
+  },
+  "rivers17.db": {
+   "sha256": "5113d5678fba6b9487df5400dcbb1869c73bdc972bbfb9258065395f73a3ff37",
+   "size_bytes": 143769600
+  },
+  "rivers18.db": {
+   "sha256": "2e6fe35ed57effdd18698ec0d0a27955e58e43f616adcb985f4719690f3d8e25",
+   "size_bytes": 30666752
+  },
+  "rivers21.db": {
+   "sha256": "7f4421a0f115a0f40bec5a5cfd2c99f9a47d98b7e036306297e20776fc4cb79f",
+   "size_bytes": 57806848
+  },
+  "rivers22.db": {
+   "sha256": "fe843a88003137b49bff6f938f95810c41133a1e153bbe0a55ac5ed10436b9de",
+   "size_bytes": 123514880
+  },
+  "rivers23.db": {
+   "sha256": "6af5a015648084cd6cbe3853a43bc5845d283f6c283c5fa3e8bbad522d2aed68",
+   "size_bytes": 78290944
+  },
+  "rivers24.db": {
+   "sha256": "8801a20c512c7eb423901688df9e32f92521e51dd1357d09ff8494ca1bf64b66",
+   "size_bytes": 104976384
+  },
+  "rivers25.db": {
+   "sha256": "79ec93ed9db936c68762ddaa6f3b7b2ec1ee457eeabfa0f5918d59a7b34267e3",
+   "size_bytes": 41349120
+  },
+  "rivers26.db": {
+   "sha256": "88272a36c9583724b68a8e3bbdf98f67145797b46222b7bba82f69aacdd21c48",
+   "size_bytes": 76324864
+  },
+  "rivers27.db": {
+   "sha256": "2f6286bfeb52a4c925ae6a018d39c5666c3ca098748897e97ec9ca1cc3d7f442",
+   "size_bytes": 12398592
+  },
+  "rivers28.db": {
+   "sha256": "0efb1d0b8c8d2a905f692cbe1abd36270097fd65b887b669757a0baa4d1970e2",
+   "size_bytes": 191406080
+  },
+  "rivers29.db": {
+   "sha256": "bfb965549ba4d2d97c94fd38be2b9492c7d67e61992748ed7aeec6eb140b1d3d",
+   "size_bytes": 274874368
+  },
+  "rivers31.db": {
+   "sha256": "27bf5e645c15fee2a0afd2b817dee5fd5dd45126faa41d15ea0532fbc92ce93c",
+   "size_bytes": 223387648
+  },
+  "rivers32.db": {
+   "sha256": "efd5a6b35f0c0e353959cefa46244e3cc8115558be578751baeedbcd06bd1ea3",
+   "size_bytes": 145616896
+  },
+  "rivers33.db": {
+   "sha256": "ea279f3905cbb72fc070e83510200b5499aff384a882004d3c192f238b64cc46",
+   "size_bytes": 95637504
+  },
+  "rivers34.db": {
+   "sha256": "d963ab275244d35b2c22707d9a6837dee433ac9fe6f8564c92a64b8148a1f40f",
+   "size_bytes": 143548416
+  },
+  "rivers35.db": {
+   "sha256": "01a47758fbf5f654cd7a9920256924e26d6a393ecd79493e5dd61320d3464683",
+   "size_bytes": 182276096
+  },
+  "rivers36.db": {
+   "sha256": "65e51bc211c5fd4e42a4a3a24563502ae01882103e2f16938a5db754cddd0c61",
+   "size_bytes": 21024768
+  },
+  "rivers41.db": {
+   "sha256": "98ff78382525d9b5580087d35ef8e219c90f28a91f1b65a4ce59678518a25b11",
+   "size_bytes": 24432640
+  },
+  "rivers42.db": {
+   "sha256": "6bf81c90df82d3e599fee68e0cc956f60af798b2e32c299457f10a9e235d7ce9",
+   "size_bytes": 149413888
+  },
+  "rivers43.db": {
+   "sha256": "52d9dfb7d935916e12bb07ca5260ab75ad56d11d7e3a703249baca8aab2f19fb",
+   "size_bytes": 189722624
+  },
+  "rivers44.db": {
+   "sha256": "b14f2fe119f15390f4dacae0b0892647784a870023bd7392483e312aba35d7dc",
+   "size_bytes": 96321536
+  },
+  "rivers45.db": {
+   "sha256": "4e62d78d43b2b9abc3dce0b08c2096d7ffb90e8a65acb67fc8531176b7d3bff7",
+   "size_bytes": 206938112
+  },
+  "rivers46.db": {
+   "sha256": "f96c83c8f0beb2f7c03acb0be53174b1f8954156f37843db3e4a69660667c9ca",
+   "size_bytes": 120963072
+  },
+  "rivers47.db": {
+   "sha256": "26fae036cd7e1a80d4660030f2848d777b32e59f44b877593371e78878de980b",
+   "size_bytes": 76771328
+  },
+  "rivers48.db": {
+   "sha256": "3ac4ffdec4c48150e716f557a126d94a0623e79a6dbfc5ad578943e9ada9045f",
+   "size_bytes": 87314432
+  },
+  "rivers49.db": {
+   "sha256": "4d1a4e37db8f927cc058d74ba31e5e8ee4af66e8c18651c738bf46a117e8055a",
+   "size_bytes": 29523968
+  },
+  "rivers51.db": {
+   "sha256": "309585a44b02a332cdfbf60d02a5e7977bbefe4d91bb9817c62cb95171a5c9f1",
+   "size_bytes": 34004992
+  },
+  "rivers52.db": {
+   "sha256": "8af1e9b18ca0daae8f00f975fa537e4d2902354bafcf5e7e98a20ac321e7dc1b",
+   "size_bytes": 52326400
+  },
+  "rivers53.db": {
+   "sha256": "d2dd36686e7c774935dfeb73a41bfe1dd3b7fdc30a574c719a78b197dc83e10b",
+   "size_bytes": 43683840
+  },
+  "rivers54.db": {
+   "sha256": "9795d751304e7628e9d30c217b5df9eff29a95e2fb8ae0ef28325788ddb10b8e",
+   "size_bytes": 7024640
+  },
+  "rivers55.db": {
+   "sha256": "47cd57b18766158c1c4697de92c02551a08686152b56a4f830347bf37f0ce11d",
+   "size_bytes": 8265728
+  },
+  "rivers56.db": {
+   "sha256": "eefee16bdc888a28fbeae5014447d7a3890dcaedf4b677c634c1192354fc3ba9",
+   "size_bytes": 355573760
+  },
+  "rivers57.db": {
+   "sha256": "d149e92d479308ae7950cb0026a7a525b1cdc45e0df66d38c2aea3d4b41532e6",
+   "size_bytes": 17846272
+  },
+  "rivers61.db": {
+   "sha256": "27d548b954de69695849a196a1af9402823b9ebb9af985d98bb0793903f42880",
+   "size_bytes": 92782592
+  },
+  "rivers62.db": {
+   "sha256": "87a83c98e1923fdb7678ba602bc45e0da025342694ba51844c01a60427b5686b",
+   "size_bytes": 279019520
+  },
+  "rivers63.db": {
+   "sha256": "cd53cd19e3c2c918283f4b722816281044ec2f236ba819c66a6030d3e4c0e670",
+   "size_bytes": 86757376
+  },
+  "rivers64.db": {
+   "sha256": "60cf003030f8495d1ec975104b2efcd5ab8608ac4cfcc660f402554e037e538e",
+   "size_bytes": 169717760
+  },
+  "rivers65.db": {
+   "sha256": "8c91f9702c6114aefa7d70f910a0fe6d960b6545596254b96404937dd3ae9cc0",
+   "size_bytes": 80326656
+  },
+  "rivers66.db": {
+   "sha256": "f6f8196d670b2b33f803dbf40c62235e9a3028ddc9dd5125200db6eeb692a6e8",
+   "size_bytes": 46059520
+  },
+  "rivers67.db": {
+   "sha256": "a861401a374dda1a015b83bda4a9c025874a012931e4a7cc3c49ea98c50b5507",
+   "size_bytes": 25628672
+  },
+  "rivers71.db": {
+   "sha256": "9e4438578780a7373337a2502f1a191915a5851a137b129d74e52163065c22d4",
+   "size_bytes": 127795200
+  },
+  "rivers72.db": {
+   "sha256": "f163c634a5fd771d7c305898f7b9fb08880d611a1d1a06badcdb6132f873a90b",
+   "size_bytes": 145633280
+  },
+  "rivers73.db": {
+   "sha256": "93ea0d51062d0212618b87a518e570badea5e31ed99b6e2aca8db8b1ab4793ea",
+   "size_bytes": 52940800
+  },
+  "rivers74.db": {
+   "sha256": "b5acd9f19fd60bdd8777fa47a118ccf9e2ae0773f56b7b8d1f772e190ca622ba",
+   "size_bytes": 162279424
+  },
+  "rivers75.db": {
+   "sha256": "ad296e57ee1635c1db370e5793f1fa5bd4863c3751fb7bdef35aac6c26d8571a",
+   "size_bytes": 101507072
+  },
+  "rivers76.db": {
+   "sha256": "195a92f28f6d82be49e061145a7437b894ecdc3c6daf373912dd043ad2a0456d",
+   "size_bytes": 15155200
+  },
+  "rivers77.db": {
+   "sha256": "8190fb5d074b22d2f5b97ea219eb46dc9a2d285f6efdfd915fb5f4c37dc8cfef",
+   "size_bytes": 107741184
+  },
+  "rivers78.db": {
+   "sha256": "36d007a31ea1ce10f402888ac4539f32e6485d153fa1f23f562178d23f5d57dd",
+   "size_bytes": 65363968
+  },
+  "rivers81.db": {
+   "sha256": "6504410643d0dc32b12cae0376ff05751d5426c941c93d4d7b2877dcbef484ff",
+   "size_bytes": 113459200
+  },
+  "rivers82.db": {
+   "sha256": "267333cc654e59e9b4fbd95c399b4d266a7e1c00596b74c390da1010cf65afc4",
+   "size_bytes": 122376192
+  },
+  "rivers83.db": {
+   "sha256": "28b8004512ad422c8e3a7dede17da6894d7204b5c3d5e2513ba3e00159a02803",
+   "size_bytes": 72945664
+  },
+  "rivers84.db": {
+   "sha256": "e0beb876d83f1f33d1791cbb670c2c5482154347c1cbca9184391e9e52ad95a5",
+   "size_bytes": 32288768
+  },
+  "rivers85.db": {
+   "sha256": "4ea0b57dd23ee140af983285543bfeaed5152f7e9eab87ba8e91213cb098aee5",
+   "size_bytes": 38264832
+  },
+  "rivers86.db": {
+   "sha256": "8a7fa63c8f90307b38ac3e2041fb0c9342116b72568341029cc1bc8a33df31ee",
+   "size_bytes": 41078784
+  }
+ },
+ "layout": {
+  "accum": "accum{pfaf}.tif  flow accumulation in cells (GeoTIFF)",
+  "basins": "basins{pfaf}.db  SpatiaLite SQLite; table l0_basins(comid, nextdown, area_km2, geometry) plus l1..l4 nested hierarchy",
+  "flowdir": "flowdir{pfaf}.tif  MERIT-Hydro D8 flow direction GeoTIFF (ESRI codes)",
+  "rivers": "rivers{pfaf}.db  SpatiaLite SQLite; table rivers(comid, uparea, sorder, lengthkm, geometry)"
+ },
+ "level2_index": {
+  "git_blob_sha1": "35886e8c1137bd9302e954bad1f0f30976f90416",
+  "name": "megabasins.db",
+  "note": "Not served by mghydro.com (404); it is bundled in the delineator repo/wheel. delineator publishes no SHA-256 for it, so it is pinned by the git blob SHA-1 at the v2.2.4 tag. The SHA-256 of the first verified copy is recorded in the provenance sidecar and enforced on every later load.",
+  "sha256": null,
+  "size_bytes": 52879360,
+  "url": "https://raw.githubusercontent.com/mheberger/delineator/c56095e8625d1ee3534217b0462a8ed43027c77c/src/delineator/data/megabasins.db"
+ },
+ "licence": {
+  "checked": "2026-11-05",
+  "data_files": "CC-BY-NC-SA 4.0 ('released with the same terms', mghydro.com/watersheds/data)",
+  "merit_basins": "CC BY-NC-SA 4.0 for contributor content on reachhydro.org; a UCSD licence (text not shown) for CW3E content; page ties neither to a version",
+  "merit_hydro": "CC BY-NC 4.0 or ODbL 1.0 (global-hydrodynamics.github.io/MERIT_Hydro)",
+  "share_alike": true,
+  "summary": "Non-commercial and share-alike. mghydro.com releases the files under CC BY-NC-SA 4.0; MERIT Hydro is CC BY-NC 4.0 or ODbL 1.0 (derived data must be shared alike); the sources disagree on the exact variant. Derived-data obligations may apply."
+ },
+ "schema": 1,
+ "source": {
+  "base_url": "https://mghydro.com/watersheds/data/",
+  "checked": "2026-11-05",
+  "constants_blob_sha1": "a2b6b9a983ff0bb8a12c25302b10c3334ec9c66f",
+  "data_updated": "2026-07-12",
+  "data_version": "v3",
+  "hashes_file": "https://github.com/mheberger/delineator/blob/c56095e8625d1ee3534217b0462a8ed43027c77c/src/delineator/constants.py",
+  "package": "delineator",
+  "package_license": "MIT",
+  "package_version": "2.2.4",
+  "tag": "v2.2.4",
+  "tag_commit": "c56095e8625d1ee3534217b0462a8ed43027c77c"
+ }
+}

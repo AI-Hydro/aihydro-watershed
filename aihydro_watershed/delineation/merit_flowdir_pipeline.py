@@ -18,7 +18,7 @@ import geopandas as gpd
 import numpy as np
 from affine import Affine
 from pyproj import Geod
-from shapely.geometry import Point, box, shape
+from shapely.geometry import shape
 
 from aihydro_watershed.delineation.types import area_km2
 
@@ -27,16 +27,23 @@ log = logging.getLogger(__name__)
 MERIT_GEE_DATASET = "MERIT/Hydro/v1_0_1"
 MERIT_SCALE_M = 92.77
 MERIT_LICENSE = "CC-BY-NC 4.0 or ODbL 1.0; derived-data obligations may apply."
+# Hybrid tier data: MERIT-Basins vectors + regional rasters as published for the `delineator` package
+# (pinned by SHA-256 in merit/delineator_data_manifest.json). Non-commercial; sources disagree on variant.
+MERIT_BASINS_LICENSE = (
+    "Non-commercial and share-alike. MERIT-Basins/mghydro files: CC BY-NC-SA 4.0 (share-alike); MERIT Hydro: "
+    "CC BY-NC 4.0 or ODbL 1.0 (ODbL derived data must be shared alike); the sources disagree on the exact "
+    "variant; derived-data obligations may apply."
+)
 MERIT_CITATION = (
     "Yamazaki D., Ikeshima D., Sosa J., Bates P.D., Allen G.H., Pavelsky T.M. "
     "MERIT Hydro: A high-resolution global hydrography map based on latest "
     "topography datasets. Water Resources Research, 55, 5053-5073, 2019. "
     "https://doi.org/10.1029/2019WR024873"
 )
-MERIT_BASINS_VECTOR_VERSION = "MERIT_Hydro_v07_Basins_v01"
-MERIT_BASINS_VECTOR_SOURCE = "https://drive.google.com/drive/folders/1uCQFmdxFbjwoT9OYJxw-pXaP8q_GYH1a"
-MERIT_FLOWDIR_RASTER_VERSION = "MERIT Hydro regional flowdir raster flowdir{pfaf}.tif"
-MERIT_FLOWDIR_RASTER_SOURCE = "https://mghydro.com/watersheds/rasters/flow_dir_basins/flowdir{pfaf}.tif"
+MERIT_BASINS_VECTOR_VERSION = "MERIT-Basins v0.7/v1.0_bugfix1 (mghydro data v3, delineator 2.2.4 manifest)"
+MERIT_BASINS_VECTOR_SOURCE = "https://mghydro.com/watersheds/data/basins{pfaf}.db"
+MERIT_FLOWDIR_RASTER_VERSION = "mghydro regional flowdir{pfaf}.tif (MERIT Hydro version not stated by provider)"
+MERIT_FLOWDIR_RASTER_SOURCE = "https://mghydro.com/watersheds/data/flowdir{pfaf}.tif"
 
 _TOOL_PATH = "aihydro_watershed.delineation.merit_flowdir_pipeline.delineate_merit_flowdir"
 _CACHE_DIR = Path.home() / ".aihydro" / "cache" / "delineation" / "merit_gee"
@@ -53,28 +60,6 @@ MERIT_INTERACTIVE_MAX_WINDOW_CELLS = 60_000_000
 MERIT_INTERACTIVE_MAX_RSS_DELTA_MB = 600.0
 MERIT_SCIENTIFIC_MAX_WINDOW_CELLS = 120_000_000
 MERIT_SCIENTIFIC_MAX_RSS_DELTA_MB = 1_500.0
-
-_CATCHMENT_ID_FIELDS = (
-    "COMID",
-    "comid",
-    "HYBAS_ID",
-    "hybas_id",
-    "cat",
-    "CAT_ID",
-    "cat_id",
-    "id",
-)
-_DOWNSTREAM_ID_FIELDS = (
-    "NextDownID",
-    "NEXT_DOWN",
-    "next_down",
-    "NextDown",
-    "NEXT_SINK",
-    "downstream",
-    "toCOMID",
-    "TOCOMID",
-    "nextid",
-)
 
 
 @dataclass(frozen=True)
@@ -156,6 +141,7 @@ class MeritFlowdirResult:
     raster_dataset_version: str | None = None
     vector_data_source: str | None = None
     raster_data_source: str | None = None
+    data_provenance: dict[str, Any] | None = None
 
 
 def _peak_memory_mb() -> float:
@@ -601,8 +587,9 @@ def merit_ensure_basins_region(
     pfaf_region: str,
     *,
     acquisition_policy: str = "check_only",
+    force_retry: bool = False,
 ) -> dict[str, Any]:
-    """Ensure/report regional MERIT-Basins vectors for hybrid routing."""
+    """Ensure/report regional MERIT-Basins vectors for hybrid routing (``force_retry`` overrides the 24 h integrity back-off)."""
     from dataclasses import asdict
 
     from aihydro_watershed.merit.merit_manager import MeritDataManager
@@ -611,199 +598,9 @@ def merit_ensure_basins_region(
         MeritDataManager().ensure_basins_region(
             pfaf_region,
             acquisition_policy=acquisition_policy,
+            force_retry=force_retry,
         )
     )
-
-
-def _first_existing_column(gdf: gpd.GeoDataFrame, candidates: tuple[str, ...]) -> str | None:
-    cols = set(gdf.columns)
-    for col in candidates:
-        if col in cols:
-            return col
-    lowered = {str(col).lower(): col for col in gdf.columns}
-    for col in candidates:
-        hit = lowered.get(col.lower())
-        if hit is not None:
-            return str(hit)
-    return None
-
-
-def merit_load_catchment_topology(pfaf_region: str) -> gpd.GeoDataFrame:
-    """Load staged MERIT-Basins catchments with normalized topology columns."""
-    from aihydro_watershed.merit.merit_manager import MeritDataManager
-
-    mgr = MeritDataManager()
-    path = mgr.catchment_shapefile_path(pfaf_region)
-    if not path.exists():
-        raise FileNotFoundError(
-            f"MERIT-Basins catchment vectors are not staged for Pfaf {pfaf_region}."
-        )
-    gdf = gpd.read_file(path)
-    if gdf.empty:
-        raise ValueError(f"MERIT-Basins catchment file is empty: {path}")
-    id_col = _first_existing_column(gdf, _CATCHMENT_ID_FIELDS)
-    if id_col is None:
-        raise ValueError(
-            f"Could not identify catchment id field in {path}. "
-            f"Tried: {', '.join(_CATCHMENT_ID_FIELDS)}"
-        )
-    downstream_col = _first_existing_column(gdf, _DOWNSTREAM_ID_FIELDS)
-    gdf = gdf.copy()
-    gdf["_aihydro_catchment_id"] = gdf[id_col].astype(str)
-    river_path = mgr.river_shapefile_path(pfaf_region)
-    if river_path.exists():
-        rivers = gpd.read_file(river_path, ignore_geometry=True)
-        river_id_col = _first_existing_column(rivers, _CATCHMENT_ID_FIELDS)
-        if river_id_col is not None:
-            rivers = rivers.copy()
-            rivers["_aihydro_catchment_id"] = rivers[river_id_col].astype(str)
-            keep_cols = [
-                col
-                for col in (
-                    "_aihydro_catchment_id",
-                    "NextDownID",
-                    "next_down",
-                    "NEXT_DOWN",
-                    "uparea",
-                    "maxup",
-                    "up1",
-                    "up2",
-                    "up3",
-                    "up4",
-                )
-                if col in rivers.columns
-            ]
-            if len(keep_cols) > 1:
-                gdf = gdf.merge(
-                    rivers[keep_cols].drop_duplicates("_aihydro_catchment_id"),
-                    on="_aihydro_catchment_id",
-                    how="left",
-                    suffixes=("", "_river"),
-                )
-                downstream_col = _first_existing_column(gdf, _DOWNSTREAM_ID_FIELDS)
-    if downstream_col is None:
-        gdf["_aihydro_downstream_id"] = ""
-    else:
-        gdf["_aihydro_downstream_id"] = gdf[downstream_col].fillna("").astype(str)
-    if gdf.crs is None:
-        gdf = gdf.set_crs(4326)
-    return gdf.to_crs(4326)
-
-
-def merit_identify_terminal_catchment(
-    snapped_outlet: MeritSnap | tuple[float, float] | dict[str, float],
-    catchments: gpd.GeoDataFrame | None = None,
-    *,
-    pfaf_region: str | None = None,
-) -> str:
-    """Return the MERIT-Basins catchment id containing the snapped outlet."""
-    if catchments is None:
-        if pfaf_region is None:
-            raise ValueError("catchments or pfaf_region is required.")
-        catchments = merit_load_catchment_topology(pfaf_region)
-    if isinstance(snapped_outlet, MeritSnap):
-        lon, lat = snapped_outlet.lon, snapped_outlet.lat
-    elif isinstance(snapped_outlet, dict):
-        lon = float(snapped_outlet["lon"])
-        lat = float(snapped_outlet["lat"])
-    else:
-        lon, lat = float(snapped_outlet[0]), float(snapped_outlet[1])
-    pt = gpd.GeoSeries([Point(lon, lat)], crs=4326)
-    pt = pt.to_crs(catchments.crs)
-    hit = catchments[catchments.geometry.contains(pt.iloc[0])]
-    if hit.empty:
-        hit = catchments[catchments.geometry.intersects(pt.iloc[0])]
-    if hit.empty:
-        distances = catchments.geometry.distance(pt.iloc[0])
-        hit = catchments.loc[[distances.idxmin()]]
-    return str(hit.iloc[0]["_aihydro_catchment_id"])
-
-
-def merit_traverse_upstream_catchments(
-    terminal_catchment_id: str | int,
-    catchments: gpd.GeoDataFrame,
-) -> list[str]:
-    """Traverse normalized MERIT-Basins catchment topology upstream."""
-    terminal = str(terminal_catchment_id)
-    upstream_by_downstream: dict[str, list[str]] = {}
-    for _, row in catchments.iterrows():
-        cid = str(row["_aihydro_catchment_id"])
-        downstream = str(row.get("_aihydro_downstream_id", "") or "")
-        if downstream and downstream.lower() not in ("0", "nan", "none", "-1"):
-            upstream_by_downstream.setdefault(downstream, []).append(cid)
-
-    seen: set[str] = set()
-    stack = [terminal]
-    ordered: list[str] = []
-    while stack:
-        cid = stack.pop()
-        if cid in seen:
-            continue
-        seen.add(cid)
-        ordered.append(cid)
-        stack.extend(upstream_by_downstream.get(cid, []))
-    return ordered
-
-
-def _refine_terminal_catchment_with_flowdir(
-    terminal: gpd.GeoDataFrame,
-    snap_reference: MeritSnapReference,
-    *,
-    pfaf_region: str,
-    margin_cells: int = 32,
-) -> gpd.GeoDataFrame:
-    """Raster-refine only the MERIT-Basins terminal catchment around the outlet."""
-    import pyflwdir
-    import rasterio
-    from rasterio.windows import from_bounds
-
-    from aihydro_watershed.merit.merit_manager import MeritDataManager
-
-    mgr = MeritDataManager()
-    flowdir = mgr.flowdir_path(pfaf_region)
-    if not flowdir:
-        raise FileNotFoundError(f"Local MERIT flow direction raster missing for basin {pfaf_region}.")
-    snap = snap_reference.snap
-    with rasterio.open(flowdir) as src:
-        crs = src.crs.to_string() if src.crs else "EPSG:4326"
-        terminal_src = terminal.to_crs(crs)
-        xmin, ymin, xmax, ymax = terminal_src.total_bounds
-        res_x = abs(float(src.transform.a))
-        res_y = abs(float(src.transform.e))
-        xmin -= margin_cells * res_x
-        xmax += margin_cells * res_x
-        ymin -= margin_cells * res_y
-        ymax += margin_cells * res_y
-        left = max(src.bounds.left, xmin)
-        right = min(src.bounds.right, xmax)
-        bottom = max(src.bounds.bottom, ymin)
-        top = min(src.bounds.top, ymax)
-        if left >= right or bottom >= top:
-            raise ValueError("Terminal catchment is outside the cached flowdir raster.")
-        window = from_bounds(left, bottom, right, top, transform=src.transform).round_offsets().round_lengths()
-        if int(window.width * window.height) > MERIT_INTERACTIVE_MAX_WINDOW_CELLS:
-            raise RuntimeError(
-                "TERMINAL_CATCHMENT_REFINEMENT_FAILED: terminal raster window exceeds "
-                f"interactive limit ({int(window.width * window.height)} cells)."
-            )
-        dir_arr = src.read(1, window=window)
-        transform = src.window_transform(window)
-    d8 = merit_dir_to_pyflwdir(dir_arr)
-    flw = pyflwdir.from_array(
-        d8,
-        ftype="d8",
-        mask=np.isin(d8, [0, 1, 2, 4, 8, 16, 32, 64, 128]),
-        transform=transform,
-        latlon=crs.upper() in ("EPSG:4326", "OGC:CRS84"),
-    )
-    basin_ids = flw.basins(xy=([snap.lon], [snap.lat]), ids=np.array([1], dtype=np.uint32))
-    refined = _polygonize_mask(basin_ids == 1, transform, crs)
-    if refined.empty:
-        raise RuntimeError("Terminal raster refinement produced an empty mask.")
-    clipped = gpd.overlay(refined.to_crs(terminal.crs), terminal[["geometry"]], how="intersection")
-    if clipped.empty:
-        raise RuntimeError("Terminal raster refinement did not intersect terminal catchment.")
-    return clipped[["geometry"]]
 
 
 def merit_get_snap_reference(
@@ -1255,127 +1052,199 @@ def merit_basins_hybrid_delineate(
     snap_reference: MeritSnapReference | None = None,
     allow_offline: bool = False,
     force_offline: bool = False,
+    auto_stage: bool = True,
 ) -> MeritFlowdirResult:
     """
-    Delineate large basins with MERIT-Basins topology plus terminal raster refinement.
+    Delineate with MERIT-Basins unit catchments plus terminal-catchment raster refinement.
 
-    The vector topology provides the large upstream assembly. The staged local
-    MERIT flowdir is used only to refine the terminal catchment portion at the
-    requested snapped outlet when feasible.
+    The vector topology (``nextdown`` traversal of the pinned, hash-verified ``basins##.db``) provides
+    the upstream assembly. Only the terminal unit catchment is refined on a small raster window, read
+    from the staged regional rasters when present or from one small Earth Engine request otherwise.
+    Snapping uses the staged ``accum##.tif`` when present (same provider as the vectors); otherwise the
+    Earth Engine reference, which is recorded as ``MERIT_VERSION_MIX``. A file that fails its pinned
+    SHA-256 is never used (``MERIT_ASSET_INTEGRITY_FAILED``).
+
+    ``snap_reference`` is honoured only when no accumulation raster is staged.
     """
     import pandas as pd
 
+    from aihydro_watershed.delineation import merit_hybrid as mh
+    from aihydro_watershed.merit import verified_fetch as vf
+    from aihydro_watershed.merit.basins_store import BasinsStore
+    from aihydro_watershed.merit.merit_manager import MeritDataManager, _merit_auto_stage_policy
+
     started = time.perf_counter()
     rss_before = _rss_memory_mb()
-    rss_after_topology_load = rss_before
-    rss_after_vector_assembly = rss_before
-    rss_after_terminal_refinement = rss_before
-    rss_after_merge = rss_before
     fallback_history: list[dict[str, Any]] = []
     quality_flags: list[str] = ["HYBRID_ROUTING_USED"]
-    snap_flags: list[str] = []
     validation_sources: list[str] = []
 
-    if snap_reference is None:
+    def _flag(name: str) -> None:
+        if name not in quality_flags:
+            quality_flags.append(name)
+
+    mgr = MeritDataManager()
+    stage_policy = _merit_auto_stage_policy()[0] if auto_stage else "check_only"
+    downloaded_names: list[str] = []
+    try:
+        # -- region + pinned vectors (level-2 index, basins##.db, rivers##.db) --------------------
         try:
-            if force_offline:
-                raise RuntimeError("forced offline hybrid routing")
-            snap_reference = merit_get_snap_reference(
-                lat,
-                lon,
-                expected_area_km2=expected_area_km2,
+            pfaf = mgr.resolve_pfaf_region(lat, lon)
+        except FileNotFoundError as exc:
+            if not auto_stage or stage_policy == "never":
+                raise RuntimeError(f"MERIT_BASINS_NOT_STAGED HYBRID_ROUTING_REQUIRED: {exc}") from exc
+            if mgr.ensure_level2_index(download=True) is not None:
+                downloaded_names.append("megabasins.db")
+            pfaf = mgr.resolve_pfaf_region(lat, lon)
+        status = mgr.auto_stage_vectors(pfaf) if auto_stage else mgr.basins_region_cache(pfaf)
+        downloaded_names += status.downloaded or []
+        if status.integrity_error:
+            raise vf.AssetIntegrityError(
+                status.integrity_error.removeprefix(f"{vf.AssetIntegrityError.code}: ")
             )
-        except Exception:
-            if not allow_offline:
-                raise
-            snap_reference = MeritSnapReference(
-                snap=MeritSnap(
-                    lat=lat,
-                    lon=lon,
-                    row=-1,
-                    col=-1,
-                    distance_m=0.0,
-                    snapped_upa_km2=None,
-                    snap_quality="offline_unsnapped",
-                ),
-                source="offline",
-                cache_key="offline",
-                bbox=(lon, lat, lon, lat),
-                official_merit_upa_km2=None,
+        if not status.catchments_ready:
+            raise RuntimeError(
+                f"MERIT_BASINS_NOT_STAGED HYBRID_ROUTING_REQUIRED: {status.message}"
             )
-            snap_flags.append("GEE_VALIDATION_UNAVAILABLE")
+        basins_db = mgr.verified_asset("basins", pfaf)
+        rivers_db = mgr.verified_asset("rivers", pfaf)
+        flowdir_path = mgr.verified_asset("flowdir", pfaf)
+        accum_path = mgr.verified_asset("accum", pfaf)
+    except vf.AssetIntegrityError as exc:
+        _flag("MERIT_ASSET_INTEGRITY_FAILED")
+        raise RuntimeError(str(exc)) from exc
+    store = BasinsStore(basins_db, rivers_db)
 
-    if snap_reference.official_merit_upa_km2 is not None:
-        validation_sources.append("gee_official_upa")
-
+    # -- snap -----------------------------------------------------------------------------------
+    snap_origin = mh.ORIGIN_NONE
+    if accum_path is not None:
+        snap = mh.snap_on_local_accum(accum_path, lat, lon, expected_area_km2=expected_area_km2)
+        snap_reference = MeritSnapReference(
+            snap=snap,
+            source="local_accum_mghydro",
+            cache_key=f"local_accum:{pfaf}",
+            bbox=(lon, lat, lon, lat),
+            official_merit_upa_km2=snap.snapped_upa_km2,
+        )
+        snap_origin = mh.ORIGIN_LOCAL
+    else:
+        if snap_reference is None:
+            try:
+                if force_offline:
+                    raise RuntimeError("forced offline hybrid routing")
+                snap_reference = merit_get_snap_reference(
+                    lat, lon, expected_area_km2=expected_area_km2
+                )
+            except Exception:
+                if not allow_offline:
+                    raise
+                snap_reference = MeritSnapReference(
+                    snap=MeritSnap(
+                        lat=lat, lon=lon, row=-1, col=-1, distance_m=0.0,
+                        snapped_upa_km2=None, snap_quality="offline_unsnapped",
+                    ),
+                    source="offline",
+                    cache_key="offline",
+                    bbox=(lon, lat, lon, lat),
+                    official_merit_upa_km2=None,
+                )
+                _flag("GEE_VALIDATION_UNAVAILABLE")
+        if snap_reference.source != "offline":
+            snap_origin = mh.ORIGIN_EE
     snap = snap_reference.snap
-    pfaf = merit_resolve_pfaf_region(snap.lat, snap.lon)
-    basins_status = merit_check_basins_region_cache(pfaf)
-    if not basins_status.get("catchments_ready"):
-        raise RuntimeError(
-            "MERIT_BASINS_NOT_STAGED HYBRID_ROUTING_REQUIRED: MERIT-Basins "
-            f"catchments are not cached for Pfaf {pfaf}."
+    unsnapped = snap.snap_quality == "offline_unsnapped"
+    if snap_reference.official_merit_upa_km2 is not None:
+        validation_sources.append(
+            "local_accum_upa" if snap_origin == mh.ORIGIN_LOCAL else "gee_official_upa"
         )
 
-    catchments = merit_load_catchment_topology(pfaf)
-    rss_after_topology_load = _rss_memory_mb()
-    terminal_id = merit_identify_terminal_catchment(snap, catchments)
-    upstream_ids = merit_traverse_upstream_catchments(terminal_id, catchments)
-    upstream = catchments[catchments["_aihydro_catchment_id"].isin(upstream_ids)].copy()
+    # -- vector assembly --------------------------------------------------------------------------
+    terminal_id = store.locate(snap.lon, snap.lat)
+    upstream_ids = store.upstream_ids(terminal_id)
+    upstream = store.geometries(upstream_ids)
     if upstream.empty:
         raise RuntimeError(f"Hybrid topology returned no upstream catchments for {terminal_id}.")
-
-    terminal = upstream[upstream["_aihydro_catchment_id"] == str(terminal_id)].copy()
-    nonterminal = upstream[upstream["_aihydro_catchment_id"] != str(terminal_id)].copy()
-    vector_gdf = upstream[["_aihydro_catchment_id", "geometry"]].dissolve().reset_index(drop=True)
-    vector_gdf = vector_gdf.set_crs(catchments.crs).to_crs(4326)
+    missing_ids = upstream.attrs.get("missing_comids") or []
+    if missing_ids:
+        _flag("VECTOR_ASSEMBLY_INCOMPLETE")
+        if terminal_id in missing_ids:
+            raise RuntimeError(f"Terminal catchment {terminal_id} has no polygon in {basins_db.name}.")
+    rss_after_vector_load = _rss_memory_mb()
+    terminal = upstream[upstream["comid"] == terminal_id][["geometry"]].copy()
+    nonterminal = upstream[upstream["comid"] != terminal_id][["geometry"]].copy()
+    vector_gdf = upstream[["geometry"]].dissolve().reset_index(drop=True)
     vector_area = area_km2(vector_gdf)
     rss_after_vector_assembly = _rss_memory_mb()
+    # Self-consistency: the assembled catchment areas against MERIT-Basins' own cumulative area.
+    catchment_area_sum = float(upstream["area_km2"].sum()) if "area_km2" in upstream else None
+    official_uparea = store.river_uparea_km2(terminal_id)
+    if official_uparea and catchment_area_sum:
+        rel = abs(catchment_area_sum - official_uparea) / official_uparea
+        if rel > 0.02:
+            _flag("VECTOR_ASSEMBLY_UPAREA_MISMATCH")
+        validation_sources.append("merit_basins_rivers_uparea")
+    else:
+        rel = None
 
+    # -- terminal refinement ------------------------------------------------------------------------
+    refine_origin = mh.ORIGIN_NONE
     terminal_refinement_used = False
-    terminal_component = terminal[["geometry"]].copy()
+    terminal_component = terminal
     refinement_area: float | None = None
-    try:
-        terminal_component = _refine_terminal_catchment_with_flowdir(
-            terminal[["geometry"]].to_crs(catchments.crs),
-            snap_reference=snap_reference,
-            pfaf_region=pfaf,
-        )
-        terminal_refinement_used = True
-        refinement_area = area_km2(terminal_component.to_crs(4326))
-        rss_after_terminal_refinement = _rss_memory_mb()
-        fallback_history.append(
-            {"method": "terminal_local_merit_flowdir_refinement", "outcome": "succeeded"}
-        )
-    except Exception as exc:
-        if "TERMINAL_CATCHMENT_REFINEMENT_FAILED" not in quality_flags:
-            quality_flags.append("TERMINAL_CATCHMENT_REFINEMENT_FAILED")
+    refine_info: dict[str, Any] = {}
+    if unsnapped:
+        _flag("TERMINAL_CATCHMENT_REFINEMENT_SKIPPED_UNSNAPPED")
         fallback_history.append(
             {
-                "method": "terminal_local_merit_flowdir_refinement",
-                "outcome": "failed",
-                "reason": str(exc),
+                "method": "terminal_refinement",
+                "outcome": "skipped",
+                "reason": "outlet could not be snapped; the whole terminal catchment is kept",
             }
         )
+    else:
+        refine_label = "terminal_local_merit_flowdir_refinement"
+        try:
+            if flowdir_path is not None:
+                terminal_component, refine_info = mh.refine_local(terminal, flowdir_path, snap)
+            elif force_offline:
+                raise RuntimeError("TERMINAL_CATCHMENT_REFINEMENT_FAILED: offline and no flowdir staged")
+            else:
+                refine_label = "terminal_gee_window_refinement"
+                terminal_component, refine_info = mh.refine_ee(terminal, snap)
+            refine_origin = refine_info["origin"]
+            terminal_refinement_used = True
+            refinement_area = area_km2(terminal_component.to_crs(4326))
+            fallback_history.append({"method": refine_label, "outcome": "succeeded"})
+        except Exception as exc:
+            _flag("TERMINAL_CATCHMENT_REFINEMENT_FAILED")
+            if "WINDOW_TOO_LARGE" in str(exc):
+                _flag("TERMINAL_REFINEMENT_WINDOW_TOO_LARGE")
+            fallback_history.append(
+                {"method": refine_label, "outcome": "failed", "reason": str(exc)}
+            )
+    rss_after_terminal_refinement = _rss_memory_mb()
 
+    consistency = mh.version_consistency(
+        vector_version=MERIT_BASINS_VECTOR_VERSION, snap_origin=snap_origin, refine_origin=refine_origin
+    )
+    if consistency["mixed"]:
+        _flag("MERIT_VERSION_MIX")
+
+    # -- merge ---------------------------------------------------------------------------------------------
     pieces = []
     if not nonterminal.empty:
-        pieces.append(nonterminal[["geometry"]].to_crs(catchments.crs))
-    pieces.append(terminal_component.to_crs(catchments.crs))
+        pieces.append(nonterminal.to_crs(4326))
+    pieces.append(terminal_component.to_crs(4326))
     merged = gpd.GeoDataFrame(
         geometry=gpd.GeoSeries(
-            [gpd.GeoDataFrame(pd.concat(pieces, ignore_index=True), crs=catchments.crs).union_all()],
-            crs=catchments.crs,
+            [gpd.GeoDataFrame(pd.concat(pieces, ignore_index=True), crs=4326).union_all()], crs=4326
         )
-    ).to_crs(4326)
+    )
     rss_after_merge = _rss_memory_mb()
     polygon_area = area_km2(merged)
     rss_peak = max(
-        rss_before,
-        rss_after_topology_load,
-        rss_after_vector_assembly,
-        rss_after_terminal_refinement,
-        rss_after_merge,
+        rss_before, rss_after_vector_load, rss_after_vector_assembly,
+        rss_after_terminal_refinement, rss_after_merge,
     )
 
     area_validation, area_flags = validate_area(
@@ -1385,17 +1254,83 @@ def merit_basins_hybrid_delineate(
         touches_edge=False,
     )
     snap_validation, more_snap_flags = validate_snap(snap, expected_area_km2=expected_area_km2)
-    for flag in area_flags + more_snap_flags + snap_flags:
-        if flag not in quality_flags:
-            quality_flags.append(flag)
-    if "MERIT_UPA_AREA_MISMATCH" in quality_flags and "HYBRID_AREA_VALIDATION_MISMATCH" not in quality_flags:
-        quality_flags.append("HYBRID_AREA_VALIDATION_MISMATCH")
+    if official_uparea:
+        area_validation["merit_basins_uparea_km2"] = round(official_uparea, 3)
+        area_validation["catchment_area_sum_km2"] = round(catchment_area_sum or 0.0, 3)
+        area_validation["relative_error_assembly_vs_uparea"] = round(rel, 4) if rel is not None else None
+    if missing_ids:
+        area_validation["catchments_without_polygon"] = len(missing_ids)
+    for flag in area_flags + more_snap_flags:
+        _flag(flag)
+    if "MERIT_UPA_AREA_MISMATCH" in quality_flags:
+        _flag("HYBRID_AREA_VALIDATION_MISMATCH")
+
+    files = []
+    for kind, path in (("basins", basins_db), ("rivers", rivers_db), ("flowdir", flowdir_path), ("accum", accum_path)):
+        rec = vf.read_provenance(path) if path else None
+        if rec:
+            files.append(
+                {
+                    "kind": kind,
+                    "name": rec["name"],
+                    "sha256": rec["sha256"],
+                    "size_bytes": rec["size_bytes"],
+                    "url": rec["url"],
+                    "verified": True,
+                }
+            )
+    mega_rec = vf.read_provenance(mgr.megabasins_path()) if mgr.megabasins_path().exists() else None
+    if mega_rec:
+        files.append(
+            {
+                "kind": "level2_index", "name": mega_rec["name"], "sha256": mega_rec["sha256"],
+                "size_bytes": mega_rec["size_bytes"], "url": mega_rec["url"], "verified": True,
+            }
+        )
+    downloaded: list[dict[str, Any]] = []
+    for name in dict.fromkeys(downloaded_names):
+        if name == "megabasins.db":
+            path = mgr.megabasins_path()
+        else:
+            path = mgr._asset_path(next(k for k in vf.VALID_KINDS if name.startswith(k)), pfaf)
+        rec = vf.read_provenance(path) if path.exists() else None
+        if rec:
+            downloaded.append(
+                {"name": name, "bytes": rec["size_bytes"], "url": rec["url"], "sha256": rec["sha256"]}
+            )
+    if downloaded:
+        _flag("MERIT_AUTO_STAGED")
+    man = vf.load_manifest()
+    data_provenance = {
+        "files": files,
+        "downloaded": downloaded,
+        "acquisition_policy": stage_policy,
+        "licence": MERIT_BASINS_LICENSE,
+        "share_alike": True,
+        "licence_detail": man["licence"],
+        "pinned_manifest": {
+            "package": man["source"]["package"],
+            "package_version": man["source"]["package_version"],
+            "data_version": man["source"]["data_version"],
+        },
+        "version_consistency": consistency,
+        "refinement": {k: v for k, v in refine_info.items() if k != "bounds"} or None,
+    }
 
     cache_key = hashlib.sha256(
-        f"hybrid:{pfaf}:{terminal_id}:{snap_reference.cache_key}:{terminal_refinement_used}".encode(
-            "utf-8"
-        )
+        f"hybrid:{pfaf}:{terminal_id}:{snap_reference.cache_key}:{terminal_refinement_used}:"
+        f"{[f['sha256'] for f in files]}".encode("utf-8")
     ).hexdigest()
+    raster_origin_local = mh.ORIGIN_LOCAL in (snap_origin, refine_origin)
+    raster_ee = mh.ORIGIN_EE in (snap_origin, refine_origin)
+    if raster_ee:
+        raster_version = f"{MERIT_GEE_DATASET} (Earth Engine window)"
+        raster_source = "Google Earth Engine"
+    elif raster_origin_local:
+        raster_version = MERIT_FLOWDIR_RASTER_VERSION.format(pfaf=pfaf)
+        raster_source = MERIT_FLOWDIR_RASTER_SOURCE.format(pfaf=pfaf)
+    else:
+        raster_version = raster_source = None
     return MeritFlowdirResult(
         gdf=merged,
         area_km2=polygon_area,
@@ -1412,26 +1347,27 @@ def merit_basins_hybrid_delineate(
         area_validation=area_validation,
         quality_flags=quality_flags,
         source="merit_basins_hybrid",
-        routing_dataset="MERIT-Basins + MERIT Hydro flowdir",
+        routing_dataset="MERIT-Basins vector assembly + terminal raster refinement",
         routing_resolution_m=MERIT_SCALE_M,
         pfaf_region=pfaf,
-        routing_data_source="local_merit_basins_vectors_and_flowdir",
+        routing_data_source="pinned_mghydro_basins_db"
+        + ("_and_regional_rasters" if raster_origin_local else "_and_gee_window" if raster_ee else ""),
         vector_dataset_version=MERIT_BASINS_VECTOR_VERSION,
-        raster_dataset_version=MERIT_FLOWDIR_RASTER_VERSION.format(pfaf=pfaf),
-        vector_data_source=MERIT_BASINS_VECTOR_SOURCE,
-        raster_data_source=MERIT_FLOWDIR_RASTER_SOURCE.format(pfaf=pfaf),
+        raster_dataset_version=raster_version,
+        vector_data_source=MERIT_BASINS_VECTOR_SOURCE.format(pfaf=pfaf),
+        raster_data_source=raster_source,
         snap_source=snap_reference.source,
         official_merit_upa_km2=snap_reference.official_merit_upa_km2,
         polygon_area_km2=polygon_area,
         validation_sources=validation_sources,
-        regional_flowdir_cached=bool(merit_check_routing_region_cache(pfaf).get("flowdir_ready")),
-        execution_mode="local_vector_topology_terminal_raster_refinement",
+        regional_flowdir_cached=flowdir_path is not None,
+        execution_mode="vector_topology_terminal_raster_refinement",
         peak_memory_mb=round(_peak_memory_mb(), 3),
         runtime_seconds=round(time.perf_counter() - started, 3),
         fallback_history=fallback_history,
         memory_telemetry={
             "rss_before_mb": round(rss_before, 3),
-            "rss_after_topology_load_mb": round(rss_after_topology_load, 3),
+            "rss_after_vector_load_mb": round(rss_after_vector_load, 3),
             "rss_after_vector_assembly_mb": round(rss_after_vector_assembly, 3),
             "rss_after_terminal_refinement_mb": round(rss_after_terminal_refinement, 3),
             "rss_after_merge_mb": round(rss_after_merge, 3),
@@ -1444,6 +1380,7 @@ def merit_basins_hybrid_delineate(
         terminal_refinement_used=terminal_refinement_used,
         vector_assembly_area_km2=vector_area,
         refined_polygon_area_km2=refinement_area if refinement_area is not None else polygon_area,
+        data_provenance=data_provenance,
     )
 
 

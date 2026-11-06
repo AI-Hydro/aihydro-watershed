@@ -1,6 +1,15 @@
 # Changelog — aihydro-watershed
 
-## [Unreleased]
+## [0.4.0] - 2026-11-06
+
+**Defaults changed in this release.** (1) Outside CONUS, `delineate_from_point(method="auto")` now starts with the MERIT-Basins hybrid
+(`merit_basins_hybrid`) instead of `merit_gee`; the first call per region downloads pinned, SHA-256-verified data (see the disclosure notes below;
+`merit_manager.DEFAULT_AUTO_STAGE_POLICY = "never"` makes it confirm-first). (2) NLDI no longer moves the outlet downstream on its own: with no
+`expected_area_km2` and a nearest reach draining < 80 km2, it returns that reach's basin with `outlet_ambiguity` and the `NLDI_OUTLET_AMBIGUOUS` flag
+(also written to the NLDI row of `fallback_history`); pass `allow_downstream_expansion=True` to opt in to the old behaviour. Other behaviour changes below:
+`slope_from_dem` fails closed, and the MERIT shapefile layout is no longer read.
+
+This release merges aihydro-watershed PRs #11, #12, #7, #10, #8, #9 and #13. The sections below keep each PR's notes, in merge order.
 
 ### Changed
 
@@ -146,7 +155,7 @@ Audit C8 latent sibling (`docs/vision-2040/findings/slope-mean-diagnosis-2026-11
 - `tests/test_signatures_offline.py`: the two tests that hung without a network now pass `precipitation="skip"`, and an autouse fixture
   makes any precipitation fetch in that module fail loudly.
 
-## [0.3.0] - unreleased (2026-10-30) BREAKING-VALUE
+## [0.3.0] - 2026-10-30 BREAKING-VALUE
 
 Version 0.3.0, not 0.2.2: a `<0.3` pin on an installed 2.8.4 would otherwise take these changed values.
 

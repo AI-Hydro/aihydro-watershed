@@ -6,6 +6,7 @@ delineation evaluation (HTTP 502/429 at hydrolocation, ``Service returned no fea
 """
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 
 import geopandas as gpd
@@ -141,26 +142,95 @@ def test_hybrid_unavailable_falls_to_3dep_only_as_guarded_last_resort(monkeypatc
     d = delineate_from_point(LAT, LON, method="auto").data
     assert d["method_used"] == "small_catchment_3dep"
     assert "FALLBACK_AFTER_TRANSIENT_NLDI" in d["quality_flags"]
+    assert "LAST_RESORT_UNVERIFIED" not in d["quality_flags"]
     served = d["fallback_history"][-1]
     assert served["outcome"] == "succeeded" and served["reason"].startswith("last resort after NLDI transient failure")
 
-    # the same tier with a known failure signature is rejected, not served
+
+@pytest.mark.parametrize("flag", ["BASIN_TOUCHES_MAX_WINDOW", "LIKELY_DITCH_SNAP"])
+def test_rejected_3dep_is_served_unverified_when_every_later_tier_fails(monkeypatch, tiers, flag):
+    _nldi_raises(monkeypatch, _unavailable(429))
+    tiers["behaviour"]["hybrid"] = lambda: (_ for _ in ()).throw(RuntimeError("MERIT_BASINS_NOT_STAGED"))
+    tiers["behaviour"]["sc"] = lambda: _sc(area=190.0, flags=[flag])
+    monkeypatch.setattr(
+        "aihydro_watershed.delineation.pysheds_pipeline.delineate_fast",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("raw DEM offline")),
+    )
+    d = delineate_from_point(LAT, LON, method="auto").data
+    assert d["method_used"] == "small_catchment_3dep"
+    assert {flag, "LAST_RESORT_UNVERIFIED", "FALLBACK_AFTER_TRANSIENT_NLDI"} <= set(d["quality_flags"])
+    assert len(tiers["sc"]) == 1                      # the rejected result is kept, not recomputed
+    rows = d["fallback_history"]
+    assert any(r["method"] == "small_catchment_3dep" and r["outcome"] == "rejected" and flag in r["reason"] for r in rows)
+    assert rows[-1]["method"] == "small_catchment_3dep" and rows[-1]["outcome"] == "succeeded_unverified"
+
+
+def test_rejected_3dep_gives_way_to_raw_dem_when_that_serves(monkeypatch, tiers):
+    _nldi_raises(monkeypatch, _unavailable(429))
+    tiers["behaviour"]["hybrid"] = lambda: (_ for _ in ()).throw(RuntimeError("MERIT_BASINS_NOT_STAGED"))
     tiers["behaviour"]["sc"] = lambda: _sc(area=190.0, flags=["BASIN_TOUCHES_MAX_WINDOW"])
-    with pytest.raises(ToolError) as caught:
-        delineate_from_point(LAT, LON, method="auto")
-    rows = caught.value.details["fallback_history"]
-    assert any(r["method"] == "small_catchment_3dep" and r["outcome"] == "rejected"
-               and "BASIN_TOUCHES_MAX_WINDOW" in r["reason"] for r in rows)
+    fast = SimpleNamespace(
+        gdf=_gdf(), area_km2=480.0, pfaf_code="78", merit_snap_distance_m=10.0, snapped_outlet_lon=LON,
+        snapped_outlet_lat=LAT, snap_grid_crs="EPSG:4326", snap_grid_resolution_m=90.0,
+    )
+    monkeypatch.setattr("aihydro_watershed.delineation.pysheds_pipeline.delineate_fast", lambda *a, **k: fast)
+    monkeypatch.setattr(router, "_should_escalate", lambda *a, **k: None)
+    d = delineate_from_point(LAT, LON, method="auto").data
+    assert d["method_used"] == "dem_raw_fallback"
+    assert "LAST_RESORT_UNVERIFIED" not in d["quality_flags"]
 
 
-def test_ditch_snap_is_rejected_as_a_stand_in(monkeypatch, tiers):
+def test_ditch_snap_with_every_tier_down_is_served_unverified(monkeypatch, tiers):
     _nldi_raises(monkeypatch, _unavailable(429))
     tiers["behaviour"]["hybrid"] = lambda: (_ for _ in ()).throw(RuntimeError("MERIT_BASINS_NOT_STAGED"))
     tiers["behaviour"]["sc"] = lambda: _sc(area=0.006, flags=["LIKELY_DITCH_SNAP"])
+    monkeypatch.setattr(
+        "aihydro_watershed.delineation.pysheds_pipeline.delineate_fast",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("raw DEM offline")),
+    )
+    d = delineate_from_point(LAT, LON, method="auto").data
+    assert "LAST_RESORT_UNVERIFIED" in d["quality_flags"] and "LIKELY_DITCH_SNAP" in d["quality_flags"]
+
+
+@pytest.mark.parametrize(
+    "local_error", ["ADAPTIVE_WINDOW_LIMIT_REACHED", "LOCAL_MEMORY_THRESHOLD_EXCEEDED", "HYBRID_ROUTING_REQUIRED x"]
+)
+def test_failing_cached_local_tier_does_not_end_the_chain(monkeypatch, tiers, local_error):
+    """flowdir_ready + a local-tier failure used to raise LARGE_BASIN_HYBRID_REQUIRED and stop the chain."""
+    _nldi_raises(monkeypatch, _unavailable(429))
+    monkeypatch.setattr(pipe, "merit_check_routing_region_cache", lambda *a, **k: {"flowdir_ready": True})
+    monkeypatch.setattr(
+        pipe, "local_merit_flowdir_pyflwdir", lambda *a, **k: (_ for _ in ()).throw(RuntimeError(local_error))
+    )
+    tiers["behaviour"]["hybrid"] = lambda: (_ for _ in ()).throw(RuntimeError("MERIT_BASINS_NOT_STAGED"))
+
+    # merit_gee serves
+    tiers["behaviour"]["gee"] = lambda: SimpleNamespace(
+        gdf=_gdf(), area_km2=480.0, snap_distance_m=1.0, outlet_lon=LON, outlet_lat=LAT, routing_resolution_m=90.0,
+        snap_quality="x", snap_validation={}, snapped_upa_km2=None, official_merit_upa_km2=None,
+        local_upstream_area_km2=None, polygon_area_km2=480.0, area_validation={}, quality_flags=[], cache_key="k",
+        routing_data_source=None, snap_source="gee", validation_sources=[], regional_flowdir_cached=True,
+    )
+    d = delineate_from_point(LAT, LON, method="auto").data
+    assert d["method_used"] == "merit_gee_pyflwdir" and len(tiers["gee"]) == 1
+    assert "FALLBACK_AFTER_TRANSIENT_NLDI" in d["quality_flags"]
+    assert any(r["method"] == "local_merit_flowdir_pyflwdir" and r["outcome"] == "failed" for r in d["fallback_history"])
+
+    # merit_gee also down: the guarded 3DEP tier is still reached
+    tiers["behaviour"]["gee"] = None
+    d = delineate_from_point(LAT, LON, method="auto").data
+    assert d["method_used"] == "small_catchment_3dep" and len(tiers["sc"]) == 1
+
+
+def test_failing_cached_local_tier_still_raises_for_forced_local_merit(monkeypatch, tiers):
+    monkeypatch.setattr(pipe, "merit_check_routing_region_cache", lambda *a, **k: {"flowdir_ready": True})
+    monkeypatch.setattr(
+        pipe, "local_merit_flowdir_pyflwdir",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("ADAPTIVE_WINDOW_LIMIT_REACHED")),
+    )
     with pytest.raises(ToolError) as caught:
-        delineate_from_point(LAT, LON, method="auto")
-    assert any(r["outcome"] == "rejected" and "LIKELY_DITCH_SNAP" in r["reason"]
-               for r in caught.value.details["fallback_history"])
+        delineate_from_point(LAT, LON, method="local_merit")
+    assert caught.value.code == "LARGE_BASIN_HYBRID_REQUIRED"
 
 
 def test_source_disagreement_flagged_when_nldi_area_and_served_area_differ(monkeypatch, tiers):
@@ -197,6 +267,10 @@ def test_nldi_tiny_reach_still_goes_to_3dep(monkeypatch, tiers):
     tiers["behaviour"]["sc"] = lambda: _sc(area=0.31)
     d = delineate_from_point(LAT, LON, method="auto").data
     assert d["method_used"] == "small_catchment_3dep" and tiers["hybrid"] == []
+    # serving the culvert-scale case is by design, not a fallback
+    assert not set(d.get("quality_flags") or []) & {
+        "FALLBACK_AFTER_NLDI_NOT_USABLE", "FALLBACK_AFTER_TRANSIENT_NLDI", "SOURCE_DISAGREEMENT",
+    }
 
 
 def test_forced_nldi_failure_still_raises(monkeypatch, tiers):
@@ -209,5 +283,36 @@ def test_forced_nldi_failure_still_raises(monkeypatch, tiers):
 def test_transient_classifier():
     assert _nldi_failure_is_transient(_unavailable(429))
     assert _nldi_failure_is_transient(RuntimeError("HTTP 502"))
+    assert _nldi_failure_is_transient(RuntimeError("server replied status code: 503"))
+    assert _nldi_failure_is_transient(RuntimeError("connection reset by peer"))
     assert not _nldi_failure_is_transient(ToolError(code="NLDI_NOT_FOUND", message="No NHD COMID indexed near", tool="t"))
     assert not _nldi_failure_is_transient(KeyError("comid"))
+
+
+@pytest.mark.parametrize(
+    "msg",
+    [
+        "bad geometry at (40.512, -100.5)",
+        "No COMID within 500 m",
+        "Invalid geometry area 530 km2",
+        "client disconnected from the layer",
+        "Unavailable layer name 'x'",
+    ],
+)
+def test_transient_classifier_ignores_numbers_and_words_that_only_look_like_outages(msg):
+    assert not _nldi_failure_is_transient(RuntimeError(msg))
+
+
+@pytest.mark.parametrize("exc", [TimeoutError(), asyncio.TimeoutError(), ConnectionResetError(), ConnectionError("")])
+def test_transient_classifier_uses_the_exception_type_when_the_message_is_empty(exc):
+    assert _nldi_failure_is_transient(exc)
+
+
+def test_transient_classifier_follows_the_cause_chain():
+    try:
+        try:
+            raise TimeoutError()
+        except TimeoutError as inner:
+            raise RuntimeError("") from inner
+    except RuntimeError as outer:
+        assert _nldi_failure_is_transient(outer)

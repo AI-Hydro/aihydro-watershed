@@ -92,7 +92,7 @@ def test_nldi_failed_and_skipped_rows_precede_the_tier_that_serves(monkeypatch):
     from aihydro_watershed.delineation.router import delineate_from_point
 
     def _down(*a, **k):
-        raise RuntimeError("NLDI 503")
+        raise RuntimeError("NLDI HTTP 503")
 
     monkeypatch.setattr(nldi_point, "delineate_nldi_at_point", _down)
     monkeypatch.setattr(small_catchment, "delineate_small_catchment",
@@ -100,7 +100,7 @@ def test_nldi_failed_and_skipped_rows_precede_the_tier_that_serves(monkeypatch):
     with pytest.raises(ToolError) as caught:
         delineate_from_point(40.0, -100.0, method="nldi")
     rows = caught.value.details["fallback_history"]
-    assert rows == [{"method": "nldi_comid", "outcome": "failed", "reason": "NLDI 503", "transient": True}]
+    assert rows == [{"method": "nldi_comid", "outcome": "failed", "reason": "NLDI HTTP 503", "transient": True}]
 
     monkeypatch.setattr(nldi_point, "delineate_nldi_at_point", lambda *a, **k: _nldi_result(0.2))
     with pytest.raises(ToolError) as caught:

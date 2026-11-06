@@ -56,10 +56,31 @@ _SOURCE_DISAGREEMENT_FRAC = 0.25
 # ("Service returned no features", "string indices must be integers"). Seen in the CAMELS evaluation:
 # every gauge with one of those messages had a 429 in the same run.
 _TRANSIENT_NLDI_RE = re.compile(
-    r"\bHTTP\s*(429|5\d\d)\b|\b(429|5\d\d)\b|time[d ]?-?out|connect|DNS|failing fast|deadline|"
-    r"too many requests|unavailable|no response|Service returned no features|string indices must be integers",
+    r"\bHTTP\s*(?:429|5\d\d)\b|\bstatus(?:\s*code)?[ =:]*(?:429|5\d\d)\b|\btimed?[ -]?out\b|"
+    r"\bconnection (?:reset|refused|aborted|closed|error)\b|\bcannot connect to host\b|\bDNS\b|failing fast|"
+    r"\bdeadline\b|too many requests|\bservice unavailable\b|\bno response\b|"
+    r"Service returned no features|string indices must be integers",
     re.I,
 )
+
+
+def _transient_exception_types() -> tuple[type, ...]:
+    """Exception classes that mean "could not reach the service" whatever their (possibly empty) message says."""
+    import asyncio
+
+    types: list[type] = [TimeoutError, asyncio.TimeoutError, ConnectionError]
+    for mod, names in (
+        ("requests.exceptions", ("Timeout", "ConnectionError")),
+        ("httpx", ("TimeoutException", "NetworkError")),
+        ("aiohttp", ("ClientConnectionError", "ServerTimeoutError")),
+    ):
+        try:
+            m = __import__(mod, fromlist=list(names))
+        except Exception:  # optional dependency
+            continue
+        types.extend(getattr(m, n) for n in names if isinstance(getattr(m, n, None), type))
+    return tuple(types)
+
 
 _SOURCES_3DEP = [
     DataSource(
@@ -457,6 +478,13 @@ def _nldi_failure_is_transient(exc: BaseException) -> bool:
         return True
     if code == "NLDI_NOT_FOUND":
         return False
+    seen: BaseException | None = exc
+    for _ in range(4):  # the exception itself, then its cause / context chain
+        if seen is None:
+            break
+        if isinstance(seen, _transient_exception_types()):
+            return True
+        seen = seen.__cause__ or seen.__context__
     return bool(_TRANSIENT_NLDI_RE.search(str(exc)))
 
 
@@ -619,6 +647,8 @@ def _delineate_from_point(
     nldi_reason = "NLDI failure"
     # Partial evidence from tiers that ran but did not serve: [{source, kind, area_km2}].
     evidence: list[dict[str, Any]] = []
+    # A 3DEP result the guarded tier refused; served only if every later tier also fails (LAST_RESORT_UNVERIFIED).
+    rejected_sc: Any = None
     policy_flags: list[str] = []         # flags the router itself raises; merged at the end (tiers replace quality_flags)
 
     def _note_nldi_failure(exc: BaseException) -> str:
@@ -634,21 +664,24 @@ def _delineate_from_point(
         fallback_history.append(row)
         return nldi_reason
 
-    def _try_small_catchment(reason: str | None, *, strict: bool = False) -> bool:
-        """Run the 3DEP small-catchment tier; on success fill the result state."""
+    def _try_small_catchment(reason: str | None, *, strict: bool = False, last_resort_sc: Any = None) -> bool:
+        """Run the 3DEP small-catchment tier; on success fill the result state.
+
+        ``last_resort_sc`` serves a result ``strict`` already rejected (no re-run), flagged ``LAST_RESORT_UNVERIFIED``.
+        """
         nonlocal gdf, area, method_used, routing_dataset, routing_resolution_m
         nonlocal snap_distance_m, polygon_area_km2, area_validation, snapped_outlet
         nonlocal snap_grid_crs, snap_grid_resolution_m
         nonlocal window_expansion_iterations, final_window_bounds
         nonlocal basin_touched_window_boundary, window_complete
-        nonlocal license_note, citation
+        nonlocal license_note, citation, rejected_sc
         try:
             from aihydro_watershed.delineation.small_catchment import (
                 ROUTING_DATASET,
                 delineate_small_catchment,
             )
 
-            sc = delineate_small_catchment(lat, lon)
+            sc = last_resort_sc if last_resort_sc is not None else delineate_small_catchment(lat, lon)
         except Exception as exc:
             log.info("Small-catchment tier failed: %s", exc)
             fallback_history.append(
@@ -671,7 +704,7 @@ def _delineate_from_point(
                 }
             )
             return False
-        if strict:
+        if strict and last_resort_sc is None:
             bad = [f for f in _SMALL_CATCHMENT_REJECT_FLAGS if f in sc.quality_flags]
             if bad:
                 fallback_history.append(
@@ -687,6 +720,7 @@ def _delineate_from_point(
                 evidence.append(
                     {"source": _SMALL_CATCHMENT_METHOD, "kind": "rejected_polygon_area", "area_km2": sc.area_km2}
                 )
+                rejected_sc = sc
                 return False
         gdf = sc.gdf
         area = sc.area_km2
@@ -707,7 +741,7 @@ def _delineate_from_point(
         window_complete = not basin_touched_window_boundary
         license_note = "USGS 3DEP elevation data: public domain"
         citation = "U.S. Geological Survey, 3D Elevation Program 1/3 arc-second DEM"
-        for f in sc.quality_flags:
+        for f in [*sc.quality_flags, *(["LAST_RESORT_UNVERIFIED"] if last_resort_sc is not None else [])]:
             if f not in quality_flags:
                 quality_flags.append(f)
         if expected_area_km2 and expected_area_km2 > 0:
@@ -722,7 +756,8 @@ def _delineate_from_point(
         fallback_history.append(
             {
                 "method": _SMALL_CATCHMENT_METHOD,
-                "outcome": "succeeded",
+                # "succeeded_unverified" reads as served in the tools attempt trail (outcome startswith "succeeded").
+                "outcome": "succeeded_unverified" if last_resort_sc is not None else "succeeded",
                 "reason": reason or "requested",
                 "outlet_lat": sc.outlet_lat,
                 "outlet_lon": sc.outlet_lon,
@@ -851,11 +886,11 @@ def _delineate_from_point(
                 {"method": "nldi_comid", "outcome": "skipped", "reason": escalation_reason}
             )
             if method == "auto":
-                nldi_failure = "not_usable"
                 evidence.append({"source": "nldi_comid", "kind": "upstream_area", "area_km2": nldi_area})
-            # NLDI answered with a sub-km2 reach: that is the culvert-scale case the 3DEP tier is for.
-            if method == "auto" and nldi_area < _NLDI_QUICK_MIN_KM2:
-                _try_small_catchment(escalation_reason)
+                # NLDI answered with a sub-km2 reach: that is the culvert-scale case the 3DEP tier is for, and
+                # serving it there is by design, not a fallback. Only a tier that does not serve it is "not usable".
+                if nldi_area >= _NLDI_QUICK_MIN_KM2 or not _try_small_catchment(escalation_reason):
+                    nldi_failure = "not_usable"
         except Exception as e:
             log.info("NLDI quick tier unavailable: %s", e)
             escalation_reason = _note_nldi_failure(e)
@@ -1075,7 +1110,14 @@ def _delineate_from_point(
                 {"method": "local_merit_flowdir_pyflwdir", "outcome": "succeeded"}
             )
         except Exception as e:
-            if "HYBRID_ROUTING_REQUIRED" in str(e) and method in ("auto", "merit_basins"):
+            if method == "auto" and nldi_failure_is_exception:
+                # NLDI already failed, so this chain must reach merit_gee / 3DEP / raw DEM: record and fall through.
+                fallback_history.append(
+                    {"method": "local_merit_flowdir_pyflwdir", "outcome": "failed", "reason": str(e)}
+                )
+                if "HYBRID_ROUTING_REQUIRED" in str(e):
+                    _try_hybrid_result(str(e))   # no-op when the hybrid already ran (one attempt per call)
+            elif "HYBRID_ROUTING_REQUIRED" in str(e) and method in ("auto", "merit_basins"):
                 if _try_hybrid_result(str(e)):
                     pass
                 else:
@@ -1398,7 +1440,16 @@ def _delineate_from_point(
             escalation_reason = str(e)
 
     if run_merit and gdf is None:
-        if not _try_hybrid_result(escalation_reason or "requested_merit_basins"):
+        if (
+            not _try_hybrid_result(escalation_reason or "requested_merit_basins")
+            and not (
+                method == "auto"
+                and rejected_sc is not None
+                and _try_small_catchment(
+                    f"last resort after {nldi_reason}; every other tier failed", last_resort_sc=rejected_sc
+                )
+            )
+        ):
             # The local MERIT-Basins hybrid (merit_basins_hybrid_delineate) IS the
             # accurate tier. If it can't run (e.g. basin vectors/flowdir not staged
             # locally), there is no further MERIT fallback to attempt — surface a

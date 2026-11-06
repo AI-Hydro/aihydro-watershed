@@ -276,6 +276,19 @@ Decision record. Evidence: `docs/vision-2040/evidence/camels-delineation-1/` (ou
   It returns the nearest reach with `NLDI_OUTLET_AMBIGUOUS` and the candidate COMIDs (areas included). Moving downstream needs `expected_area_km2` or `allow_downstream_expansion=True`, and only to a candidate larger than the nearest reach.
   `NLDI_OUTLET_AMBIGUOUS` (quality flag): the nearest reach drains < 80 km2, so the outlet may be a tributary reach or a larger stem; the returned basin is the nearest reach's and `outlet_ambiguity` lists the alternatives.
   Side effect: map-click quick delineation now returns the small reach's basin plus the flag, not the former larger stem.
+- **Fallback honesty (CONUS `auto`).** When NLDI raises (429, 5xx, no response, the fail-fast memo, or the throttled-reply shapes pynhd surfaces: `Service returned no features`,
+  `string indices must be integers`), `auto` no longer hands the point to the 3DEP small-catchment tier. Order now: MERIT-Basins hybrid, then cached local MERIT / `merit_gee`
+  (a failing cached-flowdir tier is recorded on the trail and the chain continues), then the 3DEP tier **only if its result carries neither `BASIN_TOUCHES_MAX_WINDOW` nor `LIKELY_DITCH_SNAP`**
+  (otherwise `rejected` on the trail), then raw DEM. If all of those fail, the rejected 3DEP polygon is served as a last resort, flagged `LAST_RESORT_UNVERIFIED` plus its own flags
+  (trail outcome `succeeded_unverified`). Forced methods and NLDI success are unchanged; 3DEP stays first when `expected_area_km2 < 5` and when NLDI answered with a sub-km2 reach (no fallback flag there: by design).
+  The fallback can auto-stage MERIT-Basins vectors (about 0.1-0.9 GB per Pfaf region, under the 2 GB tiered cap) on first call; `AIHYDRO_MERIT_AUTO_STAGE=never` turns that off.
+  Evidence (CAMELS, 27 `auto` gauges served by 3DEP after a failed NLDI): 19 wrong basins; the forced hybrid on the same gauges had 2 wrong basins and 24 of 27 within 5% of `area_gages2`.
+  Recomputed by `docs/vision-2040/evidence/camels-delineation-1/release_2.8.9/rescore_autofb/rescore.py` (table sha256 `66837f3a...cb49`). **Limits:** n = 27, in-sample (the gauges motivated the rule),
+  Wilson 95% interval for 2/27 is 2.1%-23.4%; the proxy hybrid used Earth Engine snapping (`snap_source gee`), so the figure holds for GEE-authenticated users and the unsnapped-outlet
+  (`offline_unsnapped`) hybrid is unevaluated; the `expected_area_km2` path has no evidence arm; the proxy is the forced hybrid arm, not a re-run of this router.
+  Quality flags: `FALLBACK_AFTER_TRANSIENT_NLDI` (NLDI failed transiently and another tier served), `FALLBACK_AFTER_NLDI_NOT_USABLE` (NLDI answered or failed non-transiently and its result was rejected),
+  `SOURCE_DISAGREEMENT` (an earlier tier's partial area, NLDI upstream area or MERIT `uparea`, differs from the served polygon by more than 25%; details in `source_disagreement`).
+  The failed NLDI row carries `transient: true` in this package's `fallback_history`; the aihydro-tools attempt-trail reader does not carry that key yet.
 - **Not changed.** CAMELS 14158500's WRONG_BASIN is a reference defect (CAMELS' own list gives a 48% size error; the NLDI area is within 3% of the USGS area), not a tool fault.
   Using the NLDI `nwissite/USGS-<id>` feature when a gauge id is known is already the path of `delineate_watershed(gauge_id)`; `delineate_from_point` takes no gauge id and was not extended here.
 

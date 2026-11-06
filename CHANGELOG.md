@@ -1,5 +1,38 @@
 # Changelog — aihydro-watershed
 
+## [Unreleased]
+
+### Fixed
+
+- **CONUS `method="auto"` no longer falls back silently to the 3DEP small-catchment tier when NLDI is throttled or down.** In the CAMELS evaluation (aihydro-tools 2.8.9 / watershed 0.4.0)
+  27 `auto` gauges were served by `small_catchment_3dep` after a failed NLDI call; 19 were the wrong basin.
+  That tier is built for culvert-scale catchments: with a 10 km half-width window it returns a truncated basin (`BASIN_TOUCHES_MAX_WINDOW`) or a roadside-ditch snap (`LIKELY_DITCH_SNAP`) on river-scale basins,
+  and the router served it regardless. Now, when NLDI raises, `auto` tries the MERIT-Basins hybrid first (also when `expected_area_km2` is given, ahead of `merit_gee`), then the other MERIT tiers
+  (a cached-flowdir tier that raises no longer ends the chain), then the 3DEP tier only if its result carries neither flag (otherwise the trail row is `rejected`), then raw DEM.
+  If every later tier also fails, the rejected 3DEP polygon is served as a last resort with `LAST_RESORT_UNVERIFIED` plus its own flags; its trail row is `succeeded_unverified`
+  (reads as served in the tools attempt trail). 3DEP is unchanged where it fits: `expected_area_km2 < 5`, and NLDI answering with a sub-km2 reach.
+- Transient-failure classifier: HTTP status codes are matched as `HTTP <code>` / `status <code>`, a leading code (`502, message=...`, `500 Server Error: ...` as aiohttp and requests word it) or an exception's `status` / `response.status_code`, never as bare numbers elsewhere in the text (coordinates, distances and areas no longer match); timeouts and connection errors
+  are recognised by exception type (and cause chain) as well as by message, so an empty-message `TimeoutError` counts.
+
+### Evidence and limits
+
+- Offline re-score of the 27 gauges with the forced-hybrid arm as proxy: wrong-basin 19 -> 2, within 5% of `area_gages2` 3 -> 24. Recomputed by
+  `docs/vision-2040/evidence/camels-delineation-1/release_2.8.9/rescore_autofb/rescore.py` (output `rescore.json` next to it; input `results/table.csv`,
+  sha256 `66837f3a3d0e33a35855e8c82384c43039bc031fabbe721bbebec3d69484cb49`; evidence repo commit d9a0ef5).
+- Limits: n = 27; **in-sample** (these gauges motivated the rule); the 2/27 wrong-basin rate has a Wilson 95% interval of 2.1%-23.4%. The proxy arm is the forced hybrid, not a re-run of this router.
+  All 27 proxy runs snapped the outlet with Earth Engine (`snap_source gee`), so the number holds for GEE-authenticated users; without Earth Engine the hybrid uses an unsnapped outlet
+  (`offline_unsnapped`), which has **not been evaluated**. The `expected_area_km2` path (hybrid ahead of `merit_gee`) has no evidence arm.
+- The 158-gauge `auto` figures from the same evaluation come from an incomplete, still-moving snapshot and are not cited.
+- The fallback can auto-stage MERIT-Basins vectors for the point's Pfaf region on first call (about 0.1-0.9 GB per region, under the 2 GB tiered cap; progress goes to the log).
+  `AIHYDRO_MERIT_AUTO_STAGE=never` disables it, and the hybrid then fails over to the next tier.
+
+### Added
+
+- Quality flags `FALLBACK_AFTER_TRANSIENT_NLDI` and `FALLBACK_AFTER_NLDI_NOT_USABLE` on any CONUS `auto` result not served by NLDI (not raised for the by-design sub-km2 culvert route); the serving trail row's `reason` names the NLDI failure.
+  The failed NLDI row also carries `transient: true` in this package's `fallback_history`; the aihydro-tools attempt-trail reader does not carry that key yet, so it is not in the recorded trail.
+- Quality flag `LAST_RESORT_UNVERIFIED` (see Fixed).
+- Quality flag `SOURCE_DISAGREEMENT` and `source_disagreement` in the result: an earlier tier's partial area (NLDI upstream area, MERIT `uparea` of a rejected GEE result, a rejected 3DEP area) differs from the served polygon's area by more than 25%.
+
 ## [0.4.0] - 2026-11-06
 
 **Defaults changed in this release.** (1) Outside CONUS, `delineate_from_point(method="auto")` now starts with the MERIT-Basins hybrid

@@ -1224,7 +1224,13 @@ def merit_basins_hybrid_delineate(
             if mgr.ensure_level2_index(download=True) is not None:
                 downloaded_names.append("megabasins.db")
             pfaf = mgr.resolve_pfaf_region(lat, lon)
-        status = mgr.auto_stage_vectors(pfaf) if auto_stage else mgr.basins_region_cache(pfaf)
+        status = (
+            mgr.auto_stage_vectors(
+                pfaf, progress_cb=lambda msg, done, tot: log.info("MERIT-Basins staging [Pfaf %s] %s", pfaf, msg)
+            )
+            if auto_stage
+            else mgr.basins_region_cache(pfaf)
+        )
         downloaded_names += status.downloaded or []
         if status.integrity_error:
             raise vf.AssetIntegrityError(

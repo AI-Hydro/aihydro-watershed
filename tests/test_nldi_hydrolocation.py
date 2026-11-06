@@ -200,6 +200,23 @@ def test_router_forwards_consent_flag_default_false(monkeypatch):
     assert seen == {"allow_downstream_expansion": True}
 
 
+def test_ambiguity_flag_is_in_the_nldi_trail_row(monkeypatch):
+    from aihydro_watershed.delineation import router
+    from aihydro_core import HydroMeta, HydroResult
+
+    def fake(lat, lon, **kw):
+        return HydroResult(
+            data={"area_km2": 30.0, "quality_flags": ["NLDI_OUTLET_AMBIGUOUS"],
+                  "method_used": "nldi_comid", "comid": 1},
+            meta=HydroMeta(tool="t", version="0", params={}),
+        )
+
+    monkeypatch.setattr(nl, "delineate_nldi_at_point", fake)
+    res = router.delineate_from_point(39.10741, -120.16214, method="nldi")
+    row = [r for r in res.data["fallback_history"] if r["method"] == "nldi_comid"][-1]
+    assert row["outcome"] == "served" and row["reason"] == "NLDI_OUTLET_AMBIGUOUS"
+
+
 # ---- latency bound ---------------------------------------------------------
 @pytest.fixture(autouse=True)
 def reset_memo(monkeypatch):

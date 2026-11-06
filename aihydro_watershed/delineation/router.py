@@ -482,6 +482,7 @@ def delineate_from_point(
         return _delineate_from_point(
             lat, lon, expected_area_km2=expected_area_km2, method=method,
             verbose=verbose, name=name, _trail=trail,
+            allow_downstream_expansion=allow_downstream_expansion,
         )
     except ToolError as exc:
         # A failed delineation keeps the tiers it tried: the same ``fallback_history`` a success returns,
@@ -509,6 +510,7 @@ def _delineate_from_point(
     verbose: bool,
     name: str | None,
     _trail: list[dict[str, Any]],
+    allow_downstream_expansion: bool = False,
 ) -> HydroResult:
     """Implementation of :func:`delineate_from_point`; ``_trail`` is the caller-owned ``fallback_history``."""
     if not (-90 <= lat <= 90 and -180 <= lon <= 180):
@@ -749,8 +751,12 @@ def _delineate_from_point(
                     lat, lon, allow_downstream_expansion=allow_downstream_expansion
                 )
             nldi_area = float(nldi_result.data.get("area_km2", 0))
+            # The ambiguity flag rides on the NLDI row so the attempt trail shows the outlet was not moved.
+            nldi_flag = "NLDI_OUTLET_AMBIGUOUS" if "NLDI_OUTLET_AMBIGUOUS" in (
+                nldi_result.data.get("quality_flags") or []
+            ) else ""
             if _NLDI_QUICK_MIN_KM2 <= nldi_area <= _NLDI_QUICK_MAX_KM2:
-                nldi_result = _with_trail(nldi_result, fallback_history, "nldi_comid", "served", "")
+                nldi_result = _with_trail(nldi_result, fallback_history, "nldi_comid", "served", nldi_flag)
                 return _attach_workflow_steps(
                     nldi_result,
                     method_used="nldi_comid",
@@ -762,6 +768,7 @@ def _delineate_from_point(
             escalation_reason = (
                 f"NLDI quick area {nldi_area:.0f} km² outside "
                 f"{_NLDI_QUICK_MIN_KM2:.0f}–{_NLDI_QUICK_MAX_KM2:.0f} km²"
+                + (f" ({nldi_flag})" if nldi_flag else "")
             )
             log.info("NLDI quick tier skipped: %s", escalation_reason)
             fallback_history.append(

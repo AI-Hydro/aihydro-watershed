@@ -446,6 +446,7 @@ def delineate_from_point(
     method: Method = "auto",
     verbose: bool = False,
     name: str | None = None,
+    allow_downstream_expansion: bool = False,
 ) -> HydroResult:
     """
     Delineate a watershed from a pour point (WGS84 decimal degrees).
@@ -470,6 +471,11 @@ def delineate_from_point(
         Without an expected area, ``auto`` in CONUS trusts NLDI, which returns
         whole NHDPlus catchments; for culverts pass ``expected_area_km2`` or
         ``method="small_catchment"``.
+    allow_downstream_expansion : bool
+        NLDI, no expected area, nearest reach draining < 80 km2: by default the
+        nearest reach's basin is returned with ``outlet_ambiguity`` (candidate
+        downstream COMIDs and areas) and the ``NLDI_OUTLET_AMBIGUOUS`` flag. True
+        moves the outlet downstream to the largest nearby basin (explicit consent).
     """
     trail: list[dict[str, Any]] = []
     try:
@@ -684,11 +690,12 @@ def _delineate_from_point(
     # CONUS auto with known drainage area: NLDI COMID search vs expected_area_km2.
     if run_nldi and is_conus(lat, lon) and expected_area_km2 and expected_area_km2 > 0:
         try:
-            from aihydro_watershed.delineation.nldi_point import delineate_nldi_at_point
+            from aihydro_watershed.delineation.nldi_point import delineate_nldi_at_point, nldi_deadline
 
-            nldi_result = delineate_nldi_at_point(
-                lat, lon, expected_area_km2=expected_area_km2
-            )
+            with nldi_deadline():
+                nldi_result = delineate_nldi_at_point(
+                    lat, lon, expected_area_km2=expected_area_km2
+                )
             nldi_area = nldi_result.data.get("area_km2", 0)
             nldi_ok = nldi_area >= _MIN_AREA_KM2
             if expected_area_km2 and expected_area_km2 > 0:
@@ -735,9 +742,12 @@ def _delineate_from_point(
         and not (expected_area_km2 and expected_area_km2 > 0)
     ):
         try:
-            from aihydro_watershed.delineation.nldi_point import delineate_nldi_at_point
+            from aihydro_watershed.delineation.nldi_point import delineate_nldi_at_point, nldi_deadline
 
-            nldi_result = delineate_nldi_at_point(lat, lon)
+            with nldi_deadline():
+                nldi_result = delineate_nldi_at_point(
+                    lat, lon, allow_downstream_expansion=allow_downstream_expansion
+                )
             nldi_area = float(nldi_result.data.get("area_km2", 0))
             if _NLDI_QUICK_MIN_KM2 <= nldi_area <= _NLDI_QUICK_MAX_KM2:
                 nldi_result = _with_trail(nldi_result, fallback_history, "nldi_comid", "served", "")

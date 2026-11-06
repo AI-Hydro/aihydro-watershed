@@ -56,6 +56,7 @@ dependencies = [
     "shapely>=2.0.0",
     "pyproj>=3.6.0",
     "affine>=2.4.0",
+    "requests>=2.31.0",                      # NLDI hydrolocation request (nldi_point.hydrolocation_comid)
 ]
 
 [project.optional-dependencies]

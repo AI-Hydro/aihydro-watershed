@@ -2,6 +2,33 @@
 
 ## [Unreleased]
 
+### Fixed: an outlet that cannot be snapped is no longer returned silently (finding `unsnapped-outlet-2026-11-07` P1, P2)
+
+With NLDI failing and no Earth Engine, `auto` served the MERIT-Basins hybrid with `snap_quality = offline_unsnapped`: the whole terminal unit catchment plus everything upstream. In the controlled
+test (camels-delineation-1 Amendment 4, condition B, 671 CAMELS gauges) that was the wrong basin for 82, 45.8% of basins under 100 km2, with nothing at the top of the result saying so.
+
+**Added**
+
+- **Offline flow-direction snap (P2).** `merit_hybrid.snap_on_terminal_flowdir` snaps on the staged `flowdir##.tif` inside the home unit catchment, adding back the upstream catchments' area to the
+  cells they drain through, with the package's own `snap_outlet_on_merit` (or `snap_outlet_area_gated` when `expected_area_km2` is given). `snap_quality = "offline_flowdir_home_catchment"`,
+  `snap_source = "local_flowdir_home_catchment"`, flag `OFFLINE_FLOWDIR_SNAP_USED`; refinement then runs as for any snapped outlet and no `MERIT_VERSION_MIX` is raised. `merit_basins_hybrid_delineate`
+  tries it whenever the outlet would otherwise be unsnapped, before falling back. It stages `flowdir##.tif` first under the existing tiered policy when `auto_stage` is on (progress is logged; the 2 GB cap
+  and `AIHYDRO_MERIT_AUTO_STAGE=never` apply; 99-304 MB for the CONUS regions); the staging row (`flowdir_staging`: `succeeded` / `not_staged` / `confirm_required`) is in the trail. Not run for
+  `auto_stage=False` unless the raster is already staged. Home-catchment search only (P3, looking past the border, is not done). First test, 304 CAMELS gauges in Pfaf 74/77: 16 wrong against
+  37 unsnapped and 13 with Earth Engine (finding); the evaluation on all 671 is pre-registered separately.
+- **Top-level reliability mark for what cannot be snapped (P1).** `HydroResult.data` now has `reliability` (`"unreliable"`, `"provisional"`, or `None` when the outlet was snapped), `reliability_reason`,
+  `remedy` (ordered list), `estimated_area_km2_on_reach` and `reliability_checks`, set by the hybrid (`merit_hybrid.assess_unsnapped_outlet`) and carried by the router for `auto` and forced methods; it is also on the
+  GeoJSON feature properties when set. `unreliable` when returned area / along-reach area estimate > 1.25, the point is > 300 m from the terminal catchment's river line, or the line is not available;
+  else `provisional`. Flags `OUTLET_UNSNAPPED_UNRELIABLE` / `OUTLET_UNSNAPPED`; the polygon is unchanged. The thresholds are **in-sample** on CAMELS (see ARCHITECTURE.md). The remedy text is exact for the code: it does
+  not offer `expected_area_km2` as a fix for an unsnapped outlet (it only checks the area). The flowdir-only tier (`local_merit_flowdir_pyflwdir`) marks an unsnapped result `unreliable` without a screen.
+- `BasinsStore.river_line(comid)`: the reach line (EPSG:4326, downstream vertex first) from `rivers##.db`, `None` when absent.
+- `scripts/eval/condition_bprime.py`: offline driver and scorer for condition B' (B with the flowdir snap) against the A and B rows of the controlled test.
+
+**Changed**
+
+- The router's flowdir auto-stage branch (local MERIT tier) no longer skips CONUS points; the tiered policy still decides.
+- Test fixture `merit_fixture` writes the `rivers` layer with reach lines (it had only the `uparea` table).
+
 ## [0.4.2] - 2026-11-06
 
 ### Fixed: hybrid polygon agrees with its own snapped outlet (PR #17; finding `small-basin-delineation-2026-11-06` P1, P2)

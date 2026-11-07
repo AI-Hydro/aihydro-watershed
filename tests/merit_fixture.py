@@ -22,7 +22,7 @@ import numpy as np
 import pyflwdir
 import rasterio
 from affine import Affine
-from shapely.geometry import box
+from shapely.geometry import LineString, box
 
 from aihydro_watershed.delineation.types import area_km2
 
@@ -41,6 +41,15 @@ CATCHMENTS = {
     73000006: (0.06, 40.00, 0.08, 40.02, 0),  # C6 downstream of the outlet
 }
 TERMINAL = 73000003
+TRUNK_LAT = 40.011  # the trunk row of the rasters
+# comid -> reach line (lon, lat) vertices, downstream end first
+REACHES = {
+    73000001: [(0.02, TRUNK_LAT), (0.00, TRUNK_LAT)],
+    73000002: [(0.04, TRUNK_LAT), (0.02, TRUNK_LAT)],
+    73000003: [(0.06, TRUNK_LAT), (0.04, TRUNK_LAT)],
+    73000004: [(0.03, 40.02), (0.03, 40.04)],
+    73000006: [(0.08, TRUNK_LAT), (0.06, TRUNK_LAT)],
+}
 OUTLET_REQUEST = (40.0131, 0.0485)  # lat, lon: one cell north of the trunk, in C3
 SNAPPED = (40.011, 0.049)  # trunk cell centre
 OUTSIDE_REQUEST = (50.0, 50.0)
@@ -100,13 +109,15 @@ def build_region(root: Path, *, with_rasters: bool = True) -> Region:
 
     uparea = basins.set_index("comid")["area_km2"]
     cum = float(uparea.loc[[73000001, 73000002, 73000003, 73000004]].sum())
+    ups = {73000001: float(uparea.loc[73000001]), TERMINAL: cum, 73000006: cum + float(uparea.loc[73000006])}
+    # The rivers layer carries the reach lines, digitised downstream to upstream like MERIT-Basins' own.
+    rivers = gpd.GeoDataFrame(
+        {"comid": list(REACHES), "uparea": [ups.get(c, float(uparea.loc[c])) for c in REACHES]},
+        geometry=[LineString(xy) for xy in REACHES.values()],
+        crs=4326,
+    )
     rdb = src / f"rivers{PFAF}.db"
-    with sqlite3.connect(rdb) as con:
-        con.execute("CREATE TABLE rivers (comid INTEGER PRIMARY KEY, uparea REAL)")
-        con.executemany(
-            "INSERT INTO rivers VALUES (?, ?)",
-            [(73000001, float(uparea.loc[73000001])), (TERMINAL, cum), (73000006, cum + float(uparea.loc[73000006]))],
-        )
+    rivers.to_file(rdb, layer="rivers", driver="SQLite", SPATIALITE="YES", engine="pyogrio")
 
     mega = gpd.GeoDataFrame({"basin": [int(PFAF)]}, geometry=[box(-1, 39, 1, 41)], crs=4326)
     mdb = src / "megabasins.db"

@@ -21,6 +21,10 @@ test (camels-delineation-1 Amendment 4, condition B, 671 CAMELS gauges) that was
   GeoJSON feature properties when set. `unreliable` when returned area / along-reach area estimate > 1.25, the point is > 300 m from the terminal catchment's river line, or the line is not available;
   else `provisional`. Flags `OUTLET_UNSNAPPED_UNRELIABLE` / `OUTLET_UNSNAPPED`; the polygon is unchanged. The thresholds are **in-sample** on CAMELS (see ARCHITECTURE.md). The remedy text is exact for the code: it does
   not offer `expected_area_km2` as a fix for an unsnapped outlet (it only checks the area). The flowdir-only tier (`local_merit_flowdir_pyflwdir`) marks an unsnapped result `unreliable` without a screen.
+- **What `reliability` means.** `None` = no concern detected; it is not a validation. It is left only for an Earth Engine or accumulation-raster snap, or a flow-direction snap whose area gate matched the caller's `expected_area_km2`. `"provisional"` = the
+  polygon is returned and a limit applies: a snap on flow direction alone, not validated against an accumulation raster (`OFFLINE_FLOWDIR_SNAP_UNVALIDATED`; in the 304-gauge smoke about 19% of basins under 100 km2 were still wrong), or an unsnapped outlet that passed the reach screen.
+  `"unreliable"` = unsnapped and failed (or could not run) the screen.
+- When the flowdir-only local tier returns `offline_unsnapped`, the router now hands the point to the hybrid (once per call) so the flowdir snap can run; if the hybrid cannot serve, the local result is kept with its `unreliable` mark.
 - `BasinsStore.river_line(comid)`: the reach line (EPSG:4326, downstream vertex first) from `rivers##.db`, `None` when absent.
 - `scripts/eval/condition_bprime.py`: offline driver and scorer for condition B' (B with the flowdir snap) against the A and B rows of the controlled test.
 

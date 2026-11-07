@@ -1110,6 +1110,13 @@ def _delineate_from_point(
             )
             return False
 
+    def _prefer_hybrid_snap() -> None:
+        """The flowdir-only tier cannot snap without Earth Engine or an accumulation raster (``offline_unsnapped``).
+        The hybrid snaps on the staged flowdir inside the home catchment, so give it the point; if it cannot serve
+        either, the local result stays with its own honest ``unreliable`` mark. One hybrid attempt per call."""
+        if snap_quality == "offline_unsnapped" and not hybrid_tried:
+            _try_hybrid_result("local MERIT tier could not snap the outlet; the hybrid snaps on the staged flowdir")
+
     # Default global tier (and forced method="merit_hybrid"/"merit_basins", also in CONUS): MERIT-Basins
     # vector assembly with terminal-catchment refinement. If it cannot serve, the older tiers follow.
     if hybrid_first and not _try_hybrid_result(escalation_reason or "default_global_tier"):
@@ -1136,6 +1143,7 @@ def _delineate_from_point(
                 allow_offline=True,
             )
             _apply_merit_result(local, used_method="local_merit_pyflwdir")
+            _prefer_hybrid_snap()
             license_note = MERIT_LICENSE
             citation = MERIT_CITATION
             fallback_history.append(
@@ -1291,6 +1299,7 @@ def _delineate_from_point(
                         allow_offline=True,
                     )
                     _apply_merit_result(local, used_method="local_merit_pyflwdir")
+                    _prefer_hybrid_snap()
                     license_note = MERIT_LICENSE
                     citation = MERIT_CITATION
                     fallback_history.append(
@@ -1344,6 +1353,7 @@ def _delineate_from_point(
                                 allow_offline=True,
                             )
                             _apply_merit_result(local2, used_method="local_merit_pyflwdir")
+                            _prefer_hybrid_snap()
                             license_note = MERIT_LICENSE
                             citation = MERIT_CITATION
                             fallback_history.append(

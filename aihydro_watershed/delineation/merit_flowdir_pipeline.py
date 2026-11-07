@@ -1758,6 +1758,24 @@ def merit_basins_hybrid_delineate(
         rss_after_terminal_refinement, rss_after_merge,
     )
 
+    # A snap on flow direction alone was not checked against an accumulation raster. Only an area-gated match
+    # (the area agreed with the caller's) or an Earth Engine / accumulation snap is left without a mark.
+    fd_reliability: dict[str, Any] = {}
+    if snap_flowdir_info is not None and snap.snap_quality != "area_gated":
+        fd_reliability = {
+            "reliability": "provisional",
+            "reliability_reason": (
+                "snapped offline on flow direction only, not validated against an accumulation raster"
+                + (" (the expected area matched no cell within the gate)" if expected_area_km2 else "")
+            ),
+            "remedy": [
+                "Sign in to Google Earth Engine (earthengine authenticate, then set the project) or stage the "
+                "region's accumulation raster so the snap can be validated; pass expected_area_km2 to steer it "
+                "(within 1 km, +/-10%)."
+            ],
+        }
+        _flag("OFFLINE_FLOWDIR_SNAP_UNVALIDATED")
+
     # -- reliability of an outlet that could not be snapped ---------------------------------------------------
     reliability: dict[str, Any] | None = None
     reliability_remedy: list[str] | None = None
@@ -1934,8 +1952,8 @@ def merit_basins_hybrid_delineate(
         vector_assembly_area_km2=vector_area,
         refined_polygon_area_km2=refinement_area if refinement_area is not None else polygon_area,
         data_provenance=data_provenance,
-        reliability=reliability["status"] if reliability else None,
-        reliability_reason=(
+        reliability=reliability["status"] if reliability else fd_reliability.get("reliability"),
+        reliability_reason=fd_reliability.get("reliability_reason") if not reliability and fd_reliability else (
             ("outlet could not be snapped (offline_unsnapped); " + "; ".join(reliability["reasons"]))
             if reliability and reliability["reasons"]
             else "outlet could not be snapped (offline_unsnapped); it passed the screen, so the polygon is "
@@ -1943,7 +1961,7 @@ def merit_basins_hybrid_delineate(
             if reliability
             else None
         ),
-        remedy=reliability_remedy,
+        remedy=reliability_remedy or fd_reliability.get("remedy"),
         estimated_area_km2_on_reach=reliability["estimated_area_km2_on_reach"] if reliability else None,
         reliability_checks=reliability["checks"] if reliability else None,
     )

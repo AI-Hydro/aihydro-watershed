@@ -132,7 +132,9 @@ def test_hybrid_snaps_offline_on_the_staged_flowdir(with_flowdir):
     # no longer an unsnapped outlet: refined, no reliability mark, no version mix, nothing from Earth Engine
     assert not ({"OUTLET_UNSNAPPED", "OUTLET_UNSNAPPED_UNRELIABLE",
                  "TERMINAL_CATCHMENT_REFINEMENT_SKIPPED_UNSNAPPED", "MERIT_VERSION_MIX"} & flags)
-    assert res.reliability is None and res.remedy is None and res.data_provenance["outlet_reliability"] is None
+    # not an unsnapped outlet, but a snap on flow direction alone is not validated: provisional, with the reason
+    assert res.reliability == "provisional" and "flow direction only" in res.reliability_reason
+    assert "OFFLINE_FLOWDIR_SNAP_UNVALIDATED" in flags and res.data_provenance["outlet_reliability"] is None
     assert res.terminal_refinement_used and res.terminal_catchment_id == fx.TERMINAL
     assert (res.outlet_lat, res.outlet_lon) == pytest.approx(fx.SNAPPED)
     assert res.area_km2 == pytest.approx(INFLOW + HALF_C3, rel=0.05)    # the same polygon the accumulation snap gives
@@ -145,7 +147,10 @@ def test_hybrid_flowdir_snap_with_expected_area_is_a_real_remedy(with_flowdir):
     res = _offline(*fx.OUTLET_REQUEST, expected_area_km2=INFLOW + HALF_C3)
     assert res.snap_quality == "area_gated"
     assert res.area_validation["outlet_assembly"]["area_gate"]["matched"] is True
-    assert res.reliability is None
+    assert res.reliability is None and "OFFLINE_FLOWDIR_SNAP_UNVALIDATED" not in res.quality_flags
+    # an expected area that matches no cell leaves the snap unvalidated
+    miss = _offline(*fx.OUTLET_REQUEST, expected_area_km2=10_000.0)
+    assert miss.reliability == "provisional" and "matched no cell" in miss.reliability_reason
 
 
 def test_hybrid_stages_the_flowdir_under_the_tiered_policy(region, tmp_path, monkeypatch):
@@ -275,8 +280,21 @@ def test_large_confirm_required_staging_is_recorded(region, tmp_path, monkeypatc
 
 
 def test_snapped_outlet_has_no_reliability_mark(with_flowdir):
-    res = _offline(*fx.OUTLET_REQUEST)
+    """None means no concern detected, not validated: only an area-gated match or an EE/accumulation snap gets it."""
+    res = _offline(*fx.OUTLET_REQUEST, expected_area_km2=INFLOW + HALF_C3)
     assert res.reliability is None and res.reliability_reason is None and res.reliability_checks is None
+
+
+def test_flowdir_only_tier_marks_an_unsnapped_result_unreliable(with_flowdir, monkeypatch):
+    from types import SimpleNamespace
+
+    mgr = MeritDataManager()
+    monkeypatch.setattr(MeritDataManager, "ensure_basin",
+                        lambda self, lat, lon, download=False: SimpleNamespace(pfaf_code=fx.PFAF))
+    res = pipe.local_merit_flowdir_pyflwdir(*fx.OUTLET_REQUEST, allow_offline=True, force_offline=True)
+    assert res.snap_quality == "offline_unsnapped" and mgr.verified_asset("flowdir", fx.PFAF) is not None
+    assert res.reliability == "unreliable" and "OUTLET_UNSNAPPED_UNRELIABLE" in res.quality_flags
+    assert "not screened" in res.reliability_reason and "does not change the outlet" in " ".join(res.remedy)
 
 
 # ------------------------------------------------------------------------------------------ assess (pure)
@@ -369,3 +387,23 @@ def test_router_stages_flowdir_in_conus_too(hybrid_stub, monkeypatch):
     except Exception:
         pass  # nothing downstream is served in this stub; only the staging call is under test
     assert staged == ["78"]
+
+
+def test_router_prefers_the_hybrid_flowdir_snap_over_an_unsnapped_local_tier(hybrid_stub, monkeypatch):
+    calls: list[str] = []
+    local = _fake_result("local_merit_flowdir", snap_quality="offline_unsnapped", reliability="unreliable",
+                         reliability_reason="local")
+    hyb = _fake_result("merit_basins_hybrid", snap_quality=mh.OFFLINE_FLOWDIR_SNAP_QUALITY, reliability="provisional",
+                       reliability_reason="hybrid")
+    monkeypatch.setattr(pipe, "local_merit_flowdir_pyflwdir", lambda *a, **k: (calls.append("local"), local)[1])
+    monkeypatch.setattr(pipe, "merit_basins_hybrid_delineate", lambda *a, **k: (calls.append("hybrid"), hyb)[1])
+    monkeypatch.setattr(pipe, "merit_check_routing_region_cache", lambda *a, **k: {"flowdir_ready": True})
+    d = router.delineate_from_point(40.0, -100.0, method="local_merit").data
+    assert calls == ["local", "hybrid"]
+    assert d["method_used"] == "merit_basins_hybrid" and d["reliability_reason"] == "hybrid"
+    # and when the hybrid cannot serve, the local result stays with its own mark
+    calls.clear()
+    monkeypatch.setattr(pipe, "merit_basins_hybrid_delineate",
+                        lambda *a, **k: (calls.append("hybrid"), (_ for _ in ()).throw(RuntimeError("MERIT_BASINS_NOT_STAGED")))[1])
+    d = router.delineate_from_point(40.0, -100.0, method="local_merit").data
+    assert calls == ["local", "hybrid"] and d["method_used"] == "local_merit_pyflwdir" and d["reliability"] == "unreliable"

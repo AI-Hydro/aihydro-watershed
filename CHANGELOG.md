@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.4.3] - 2026-11-08
+
 ### Fixed: an outlet that cannot be snapped is no longer returned silently (finding `unsnapped-outlet-2026-11-07` P1, P2)
 
 With NLDI failing and no Earth Engine, `auto` served the MERIT-Basins hybrid with `snap_quality = offline_unsnapped`: the whole terminal unit catchment plus everything upstream. In the controlled

@@ -407,3 +407,32 @@ def test_router_prefers_the_hybrid_flowdir_snap_over_an_unsnapped_local_tier(hyb
                         lambda *a, **k: (calls.append("hybrid"), (_ for _ in ()).throw(RuntimeError("MERIT_BASINS_NOT_STAGED")))[1])
     d = router.delineate_from_point(40.0, -100.0, method="local_merit").data
     assert calls == ["local", "hybrid"] and d["method_used"] == "local_merit_pyflwdir" and d["reliability"] == "unreliable"
+
+
+# ------------------------------------------------------------------------------------------ unsnapped has no snap distance
+
+
+def test_unsnapped_outlet_has_no_snap_distance_and_is_not_validated_ok(vectors_only):
+    res = _offline(fx.TRUNK_LAT, 0.0595)
+    assert res.snap_quality == "offline_unsnapped"
+    assert res.snap_distance_m is None
+    assert res.snap_validation["snap_distance_m"] is None and res.snap_validation["ok"] is None
+    assert "not snapped" in res.snap_validation["reason"]
+    assert "OUTLET_SNAP_FAR" not in res.quality_flags
+
+
+def test_validate_snap_handles_none_distance_and_keeps_snapped_behaviour():
+    uns = pipe.MeritSnap(lat=1, lon=1, row=-1, col=-1, distance_m=None, snapped_upa_km2=None, snap_quality="offline_unsnapped")
+    v, flags = pipe.validate_snap(uns, expected_area_km2=100.0)
+    assert v["ok"] is None and flags == []
+    ok = pipe.MeritSnap(lat=1, lon=1, row=0, col=0, distance_m=10.0, snapped_upa_km2=100.0, snap_quality="nearest_merit_stream")
+    assert pipe.validate_snap(ok, expected_area_km2=100.0)[0]["ok"] is True
+    far = pipe.MeritSnap(lat=1, lon=1, row=0, col=0, distance_m=6000.0, snapped_upa_km2=100.0, snap_quality="nearest_merit_stream")
+    assert pipe.validate_snap(far, expected_area_km2=None)[1] == ["OUTLET_SNAP_FAR"]
+
+
+def test_router_passes_a_none_snap_distance_through(hybrid_stub):
+    hybrid_stub.update(snap_quality="offline_unsnapped", snap_distance_m=None, snap_validation={"ok": None})
+    d = router.delineate_from_point(-3.0, -60.0).data
+    assert d["snap_distance_m"] is None and "snap_distance_m" not in d["geometry_geojson"]["properties"]
+    assert d["snap_validation"]["ok"] is None

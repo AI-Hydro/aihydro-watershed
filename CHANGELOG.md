@@ -25,6 +25,7 @@ test (camels-delineation-1 Amendment 4, condition B, 671 CAMELS gauges) that was
   polygon is returned and a limit applies: a snap on flow direction alone, not validated against an accumulation raster (`OFFLINE_FLOWDIR_SNAP_UNVALIDATED`; in the 304-gauge smoke about 19% of basins under 100 km2 were still wrong), or an unsnapped outlet that passed the reach screen.
   `"unreliable"` = unsnapped and failed (or could not run) the screen.
 - When the flowdir-only local tier returns `offline_unsnapped`, the router now hands the point to the hybrid (once per call) so the flowdir snap can run; if the hybrid cannot serve, the local result is kept with its `unreliable` mark.
+- An unsnapped outlet no longer reports a fabricated `snap_distance_m: 0.0` / `snap_validation.ok: true`: `MeritSnap.distance_m` and `snap_distance_m` are `None`, `snap_validation.ok` is `None` with a `reason`.
 - `BasinsStore.river_line(comid)`: the reach line (EPSG:4326, downstream vertex first) from `rivers##.db`, `None` when absent.
 - `scripts/eval/condition_bprime.py`: offline driver and scorer for condition B' (B with the flowdir snap) against the A and B rows of the controlled test.
 

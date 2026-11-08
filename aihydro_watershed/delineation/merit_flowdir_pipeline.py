@@ -98,7 +98,7 @@ class MeritSnap:
     lon: float
     row: int
     col: int
-    distance_m: float
+    distance_m: float | None  # None when the outlet was not snapped (offline_unsnapped)
     snapped_upa_km2: float | None
     snap_quality: str
 
@@ -118,7 +118,7 @@ class MeritFlowdirResult:
     area_km2: float
     outlet_lat: float
     outlet_lon: float
-    snap_distance_m: float
+    snap_distance_m: float | None
     snapped_upa_km2: float | None
     snap_quality: str
     snap_validation: dict[str, Any]
@@ -258,8 +258,9 @@ def validate_snap(
     *,
     expected_area_km2: float | None,
 ) -> tuple[dict[str, Any], list[str]]:
+    unsnapped = snap.snap_quality == "offline_unsnapped" or snap.distance_m is None
     validation: dict[str, Any] = {
-        "snap_distance_m": round(float(snap.distance_m), 3),
+        "snap_distance_m": round(float(snap.distance_m), 3) if snap.distance_m is not None else None,
         "snapped_upa_km2": round(float(snap.snapped_upa_km2), 3)
         if snap.snapped_upa_km2 is not None and np.isfinite(snap.snapped_upa_km2)
         else None,
@@ -267,14 +268,19 @@ def validate_snap(
         "snap_quality": snap.snap_quality,
     }
     flags: list[str] = []
-    if snap.distance_m > 5_000:
+    if snap.distance_m is not None and snap.distance_m > 5_000:
         flags.append("OUTLET_SNAP_FAR")
     if expected_area_km2 and expected_area_km2 > 0 and snap.snapped_upa_km2:
         rel = abs(snap.snapped_upa_km2 - expected_area_km2) / expected_area_km2
         validation["relative_error_vs_expected"] = round(float(rel), 4)
         if rel > _AREA_MISMATCH_WARN_FRAC:
             flags.append("SNAP_UPA_DIFFERS_FROM_EXPECTED")
-    validation["ok"] = not flags
+    if unsnapped:
+        # nothing was snapped, so there is no snap to call good; the outlet is the caller's own coordinate
+        validation["ok"] = None
+        validation["reason"] = "outlet not snapped (offline_unsnapped); the coordinate is used as given"
+    else:
+        validation["ok"] = not flags
     return validation, flags
 
 
@@ -1032,7 +1038,7 @@ def local_merit_flowdir_pyflwdir(
                     lon=lon,
                     row=-1,
                     col=-1,
-                    distance_m=0.0,
+                    distance_m=None,
                     snapped_upa_km2=None,
                     snap_quality="offline_unsnapped",
                 ),
@@ -1433,7 +1439,7 @@ def merit_basins_hybrid_delineate(
                     raise
                 snap_reference = MeritSnapReference(
                     snap=MeritSnap(
-                        lat=lat, lon=lon, row=-1, col=-1, distance_m=0.0,
+                        lat=lat, lon=lon, row=-1, col=-1, distance_m=None,
                         snapped_upa_km2=None, snap_quality="offline_unsnapped",
                     ),
                     source="offline",
@@ -1529,7 +1535,7 @@ def merit_basins_hybrid_delineate(
             "expected_area_km2": expected_area_km2,
             "matched": gate_hit if gate_evaluated else None,
         }
-        if gate_hit and snap.distance_m > AREA_GATE_DISTANT_M:
+        if gate_hit and snap.distance_m is not None and snap.distance_m > AREA_GATE_DISTANT_M:
             # the gate accepts up to 1 km; a match this far from the gauge may be another river of similar size
             _flag("AREA_GATE_SNAP_DISTANT")
         if gate_evaluated and not gate_hit:

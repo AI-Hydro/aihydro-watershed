@@ -1143,12 +1143,12 @@ def _delineate_from_point(
                 allow_offline=True,
             )
             _apply_merit_result(local, used_method="local_merit_pyflwdir")
-            _prefer_hybrid_snap()
             license_note = MERIT_LICENSE
             citation = MERIT_CITATION
             fallback_history.append(
                 {"method": "local_merit_flowdir_pyflwdir", "outcome": "succeeded"}
             )
+            _prefer_hybrid_snap()
         except Exception as e:
             if method == "auto" and nldi_failure_is_exception:
                 # NLDI already failed, so this chain must reach merit_gee / 3DEP / raw DEM: record and fall through.
@@ -1299,12 +1299,12 @@ def _delineate_from_point(
                         allow_offline=True,
                     )
                     _apply_merit_result(local, used_method="local_merit_pyflwdir")
-                    _prefer_hybrid_snap()
                     license_note = MERIT_LICENSE
                     citation = MERIT_CITATION
                     fallback_history.append(
                         {"method": "local_merit_flowdir_pyflwdir", "outcome": "succeeded"}
                     )
+                    _prefer_hybrid_snap()
                     run_fast = False
                 except Exception as local_exc:
                     fallback_history.append(
@@ -1353,7 +1353,6 @@ def _delineate_from_point(
                                 allow_offline=True,
                             )
                             _apply_merit_result(local2, used_method="local_merit_pyflwdir")
-                            _prefer_hybrid_snap()
                             license_note = MERIT_LICENSE
                             citation = MERIT_CITATION
                             fallback_history.append(
@@ -1363,6 +1362,7 @@ def _delineate_from_point(
                                     "pfaf": pfaf_code,
                                 }
                             )
+                            _prefer_hybrid_snap()
                             run_fast = False
                         elif hasattr(stage_status, "action_required"):
                             # Large region — surface info for agent to confirm

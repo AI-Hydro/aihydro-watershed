@@ -401,6 +401,12 @@ def test_router_prefers_the_hybrid_flowdir_snap_over_an_unsnapped_local_tier(hyb
     d = router.delineate_from_point(40.0, -100.0, method="local_merit").data
     assert calls == ["local", "hybrid"]
     assert d["method_used"] == "merit_basins_hybrid" and d["reliability_reason"] == "hybrid"
+    # provenance is the hybrid's, not the local tier's, and the trail ends with the hybrid serving
+    assert d["license"] == pipe.MERIT_BASINS_LICENSE != pipe.MERIT_LICENSE
+    assert d["citation"] == pipe.MERIT_CITATION
+    trail = [(h["method"], h["outcome"]) for h in d["fallback_history"]]
+    assert trail[-1] == ("merit_basins_hybrid", "succeeded")
+    assert trail.index(("local_merit_flowdir_pyflwdir", "succeeded")) < trail.index(trail[-1])
     # and when the hybrid cannot serve, the local result stays with its own mark
     calls.clear()
     monkeypatch.setattr(pipe, "merit_basins_hybrid_delineate",

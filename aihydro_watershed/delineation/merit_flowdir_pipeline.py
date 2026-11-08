@@ -98,7 +98,7 @@ class MeritSnap:
     lon: float
     row: int
     col: int
-    distance_m: float
+    distance_m: float | None  # None when the outlet was not snapped (offline_unsnapped)
     snapped_upa_km2: float | None
     snap_quality: str
 
@@ -118,7 +118,7 @@ class MeritFlowdirResult:
     area_km2: float
     outlet_lat: float
     outlet_lon: float
-    snap_distance_m: float
+    snap_distance_m: float | None
     snapped_upa_km2: float | None
     snap_quality: str
     snap_validation: dict[str, Any]
@@ -161,6 +161,13 @@ class MeritFlowdirResult:
     vector_data_source: str | None = None
     raster_data_source: str | None = None
     data_provenance: dict[str, Any] | None = None
+    # Outlet reliability (top level of the router result). ``None`` for a snapped outlet; ``unreliable`` or
+    # ``provisional`` when the outlet could not be snapped (see ``merit_hybrid.assess_unsnapped_outlet``).
+    reliability: str | None = None
+    reliability_reason: str | None = None
+    remedy: list[str] | None = None
+    estimated_area_km2_on_reach: float | None = None
+    reliability_checks: dict[str, Any] | None = None
 
 
 def _peak_memory_mb() -> float:
@@ -251,8 +258,9 @@ def validate_snap(
     *,
     expected_area_km2: float | None,
 ) -> tuple[dict[str, Any], list[str]]:
+    unsnapped = snap.snap_quality == "offline_unsnapped" or snap.distance_m is None
     validation: dict[str, Any] = {
-        "snap_distance_m": round(float(snap.distance_m), 3),
+        "snap_distance_m": round(float(snap.distance_m), 3) if snap.distance_m is not None else None,
         "snapped_upa_km2": round(float(snap.snapped_upa_km2), 3)
         if snap.snapped_upa_km2 is not None and np.isfinite(snap.snapped_upa_km2)
         else None,
@@ -260,14 +268,19 @@ def validate_snap(
         "snap_quality": snap.snap_quality,
     }
     flags: list[str] = []
-    if snap.distance_m > 5_000:
+    if snap.distance_m is not None and snap.distance_m > 5_000:
         flags.append("OUTLET_SNAP_FAR")
     if expected_area_km2 and expected_area_km2 > 0 and snap.snapped_upa_km2:
         rel = abs(snap.snapped_upa_km2 - expected_area_km2) / expected_area_km2
         validation["relative_error_vs_expected"] = round(float(rel), 4)
         if rel > _AREA_MISMATCH_WARN_FRAC:
             flags.append("SNAP_UPA_DIFFERS_FROM_EXPECTED")
-    validation["ok"] = not flags
+    if unsnapped:
+        # nothing was snapped, so there is no snap to call good; the outlet is the caller's own coordinate
+        validation["ok"] = None
+        validation["reason"] = "outlet not snapped (offline_unsnapped); the coordinate is used as given"
+    else:
+        validation["ok"] = not flags
     return validation, flags
 
 
@@ -1025,7 +1038,7 @@ def local_merit_flowdir_pyflwdir(
                     lon=lon,
                     row=-1,
                     col=-1,
-                    distance_m=0.0,
+                    distance_m=None,
                     snapped_upa_km2=None,
                     snap_quality="offline_unsnapped",
                 ),
@@ -1189,7 +1202,28 @@ def local_merit_flowdir_pyflwdir(
     key = hashlib.sha256(
         f"{flowdir_path}:{snap_reference.cache_key}:{compute_local_upstream_area}".encode("utf-8")
     ).hexdigest()
+    unsnapped_reliability: dict[str, Any] = {}
+    if snap.snap_quality == "offline_unsnapped":
+        # No vectors on this tier, so the hybrid's reach test cannot run: the basin is that of the raw coordinate's
+        # own cell, which is a different (usually much smaller) basin unless the point sits on the channel.
+        if "OUTLET_UNSNAPPED_UNRELIABLE" not in flags:
+            flags.append("OUTLET_UNSNAPPED_UNRELIABLE")
+        unsnapped_reliability = {
+            "reliability": "unreliable",
+            "reliability_reason": (
+                "outlet could not be snapped (offline_unsnapped): the basin is that of the raw coordinate's own "
+                "flow-direction cell and was not screened against the river network"
+            ),
+            "remedy": [
+                "Sign in to Google Earth Engine (earthengine authenticate, then set the project) so the outlet is "
+                "snapped, or delineate with method='merit_hybrid', which snaps on the staged flow-direction raster "
+                "inside the home unit catchment when Earth Engine is unavailable.",
+                "expected_area_km2 does not change the outlet while it is unsnapped: it only checks the returned "
+                "area, so it detects this error but does not fix it.",
+            ],
+        }
     return MeritFlowdirResult(
+        **unsnapped_reliability,
         gdf=gdf,
         area_km2=area,
         outlet_lat=snap.lat,
@@ -1258,6 +1292,40 @@ def delineate_local_merit(
     )
 
 
+def _stage_flowdir_for_snap(
+    mgr: Any, pfaf: str, vf: Any, fallback_history: list[dict[str, Any]]
+) -> tuple[Path | None, str | None]:
+    """Stage the region's ``flowdir##.tif`` for the offline snap under the tiered auto-stage policy.
+
+    Returns ``(verified path or None, why-not message)``. The pinned size comes from the manifest (CONUS
+    regions are 99-304 MB); a file above ``merit_auto_stage_max_gb`` (default 2 GB) is not downloaded without
+    an explicit ``merit_ensure_routing_region`` call, and ``merit_auto_stage='never'`` disables staging.
+    """
+    spec = vf.region_asset_spec("flowdir", pfaf)
+    size_mb = (spec.size_bytes or 0) / (1024 ** 2)
+    log.info(
+        "No Earth Engine and no accumulation raster for Pfaf %s: staging flowdir%s.tif (%.0f MB, tiered policy) "
+        "for the offline outlet snap",
+        pfaf, pfaf, size_mb,
+    )
+    status = mgr.auto_stage_flowdir(
+        pfaf, progress_cb=lambda msg, done, tot: log.info("MERIT flowdir staging [Pfaf %s] %s", pfaf, msg)
+    )
+    path = mgr.verified_asset("flowdir", pfaf) if status.flowdir_ready else None
+    if path is not None:
+        fallback_history.append(
+            {"method": "flowdir_staging", "outcome": "succeeded", "reason": f"flowdir{pfaf}.tif, {size_mb:.0f} MB"}
+        )
+        return path, None
+    message = str(getattr(status, "message", "") or "") or "flow-direction staging did not complete"
+    row: dict[str, Any] = {"method": "flowdir_staging", "outcome": "not_staged", "reason": message}
+    if getattr(status, "action_required", None):
+        row["outcome"] = "confirm_required"
+        row["size_gb"] = getattr(status, "size_gb", None)
+    fallback_history.append(row)
+    return None, message
+
+
 def merit_basins_hybrid_delineate(
     lat: float,
     lon: float,
@@ -1279,6 +1347,13 @@ def merit_basins_hybrid_delineate(
     SHA-256 is never used (``MERIT_ASSET_INTEGRITY_FAILED``).
 
     ``snap_reference`` is honoured only when no accumulation raster is staged.
+
+    With no accumulation raster and no Earth Engine (``allow_offline``), the outlet is snapped on the
+    staged ``flowdir##.tif`` inside the home unit catchment (``snap_quality = offline_flowdir_home_catchment``);
+    the raster is staged first under the tiered policy when ``auto_stage`` is on (99-304 MB for CONUS
+    regions; the 2 GB cap and the ``merit_auto_stage`` setting apply). Only when no snap is possible is the
+    outlet ``offline_unsnapped``: the polygon is the whole terminal catchment plus everything upstream and
+    the result is marked ``reliability`` ``unreliable`` or ``provisional`` (top level, with reason and remedy).
     """
     import pandas as pd
 
@@ -1364,7 +1439,7 @@ def merit_basins_hybrid_delineate(
                     raise
                 snap_reference = MeritSnapReference(
                     snap=MeritSnap(
-                        lat=lat, lon=lon, row=-1, col=-1, distance_m=0.0,
+                        lat=lat, lon=lon, row=-1, col=-1, distance_m=None,
                         snapped_upa_km2=None, snap_quality="offline_unsnapped",
                     ),
                     source="offline",
@@ -1377,6 +1452,74 @@ def merit_basins_hybrid_delineate(
             snap_origin = mh.ORIGIN_EE
     snap = snap_reference.snap
     unsnapped = snap.snap_quality == "offline_unsnapped"
+    pre_assembly: tuple[int, list[int], gpd.GeoDataFrame] | None = None
+    snap_flowdir_info: dict[str, Any] | None = None
+    flowdir_state: dict[str, Any] = {"staged": flowdir_path is not None, "error": None, "message": None}
+    if unsnapped:
+        # Earth Engine and the accumulation raster are both missing. Snap on the flow-direction raster inside the
+        # home unit catchment (staging it first under the tiered policy), else stay unsnapped and say so.
+        try:
+            if flowdir_path is None and auto_stage:
+                flowdir_path, stage_message = _stage_flowdir_for_snap(mgr, pfaf, vf, fallback_history)
+                flowdir_state.update(staged=flowdir_path is not None, message=stage_message)
+                if flowdir_path is not None:
+                    downloaded_names.append(vf.region_asset_name("flowdir", pfaf))
+            if flowdir_path is None:
+                raise RuntimeError("the regional flow-direction raster is not staged")
+            home_id = store.locate(lon, lat)
+            home_ids = store.upstream_ids(home_id)
+            home_up = store.geometries(home_ids)
+            if home_id in (home_up.attrs.get("missing_comids") or []) or home_up.empty:
+                raise RuntimeError(f"Terminal catchment {home_id} has no polygon in {basins_db.name}.")
+            home_terminal = home_up[home_up["comid"] == home_id][["geometry"]]
+            home_nonterminal = home_up[home_up["comid"] != home_id][["geometry"]]
+            home_inflow = (
+                float(home_up.loc[home_up["comid"] != home_id, "area_km2"].sum())
+                if "area_km2" in home_up and not home_nonterminal.empty
+                else (area_km2(home_nonterminal) if not home_nonterminal.empty else 0.0)
+            )
+            t_snap = time.perf_counter()
+            fd_snap, fd_info = mh.snap_on_terminal_flowdir(
+                home_terminal, home_nonterminal, flowdir_path, lat, lon,
+                inflow_km2=home_inflow, expected_area_km2=expected_area_km2,
+            )
+            log.info(
+                "Offline flow-direction snap [Pfaf %s]: %.0f m, %.1f km2, %.2f s",
+                pfaf, fd_snap.distance_m, fd_snap.snapped_upa_km2 or float("nan"), time.perf_counter() - t_snap,
+            )
+        except vf.AssetIntegrityError as exc:
+            _flag("MERIT_ASSET_INTEGRITY_FAILED")
+            raise RuntimeError(str(exc)) from exc
+        except Exception as exc:
+            _flag("OFFLINE_FLOWDIR_SNAP_FAILED")
+            flowdir_state["error"] = str(exc)
+            fallback_history.append(
+                {"method": "offline_flowdir_snap", "outcome": "failed", "reason": str(exc)}
+            )
+        else:
+            snap_reference = MeritSnapReference(
+                snap=fd_snap,
+                source="local_flowdir_home_catchment",
+                cache_key=f"local_flowdir:{pfaf}",
+                bbox=(lon, lat, lon, lat),
+                official_merit_upa_km2=fd_snap.snapped_upa_km2,
+            )
+            snap, snap_origin, unsnapped = fd_snap, mh.ORIGIN_LOCAL, False
+            snap_flowdir_info = {k: v for k, v in fd_info.items() if k != "bounds"}
+            caller_supplied_snap = False
+            pre_assembly = (home_id, home_ids, home_up)
+            _flag("OFFLINE_FLOWDIR_SNAP_USED")
+            fallback_history.append(
+                {
+                    "method": "offline_flowdir_snap",
+                    "outcome": "succeeded",
+                    "reason": (
+                        f"no Earth Engine and no accumulation raster; snapped {fd_snap.distance_m:.0f} m on the "
+                        f"staged flow-direction raster inside unit catchment {home_id} "
+                        f"(drainage area {fd_snap.snapped_upa_km2:.2f} km2)"
+                    ),
+                }
+            )
     area_gate_info: dict[str, Any] | None = None
     if expected_area_km2 and expected_area_km2 > 0 and not unsnapped:
         # A gated snap is tagged "area_gated". The gate was evaluated only when this function made the snap
@@ -1392,7 +1535,7 @@ def merit_basins_hybrid_delineate(
             "expected_area_km2": expected_area_km2,
             "matched": gate_hit if gate_evaluated else None,
         }
-        if gate_hit and snap.distance_m > AREA_GATE_DISTANT_M:
+        if gate_hit and snap.distance_m is not None and snap.distance_m > AREA_GATE_DISTANT_M:
             # the gate accepts up to 1 km; a match this far from the gauge may be another river of similar size
             _flag("AREA_GATE_SNAP_DISTANT")
         if gate_evaluated and not gate_hit:
@@ -1412,13 +1555,18 @@ def merit_basins_hybrid_delineate(
             )
     if snap_reference.official_merit_upa_km2 is not None:
         validation_sources.append(
-            "local_accum_upa" if snap_origin == mh.ORIGIN_LOCAL else "gee_official_upa"
+            "local_flowdir_upa"
+            if snap_reference.source == "local_flowdir_home_catchment"
+            else "local_accum_upa" if snap_origin == mh.ORIGIN_LOCAL else "gee_official_upa"
         )
 
     # -- vector assembly --------------------------------------------------------------------------
-    terminal_id = store.locate(snap.lon, snap.lat)
-    upstream_ids = store.upstream_ids(terminal_id)
-    upstream = store.geometries(upstream_ids)
+    if pre_assembly is not None:  # the flow-direction snap already assembled the home catchment's network
+        terminal_id, upstream_ids, upstream = pre_assembly
+    else:
+        terminal_id = store.locate(snap.lon, snap.lat)
+        upstream_ids = store.upstream_ids(terminal_id)
+        upstream = store.geometries(upstream_ids)
     if upstream.empty:
         raise RuntimeError(f"Hybrid topology returned no upstream catchments for {terminal_id}.")
     missing_ids = upstream.attrs.get("missing_comids") or []
@@ -1616,6 +1764,49 @@ def merit_basins_hybrid_delineate(
         rss_after_terminal_refinement, rss_after_merge,
     )
 
+    # A snap on flow direction alone was not checked against an accumulation raster. Only an area-gated match
+    # (the area agreed with the caller's) or an Earth Engine / accumulation snap is left without a mark.
+    fd_reliability: dict[str, Any] = {}
+    if snap_flowdir_info is not None and snap.snap_quality != "area_gated":
+        fd_reliability = {
+            "reliability": "provisional",
+            "reliability_reason": (
+                "snapped offline on flow direction only, not validated against an accumulation raster"
+                + (" (the expected area matched no cell within the gate)" if expected_area_km2 else "")
+            ),
+            "remedy": [
+                "Sign in to Google Earth Engine (earthengine authenticate, then set the project) or stage the "
+                "region's accumulation raster so the snap can be validated; pass expected_area_km2 to steer it "
+                "(within 1 km, +/-10%)."
+            ],
+        }
+        _flag("OFFLINE_FLOWDIR_SNAP_UNVALIDATED")
+
+    # -- reliability of an outlet that could not be snapped ---------------------------------------------------
+    reliability: dict[str, Any] | None = None
+    reliability_remedy: list[str] | None = None
+    if unsnapped:
+        reliability = mh.assess_unsnapped_outlet(
+            store, terminal_id, lat, lon,
+            returned_area_km2=polygon_area, terminal_area_km2=terminal_total_km2, inflow_km2=inflow_km2,
+        )
+        flowdir_spec = vf.region_asset_spec("flowdir", pfaf)
+        reliability_remedy = mh.unsnapped_remedy(
+            pfaf,
+            flowdir_staged=flowdir_state["staged"],
+            flowdir_size_mb=(flowdir_spec.size_bytes or 0) / (1024 ** 2) or None,
+            snap_error=flowdir_state["error"],
+            stage_message=flowdir_state["message"],
+        )
+        _flag("OUTLET_UNSNAPPED_UNRELIABLE" if reliability["status"] == "unreliable" else "OUTLET_UNSNAPPED")
+        fallback_history.append(
+            {
+                "method": "unsnapped_outlet_check",
+                "outcome": reliability["status"],
+                "reason": "; ".join(reliability["reasons"]) or "passed the over-ratio and reach-distance screen",
+            }
+        )
+
     area_validation, area_flags = validate_area(
         polygon_area,
         snapped_upa_km2=snap_reference.official_merit_upa_km2,
@@ -1686,6 +1877,18 @@ def merit_basins_hybrid_delineate(
         "version_consistency": consistency,
         "refinement": {k: v for k, v in refine_info.items() if k != "bounds"} or None,
         "outlet_assembly": outlet_assembly,
+        "outlet_reliability": (
+            {
+                "status": reliability["status"],
+                "reasons": reliability["reasons"],
+                "estimated_area_km2_on_reach": reliability["estimated_area_km2_on_reach"],
+                "checks": reliability["checks"],
+                "remedy": reliability_remedy,
+            }
+            if reliability
+            else None
+        ),
+        "offline_flowdir_snap": snap_flowdir_info,
         # the hybrid's own tier trail (the router keeps its own trail; this is the reason a refinement or
         # window fallback failed)
         "hybrid_fallback_history": [dict(row) for row in fallback_history],
@@ -1755,6 +1958,18 @@ def merit_basins_hybrid_delineate(
         vector_assembly_area_km2=vector_area,
         refined_polygon_area_km2=refinement_area if refinement_area is not None else polygon_area,
         data_provenance=data_provenance,
+        reliability=reliability["status"] if reliability else fd_reliability.get("reliability"),
+        reliability_reason=fd_reliability.get("reliability_reason") if not reliability and fd_reliability else (
+            ("outlet could not be snapped (offline_unsnapped); " + "; ".join(reliability["reasons"]))
+            if reliability and reliability["reasons"]
+            else "outlet could not be snapped (offline_unsnapped); it passed the screen, so the polygon is "
+            "provisional"
+            if reliability
+            else None
+        ),
+        remedy=reliability_remedy or fd_reliability.get("remedy"),
+        estimated_area_km2_on_reach=reliability["estimated_area_km2_on_reach"] if reliability else None,
+        reliability_checks=reliability["checks"] if reliability else None,
     )
 
 

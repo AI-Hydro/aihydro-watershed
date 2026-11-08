@@ -646,6 +646,12 @@ def _delineate_from_point(
     vector_data_source: str | None = None
     raster_data_source: str | None = None
     data_provenance: dict[str, Any] | None = None
+    # Outlet reliability, top level of the result: None when the outlet was snapped (or the tier does not say).
+    reliability: str | None = None
+    reliability_reason: str | None = None
+    remedy: list[str] | None = None
+    estimated_area_km2_on_reach: float | None = None
+    reliability_checks: dict[str, Any] | None = None
     hybrid_tried = False
     # CONUS auto: set when the primary tier (NLDI) raised, so the served polygon comes from a fallback.
     nldi_failure: str | None = None      # "transient" | "not_usable" (NLDI raised without being throttled / down)
@@ -985,6 +991,7 @@ def _delineate_from_point(
         nonlocal terminal_refinement_used, vector_assembly_area_km2, refined_polygon_area_km2
         nonlocal vector_dataset_version, raster_dataset_version
         nonlocal vector_data_source, raster_data_source, data_provenance
+        nonlocal reliability, reliability_reason, remedy, estimated_area_km2_on_reach, reliability_checks
 
         gdf = local.gdf
         area = local.area_km2
@@ -1028,6 +1035,11 @@ def _delineate_from_point(
         vector_data_source = local.vector_data_source
         raster_data_source = local.raster_data_source
         data_provenance = local.data_provenance
+        reliability = getattr(local, "reliability", None)
+        reliability_reason = getattr(local, "reliability_reason", None)
+        remedy = getattr(local, "remedy", None)
+        estimated_area_km2_on_reach = getattr(local, "estimated_area_km2_on_reach", None)
+        reliability_checks = getattr(local, "reliability_checks", None)
         method_used = used_method
 
     def _try_hybrid_result(reason: str) -> bool:
@@ -1098,6 +1110,13 @@ def _delineate_from_point(
             )
             return False
 
+    def _prefer_hybrid_snap() -> None:
+        """The flowdir-only tier cannot snap without Earth Engine or an accumulation raster (``offline_unsnapped``).
+        The hybrid snaps on the staged flowdir inside the home catchment, so give it the point; if it cannot serve
+        either, the local result stays with its own honest ``unreliable`` mark. One hybrid attempt per call."""
+        if snap_quality == "offline_unsnapped" and not hybrid_tried:
+            _try_hybrid_result("local MERIT tier could not snap the outlet; the hybrid snaps on the staged flowdir")
+
     # Default global tier (and forced method="merit_hybrid"/"merit_basins", also in CONUS): MERIT-Basins
     # vector assembly with terminal-catchment refinement. If it cannot serve, the older tiers follow.
     if hybrid_first and not _try_hybrid_result(escalation_reason or "default_global_tier"):
@@ -1129,6 +1148,7 @@ def _delineate_from_point(
             fallback_history.append(
                 {"method": "local_merit_flowdir_pyflwdir", "outcome": "succeeded"}
             )
+            _prefer_hybrid_snap()
         except Exception as e:
             if method == "auto" and nldi_failure_is_exception:
                 # NLDI already failed, so this chain must reach merit_gee / 3DEP / raw DEM: record and fall through.
@@ -1284,6 +1304,7 @@ def _delineate_from_point(
                     fallback_history.append(
                         {"method": "local_merit_flowdir_pyflwdir", "outcome": "succeeded"}
                     )
+                    _prefer_hybrid_snap()
                     run_fast = False
                 except Exception as local_exc:
                     fallback_history.append(
@@ -1302,11 +1323,11 @@ def _delineate_from_point(
                 # then retry local_merit_pyflwdir (tiered policy — never
                 # blocks on >2 GB without user confirmation).
                 #
-                # Guard: only auto-stage for non-CONUS points.  CONUS has
-                # adequate NLDI + raw-DEM fallbacks; staging Rhine/Ganges/etc.
-                # on a CONUS failure would waste bandwidth and surprise users.
+                # CONUS is staged too. With NLDI throttled and no Earth Engine the alternative is an unsnapped
+                # outlet (camels-delineation-1 Amendment 4: 45.8% of basins < 100 km2 wrong), and a CONUS region's
+                # flowdir is 99-304 MB, inside the tiered 2 GB cap (``merit_auto_stage``; "never" still disables it).
                 run_fast = True  # default, overridden on successful stage
-                if pfaf_code and not is_conus(lat, lon):
+                if pfaf_code:
                     try:
                         from aihydro_watershed.merit.merit_manager import MeritDataManager
 
@@ -1341,6 +1362,7 @@ def _delineate_from_point(
                                     "pfaf": pfaf_code,
                                 }
                             )
+                            _prefer_hybrid_snap()
                             run_fast = False
                         elif hasattr(stage_status, "action_required"):
                             # Large region — surface info for agent to confirm
@@ -1549,6 +1571,7 @@ def _delineate_from_point(
     # the popup caps at 6 and rolls the rest into "+N more properties". Skip
     # None/empty values so the popup stays clean.
     _feature_props = {
+        "reliability": reliability,
         "area_km2": (round(area, 1) if area >= 10 else round(area, 3)) if area is not None else None,
         "method": method_used,
         "pfaf": pfaf_code,
@@ -1625,6 +1648,11 @@ def _delineate_from_point(
             "snap_quality": snap_quality,
             "snap_source": snap_source,
             "snap_validation": snap_validation,
+            "reliability": reliability,
+            "reliability_reason": reliability_reason,
+            "remedy": remedy,
+            "estimated_area_km2_on_reach": estimated_area_km2_on_reach,
+            "reliability_checks": reliability_checks,
             "routing_dataset": routing_dataset,
             "routing_data_source": routing_data_source,
             "vector_dataset_version": vector_dataset_version,

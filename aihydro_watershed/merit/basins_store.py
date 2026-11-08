@@ -20,7 +20,8 @@ from pathlib import Path
 import geopandas as gpd
 import numpy as np
 import pandas as pd
-from shapely.geometry import Point
+from shapely.geometry import LineString, Point
+from shapely.ops import linemerge
 
 _CHUNK_IDS = 2000
 _NEAREST_DEG = 0.05  # ~5 km: accept the nearest catchment for a point just off the coast
@@ -147,3 +148,26 @@ class BasinsStore:
         with closing(sqlite3.connect(f"file:{self.rivers_db}?mode=ro", uri=True)) as con:
             row = con.execute("SELECT uparea FROM rivers WHERE comid = ?", (int(comid),)).fetchone()
         return float(row[0]) if row and row[0] is not None else None
+
+    def river_line(self, comid: int) -> LineString | None:
+        """River-reach line of ``comid`` in EPSG:4326, digitised downstream to upstream, or ``None``.
+
+        Read from the ``rivers`` layer of ``rivers##.db`` (the reach shares its ``comid`` with the unit
+        catchment). ``None`` when the layer has no geometry for the id (or the file is absent), so a
+        caller can say the reach could not be tested instead of guessing.
+        """
+        if self.rivers_db is None or not self.rivers_db.exists():
+            return None
+        try:
+            gdf = gpd.read_file(self.rivers_db, layer="rivers", where=f"comid = {int(comid)}")
+        except Exception:
+            return None
+        gdf = gdf[gdf.geometry.notna() & ~gdf.geometry.is_empty]
+        if gdf.empty:
+            return None
+        if gdf.crs is not None and gdf.crs.to_epsg() != 4326:
+            gdf = gdf.to_crs(4326)
+        geom = gdf.geometry.iloc[0]
+        if geom.geom_type == "MultiLineString":
+            geom = linemerge(geom)
+        return geom if geom.geom_type == "LineString" else None

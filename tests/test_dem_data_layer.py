@@ -5,6 +5,7 @@ from types import ModuleType, SimpleNamespace
 from unittest.mock import Mock
 
 import numpy as np
+import rioxarray  # noqa: F401
 import xarray as xr
 from shapely.geometry import box
 
@@ -15,7 +16,8 @@ def _fake_dem() -> xr.DataArray:
         dims=("latitude", "longitude"),
         coords={"latitude": [1.0, 0.0], "longitude": [0.0, 1.0]},
     )
-    return dem
+    # aihydro-data attaches a CRS; _normalize_dem now refuses a raster without one.
+    return dem.rio.write_crs("EPSG:4326")
 
 
 def test_fetch_dem_auto_routes_through_aihydro_data(monkeypatch):

@@ -131,6 +131,15 @@ def fetch_dem(
     )
 
 
+class DemInputError(ValueError):
+    """A DEM raster is ambiguous or incomplete (extra slices, no CRS).
+
+    Raised instead of guessing. ``fetch_dem`` surfaces it in its
+    ``RuntimeError``; ``slope_from_dem`` re-raises it as
+    ``SlopeUnavailableError``.
+    """
+
+
 def _normalize_dem(dem: "xr.DataArray") -> "xr.DataArray":  # type: ignore[name-defined]
     """Normalise a DEM DataArray from any backend so downstream code never
     has to worry about dimension naming, CRS, or band dimensions.
@@ -141,15 +150,16 @@ def _normalize_dem(dem: "xr.DataArray") -> "xr.DataArray":  # type: ignore[name-
        GEE and STAC backends sometimes return 'lat'/'lon' or
        'latitude'/'longitude'.
 
-    2. **Squeeze singleton band dimension** — GEE rasters often carry an
-       extra leading size-1 band axis: (1, H, W) → (H, W).  pysheds and
-       np.gradient both need a 2-D array.
+    2. **Squeeze singleton non-spatial dimensions** — GEE rasters often carry
+       an extra leading size-1 band axis: (1, H, W) → (H, W).  pysheds and
+       np.gradient both need a 2-D array.  A non-spatial dimension with more
+       than one slice is **refused** (``DemInputError``), never reduced to its
+       first slice: that would silently drop the rest of the data.
 
-    3. **Write CRS if absent** — GEE does not always attach spatial_ref;
-       assume EPSG:4326 (all global DEM products are delivered in WGS84).
+    3. **Require a CRS** — a DEM without CRS metadata is refused
+       (``DemInputError``); WGS84 is not assumed, because a wrong guess turns
+       into wrong slopes and areas with no trace.
     """
-    import xarray as xr
-
     # 1. Rename non-standard dimension names
     dim_renames: dict[str, str] = {}
     for old, new in (("latitude", "y"), ("longitude", "x"), ("lat", "y"), ("lon", "x")):
@@ -158,26 +168,42 @@ def _normalize_dem(dem: "xr.DataArray") -> "xr.DataArray":  # type: ignore[name-
     if dim_renames:
         dem = dem.rename(dim_renames)
 
-    # 2. Squeeze singleton band / time dimensions
-    #    We want exactly 2-D (y, x).  Drop any leading size-1 dims.
-    while dem.ndim > 2:
-        for i, (dim, size) in enumerate(zip(dem.dims, dem.shape)):
-            if size == 1:
-                dem = dem.squeeze(dim, drop=True)
-                break
-        else:
-            # No singleton dim found but still > 2-D: take the first band slice
-            dem = dem.isel({dem.dims[0]: 0})
+    # 2. Squeeze singleton band / time dimensions; refuse multi-slice ones.
+    if "y" in dem.dims and "x" in dem.dims:
+        extra = [d for d in dem.dims if d not in ("y", "x")]
+    else:
+        extra = list(dem.dims[:-2])
+    multi = {d: int(dem.sizes[d]) for d in extra if dem.sizes[d] > 1}
+    if multi:
+        raise DemInputError(
+            f"DEM has non-spatial dimension(s) with more than one slice {multi}; "
+            "refusing to keep only the first slice. Select the intended band/time "
+            "explicitly before passing the raster."
+        )
+    for d in extra:
+        dem = dem.squeeze(d, drop=True)
 
-    # 3. Ensure CRS is set
+    # 3. A CRS is required
     try:
-        if dem.rio.crs is None:
-            dem = dem.rio.write_crs("EPSG:4326", inplace=True)
-            log.debug("DEM had no CRS metadata; assumed EPSG:4326 (WGS84)")
-    except Exception:
-        pass
+        crs = dem.rio.crs
+    except Exception as exc:
+        raise DemInputError(f"DEM CRS could not be read ({exc}); refusing to assume one") from exc
+    if crs is None:
+        raise DemInputError("DEM has no CRS metadata; refusing to assume EPSG:4326")
 
     return dem
+
+
+def reproject_elevation(dem: "xr.DataArray", crs: str) -> "xr.DataArray":  # type: ignore[name-defined]
+    """Reproject a continuous elevation raster with **bilinear** resampling.
+
+    rioxarray's default is nearest, which copies cells and so leaves stair-steps
+    and a half-cell shift in the elevation surface (and in slopes derived from
+    it). Elevation is continuous; categorical rasters must not use this.
+    """
+    from rasterio.enums import Resampling
+
+    return dem.rio.reproject(crs, resampling=Resampling.bilinear)
 
 
 def _to_shapely(geometry: Any) -> Any:
@@ -252,7 +278,10 @@ def slope_from_dem(dem: "xr.DataArray") -> "xr.DataArray":  # type: ignore[name-
     # Ensure DEM is 2-D before computing gradient.  rioxarray reproject and
     # some GEE backends preserve a leading band axis (1, H, W); np.gradient
     # with only two spacing arguments only works on 2-D arrays.
-    dem = _normalize_dem(dem)  # rename dims, squeeze band axis, set CRS
+    try:
+        dem = _normalize_dem(dem)  # rename dims, squeeze singleton band axis, require CRS
+    except DemInputError as exc:
+        raise SlopeUnavailableError(str(exc)) from exc
 
     # Metric pixel size, or raise. Checked before any array work.
     dx, dy = _metric_spacing(dem)

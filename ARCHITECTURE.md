@@ -124,6 +124,19 @@ aihydro_watershed/
 
 ---
 
+## River tiles (basemap slice B2)
+
+`aihydro_watershed/tiles/` builds `<AIHYDRO_HOME>/merit/tiles/rivers##.pmtiles` from the staged, hash-verified `vector/rivers##.db` (`merit_rivers.build_merit_river_tiles`; CLI `python -m aihydro_watershed.tiles`). It depends only on `pyogrio`/`geopandas` (already required) and the `merit.verified_fetch` helpers; nothing upward.
+
+Design choices, with the reason:
+
+- **Layers per upstream-area band (Z1).** Strahler order depends on source density, upstream area is physical. GDAL's MVT writer ignores per-feature zoom attributes (tested: `tippecanoe:minzoom` is kept as a plain attribute) and a PMTiles dataset cannot be appended to, so each band is written as a separate single-layer archive with its own `MINZOOM` and merged by `tiles/pmtiles_merge.py`. The merge is a tile-id join that concatenates the decompressed MVT bytes (valid because a tile is a repeated-layer message), then rewrites the PMTiles v3 directories. It accepts only vector PMTiles v3 with none/gzip compression and raises otherwise.
+- **Source integrity.** The source sha256 is read from the staging sidecar after `verified_path` has checked it against the pin; it is hashed only if there is no sidecar (and `verify_source=False` is for synthetic test data).
+- **Idempotence.** A rebuild is skipped only when the sidecar's schema version, source sha, build options and the output's size and sha256 all match.
+- **Reads:** the tile CRS is EPSG:3857, so a spatial filter on a read-back (`bbox`) must be in 3857.
+
+---
+
 ## Delineation data flow
 
 ```

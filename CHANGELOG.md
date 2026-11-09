@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Added: local river PMTiles from staged MERIT-Basins (basemap slice B2, tile-building half)
+
+- `aihydro_watershed.tiles.build_merit_river_tiles(region, out_dir=None, *, source_db=None, max_zoom=12, force=False, verify_source=True)` and `python -m aihydro_watershed.tiles <region>...` write `<AIHYDRO_HOME>/merit/tiles/rivers##.pmtiles` and a `.provenance.json` sidecar (source db sha256 from the staging sidecar, GDAL/pyogrio versions, build options, output sha256 and size, licence CC BY-NC-SA 4.0, citation Lin et al. 2019). Offline, idempotent, no new dependency (tiles are written with `pyogrio`'s bundled GDAL PMTiles driver).
+- Reaches are split into five MVT layers by upstream area (rule Z1 of `hydrology-basemap-2026-11-08`): `rivers_z0` (>= 10,000 km2), `rivers_z5` (>= 2,500), `rivers_z7` (>= 500), `rivers_z9` (>= 100), `rivers_z11` (rest); attributes `comid`, `uparea`, `sorder`, `lengthkm`. Tiles go to z12. GDAL cannot set a zoom per feature or append layers, so the bands are merged by tile id in `tiles/pmtiles_merge.py`.
+
 ## [0.4.3] - 2026-11-08
 
 ### Fixed: an outlet that cannot be snapped is no longer returned silently (finding `unsnapped-outlet-2026-11-07` P1, P2)

@@ -80,6 +80,7 @@ aihydro-watershed signatures --flow-csv q.csv --area-km2 250 --geojson basin.geo
 |---|---|
 | `delineation` | Global pour-point / gauge delineation. Tiers: NLDI (CONUS NHD-indexed), MERIT-Basins hybrid (default outside CONUS: vector assembly of unit catchments + raster refinement of the terminal catchment), MERIT-Hydro/pyflwdir (local flowdir cache, Earth Engine). Auto-routing chooses the best available tier. |
 | `merit` | MERIT-Hydro / MERIT-Basins data management: per-region vectors and rasters pinned by SHA-256, map layers, region presets. |
+| `tiles` | Local river PMTiles built from staged MERIT-Basins `rivers##.db` (basemap slice B2). See [River tiles](#river-tiles-merit-basins-pmtiles). |
 | `characterize` | Geomorphic parameters (28 indices), watershed attributes, topographic wetness index. |
 | `terrain` | Curve number (TR-55, AMC II), event runoff (SCS-CN), RUSLE erosion. SSURGO soil attributes in CONUS (recorded hydrologic group and erodibility Kw via gNATSGO + Soil Data Access), POLARIS/SoilGrids elsewhere. |
 | `signatures` | Baseflow index (Lyne-Hollick, Ladson 2013 recipe as used by CAMELS), flow-duration curve, flood frequency (Gumbel/GEV), drought indices (SPI, SPEI, Palmer). |
@@ -149,6 +150,23 @@ USGS StreamStats is not used as a tier: the old
 `streamstats.usgs.gov/streamstatsservices` API is retired (404), and the
 current `/ss-delineate/v1/delineate/sshydro/{STATE}?lat=&lon=` service does not
 snap points onto its stream grid for very small channels.
+
+## River tiles (MERIT-Basins PMTiles)
+
+Turns a staged `rivers##.db` into a single-file vector tile archive a map can stream with HTTP range requests. Offline: it reads data that is already staged and never downloads.
+
+```python
+from aihydro_watershed.tiles import build_merit_river_tiles
+rec = build_merit_river_tiles(72)          # -> $AIHYDRO_HOME/merit/tiles/rivers72.pmtiles (+ .provenance.json)
+# or:  python -m aihydro_watershed.tiles 72 [--force] [--max-zoom 12]
+```
+
+- **Zoom by upstream area, not Strahler order (rule Z1).** One MVT layer per area band: `rivers_z0` (>= 10,000 km2, from z0), `rivers_z5` (>= 2,500), `rivers_z7` (>= 500), `rivers_z9` (>= 100), `rivers_z11` (everything else, from z11). A client draws all five layers; each is empty below its min zoom. Tiles stop at z12 (the source is 90 m); clients overzoom beyond. Reaches with no `uparea` go in the last band and are counted in the sidecar.
+- **Attributes:** `comid`, `uparea` (km2), `sorder` (Strahler order), `lengthkm`. The source's primary key `comid` joins the tiles to delineation outputs.
+- **Provenance:** `rivers##.pmtiles.provenance.json` records the source db sha256 (taken from the staging `.provenance.json`, and verified against the pinned hash first), GDAL / pyogrio / geopandas versions, build options, output sha256 and size, reach counts per layer, licence and citation. The build is skipped when the sidecar matches the source sha, the options and the output file.
+- **Licence:** derived from MERIT-Basins (Lin et al. 2019), CC BY-NC-SA 4.0. Keep the tiles local, attribute them ("Rivers: MERIT-Basins, Lin et al. 2019, CC BY-NC-SA 4.0"), and do not ship them in a commercially licensed bundle.
+- No new dependency: tiles are written through `pyogrio`'s bundled GDAL MVT/PMTiles driver. GDAL can neither set a zoom per feature nor append layers, so each band is written as its own archive and merged by tile id (`tiles/pmtiles_merge.py`; an MVT tile is a concatenation of layer messages, so the merge never decodes geometry).
+- Coarse zooms drop sub-pixel reaches (GDAL simplification), so a low zoom shows fewer reaches than the band's threshold admits, never more.
 
 ## Layering
 

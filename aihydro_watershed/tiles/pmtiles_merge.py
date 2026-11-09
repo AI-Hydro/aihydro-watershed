@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import gzip
 import json
+import math
 import struct
 from pathlib import Path
 from typing import Any, Iterator
@@ -164,6 +165,18 @@ def _tile_bounds(readers: list[PMTilesReader]) -> tuple[int, int, int, int]:
     )
 
 
+def _center(bounds_e7: tuple[int, int, int, int], min_zoom: int, max_zoom: int) -> tuple[int, int, int]:
+    """``(zoom, lon_e7, lat_e7)``: the bounds' midpoint and the zoom at which the extent about fits a 256 px tile."""
+    lo, la, hi, ha = bounds_e7
+    span = max((hi - lo) / 1e7, (ha - la) / 1e7, 1e-6)
+    zoom = int(math.floor(math.log2(360.0 / span)))
+    return max(min_zoom, min(max_zoom, max(0, zoom))), (lo + hi) // 2, (la + ha) // 2
+
+
+def _fmt(v_e7: int) -> str:
+    return f"{v_e7 / 1e7:.7f}"
+
+
 def merge_pmtiles(
     sources: list[str | Path],
     dest: str | Path,
@@ -188,7 +201,9 @@ def merge_pmtiles(
         vl = meta.get("vector_layers")
         if vl is None and isinstance(meta.get("json"), str):
             vl = json.loads(meta["json"]).get("vector_layers")
-        layers.extend(vl or [])
+        if not vl:  # without layer ids the duplicate-name guard below would pass vacuously
+            raise ValueError(f"{r.path}: metadata has no vector_layers (or it is empty); cannot merge")
+        layers.extend(vl)
     names = [lyr["id"] for lyr in layers]
     if len(set(names)) != len(names):
         raise ValueError(f"duplicate layer names across archives: {names}")
@@ -239,16 +254,18 @@ def merge_pmtiles(
                     break
                 leaf_size *= 2
 
+        bounds_e7 = _tile_bounds(readers)  # union of every input; metadata and header must agree
+        min_z, max_z = min(r.min_zoom for r in readers), max(r.max_zoom for r in readers)
+        c_zoom, c_lon, c_lat = _center(bounds_e7, min_z, max_z)
         merged = {
             "name": first_meta.get("name", dest.stem), "description": "",
             "version": first_meta.get("version", "2"), "type": "overlay", "format": "pbf",
-            "minzoom": str(min(r.min_zoom for r in readers)),
-            "maxzoom": str(max(r.max_zoom for r in readers)),
+            "minzoom": str(min_z), "maxzoom": str(max_z),
             "vector_layers": layers,
+            # GDAL's comma-string form: "minlon,minlat,maxlon,maxlat" and "lon,lat,zoom"
+            "bounds": ",".join(_fmt(v) for v in bounds_e7),
+            "center": f"{_fmt(c_lon)},{_fmt(c_lat)},{c_zoom}",
         }
-        for k in ("center", "bounds"):  # GDAL writes these as comma strings; keep the first archive's
-            if k in first_meta:
-                merged[k] = first_meta[k]
         merged.update(metadata_extra or {})
         meta_blob = _compress(json.dumps(merged, indent=1).encode("utf-8"), comp)
 
@@ -256,13 +273,12 @@ def merge_pmtiles(
         meta_off = root_off + len(root)
         leaf_off = meta_off + len(meta_blob)
         data_off = leaf_off + len(leaves)
-        lo, la, hi, ha = _tile_bounds(readers)
-        r0 = readers[0]
+        lo, la, hi, ha = bounds_e7
         header = _HEADER.pack(
             b"PMTiles", 3, root_off, len(root), meta_off, len(meta_blob), leaf_off, len(leaves),
             data_off, offset, n_tiles, n_tiles, n_tiles, 1, comp, tile_comp, 1,
-            min(r.min_zoom for r in readers), max(r.max_zoom for r in readers),
-            lo, la, hi, ha, r0.center_zoom, r0.center_lon_e7, r0.center_lat_e7,
+            min_z, max_z,
+            lo, la, hi, ha, c_zoom, c_lon, c_lat,
         )
         with tmp.open("wb") as out:
             out.write(header + root + meta_blob + leaves)

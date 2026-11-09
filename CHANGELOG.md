@@ -4,8 +4,15 @@
 
 ### Added: local river PMTiles from staged MERIT-Basins (basemap slice B2, tile-building half)
 
-- `aihydro_watershed.tiles.build_merit_river_tiles(region, out_dir=None, *, source_db=None, max_zoom=12, force=False, verify_source=True)` and `python -m aihydro_watershed.tiles <region>...` write `<AIHYDRO_HOME>/merit/tiles/rivers##.pmtiles` and a `.provenance.json` sidecar (source db sha256 from the staging sidecar, GDAL/pyogrio versions, build options, output sha256 and size, licence CC BY-NC-SA 4.0, citation Lin et al. 2019). Offline, idempotent, no new dependency (tiles are written with `pyogrio`'s bundled GDAL PMTiles driver).
+- `aihydro_watershed.tiles.build_merit_river_tiles(region, out_dir=None, *, source_db=None, max_zoom=12, force=False, verify_source=True)` and `python -m aihydro_watershed.tiles <region>...` write `<AIHYDRO_HOME>/merit/tiles/rivers##.pmtiles` and a `.provenance.json` sidecar (source db sha256 from the staging sidecar, GDAL/pyogrio versions, build options, output sha256 and size, licence with a `licence_note` (non-commercial, share-alike, variant unresolved; also in the `.pmtiles` metadata), `source_pinned`/`verified_at`, the count of reaches GDAL drops at the finest zoom, citation Lin et al. 2019). Offline, idempotent. Declares `pyogrio>=0.8.0` (imported directly; its wheels bundle GDAL 3.8.5, where the PMTiles driver was added); the build raises a clear error if the driver is missing.
 - Reaches are split into five MVT layers by upstream area (rule Z1 of `hydrology-basemap-2026-11-08`): `rivers_z0` (>= 10,000 km2), `rivers_z5` (>= 2,500), `rivers_z7` (>= 500), `rivers_z9` (>= 100), `rivers_z11` (rest); attributes `comid`, `uparea`, `sorder`, `lengthkm`. Tiles go to z12. GDAL cannot set a zoom per feature or append layers, so the bands are merged by tile id in `tiles/pmtiles_merge.py`.
+
+### Fixed (review of the PMTiles builder)
+
+- Merged archive metadata `bounds`/`center` are the union of all input bands (they came from the `rivers_z0` band only and disagreed with the header); a missing or empty `vector_layers` in an input is refused.
+- Licence stated as unresolved rather than a flat CC BY-NC-SA 4.0 (`licence_note` in sidecar and metadata; attribution keeps "CC BY-NC-SA").
+- `pyogrio>=0.8.0` declared; `sha256_origin` distinguishes verified-against-pin, unverified sidecar and computed; sidecar written atomically; `TILE_SCHEMA_VERSION` 2 (old archives rebuild).
+- The finest zoom is documented and tested as holding every reach except degenerate sub-pixel ones, which are counted in the sidecar.
 
 ## [0.4.3] - 2026-11-08
 

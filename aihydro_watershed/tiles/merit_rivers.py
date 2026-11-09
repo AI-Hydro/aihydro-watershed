@@ -18,13 +18,18 @@ rivers_z11 11          < 100 (all remaining reaches)
 =========  ==========  ===============================
 
 A client draws every layer; a layer simply has no tiles below its min zoom. Reaches with no ``uparea`` go
-in the last band (shown only at the finest zoom) and are counted in the sidecar. Attributes kept:
+in the last band (shown only at the finest zoom) and are counted in the sidecar. GDAL drops degenerate
+sub-pixel reaches (a zero-length reach is a point at any zoom), so the finest zoom holds every reach except
+those; the sidecar counts and lists them (``reaches_absent_at_max_zoom``). Attributes kept:
 ``comid`` (the source primary key), ``uparea`` (km2), ``sorder`` (Strahler order) and ``lengthkm``.
 
-Licence: MERIT-Basins (Lin et al. 2019) is redistributed here as derived data under CC BY-NC-SA 4.0. Keep
-the tiles local, attribute them, and do not ship them in a commercially licensed bundle.
+Licence: MERIT-Basins (Lin et al. 2019) is non-commercial and share-alike derived data. The source files are
+attributed per mghydro.com as CC BY-NC-SA 4.0, but the exact variant is unresolved (MERIT Hydro itself is
+CC BY-NC 4.0 or ODbL 1.0) and share-alike obligations for derived data may apply; ``LICENCE_NOTE`` carries
+the staged manifest's text. Keep the tiles local, attribute them, and do not ship them in a commercially
+licensed bundle.
 
-Tiles are written with ``pyogrio`` (GDAL MVT/PMTiles driver); no extra dependency is needed.
+Tiles are written with ``pyogrio`` (GDAL MVT/PMTiles driver, GDAL >= 3.8; declared as ``pyogrio>=0.8``).
 """
 from __future__ import annotations
 
@@ -41,7 +46,7 @@ from aihydro_watershed.merit import verified_fetch as vf
 from aihydro_watershed.tiles.pmtiles_merge import merge_pmtiles
 
 #: bump when the tile layout (bands, attributes, zooms) changes so old archives are rebuilt
-TILE_SCHEMA_VERSION = 1
+TILE_SCHEMA_VERSION = 2  # 2: licence_note, bounds/centre union, absent-reach count
 
 #: (layer name, min zoom, lower area bound km2 inclusive, upper bound exclusive) — rule Z1
 AREA_BANDS: tuple[tuple[str, int, float, float], ...] = (
@@ -54,9 +59,15 @@ AREA_BANDS: tuple[tuple[str, int, float, float], ...] = (
 DEFAULT_MAX_ZOOM = 12  # 90 m source: finer zooms add size, not information; clients overzoom
 KEEP_FIELDS = ("comid", "uparea", "sorder", "lengthkm")
 
-LICENCE = "CC BY-NC-SA 4.0"
+LICENCE = "CC BY-NC-SA 4.0 (attributed per mghydro.com; exact variant unresolved)"
 CITATION = "Lin et al. 2019"
-ATTRIBUTION = "Rivers: MERIT-Basins, Lin et al. 2019, CC BY-NC-SA 4.0"
+ATTRIBUTION = (
+    "Rivers: MERIT-Basins, Lin et al. 2019, CC BY-NC-SA 4.0 (attributed per mghydro.com; exact variant unresolved)"
+)
+LICENCE_NOTE = (
+    f"{vf.licence_summary()} Attributed per mghydro.com; exact variant unresolved. "
+    "Keep non-commercial and share-alike obligations."
+)
 CITATION_DETAIL = (
     "Lin, P., Pan, M., Beck, H. E., et al. (2019). Global reconstruction of naturalized river flows at "
     "2.94 million reaches. Water Resources Research, 55, 6499-6516. https://doi.org/10.1029/2019WR025287"
@@ -76,8 +87,8 @@ def tile_paths(region: str | int, out_dir: str | Path | None = None) -> tuple[Pa
     return out / name, out / (name + ".provenance.json")
 
 
-def _source_sha256(db: Path, region: str, *, verify: bool) -> tuple[str, str]:
-    """The source db's sha256 and where it came from.
+def _source_sha256(db: Path, region: str, *, verify: bool) -> tuple[str, str, dict[str, Any]]:
+    """The source db's sha256, where it came from, and the staging facts (``source_pinned``, ``verified_at``).
 
     ``verify=True`` goes through the existing staging verifier (pinned hash + sidecar fast path), which
     raises when the file does not match the pin. ``verify=False`` (synthetic data in tests, files outside
@@ -88,11 +99,15 @@ def _source_sha256(db: Path, region: str, *, verify: bool) -> tuple[str, str]:
         rec = vf.read_provenance(db) or {}
         if not rec.get("sha256"):
             raise RuntimeError(f"{db}: verification wrote no sha256 sidecar")
-        return rec["sha256"], "staging_provenance_sidecar"
-    rec = vf.read_provenance(db) or {}
-    if rec.get("sha256") and rec.get("size_bytes") == db.stat().st_size:
-        return rec["sha256"], "staging_provenance_sidecar"
-    return vf.sha256_file(db), "computed_no_sidecar"
+        origin = "staging_provenance_sidecar_verified_against_pin"
+    else:
+        rec = vf.read_provenance(db) or {}
+        if rec.get("sha256") and rec.get("size_bytes") == db.stat().st_size:
+            origin = "staging_provenance_sidecar_unverified"  # trusted as written; not checked against a pin here
+        else:
+            return vf.sha256_file(db), "computed_no_sidecar", {"source_pinned": False, "verified_at": None}
+    facts = {"source_pinned": bool(rec.get("pinned_sha256")), "verified_at": rec.get("verified_at")}
+    return rec["sha256"], origin, facts
 
 
 def _versions() -> dict[str, str]:
@@ -150,15 +165,19 @@ def build_merit_river_tiles(
     """
     import pyogrio
 
+    if "PMTiles" not in pyogrio.list_drivers():
+        raise RuntimeError(
+            f"this pyogrio ({pyogrio.__version__}, GDAL {pyogrio.__gdal_version_string__}) has no PMTiles driver; "
+            "need pyogrio>=0.8 (wheels bundle GDAL >= 3.8, where the driver was added)")
     finest = max(z for _n, z, _lo, _hi in AREA_BANDS)
     if int(max_zoom) < finest:
-        raise ValueError(f"max_zoom must be >= {finest} so every reach appears at some zoom (got {max_zoom})")
+        raise ValueError(f"max_zoom must be >= {finest} so the last band is written (got {max_zoom})")
     code = str(int(region)).zfill(2)
     db = Path(source_db) if source_db else merit_root() / "vector" / f"rivers{code}.db"
     if not db.exists():
         raise FileNotFoundError(f"{db} is not staged; stage Pfaf {code} rivers first (no download is done here)")
     pm, sidecar = tile_paths(code, out_dir)
-    source_sha, sha_origin = _source_sha256(db, code, verify=verify_source)
+    source_sha, sha_origin, src_facts = _source_sha256(db, code, verify=verify_source)
     options = {
         "bands": [{"layer": n, "minzoom": z, "uparea_min_km2": None if lo == float("-inf") else lo,
                    "uparea_max_km2": None if hi == float("inf") else hi} for n, z, lo, hi in AREA_BANDS],
@@ -199,18 +218,27 @@ def build_merit_river_tiles(
         merged = merge_pmtiles(
             parts, pm.with_name(pm.name + ".building"),
             metadata_extra={
-                "name": f"merit-basins-rivers-{code}", "attribution": ATTRIBUTION,
+                "name": f"merit-basins-rivers-{code}", "attribution": ATTRIBUTION, "licence_note": LICENCE_NOTE,
                 "description": "MERIT-Basins river reaches, split into upstream-area band layers (rule Z1)",
             },
         )
     building = pm.with_name(pm.name + ".building")
     building.replace(pm)
 
+    # GDAL drops degenerate sub-pixel reaches at the finest zoom; count what is absent rather than assume none
+    in_tiles: set[int] = set()
+    for name, *_ in AREA_BANDS:
+        if band_counts[name]:
+            t = pyogrio.read_dataframe(pm, layer=name, columns=["comid"], read_geometry=False,
+                                       ZOOM_LEVEL=int(max_zoom))
+            in_tiles.update(int(c) for c in t["comid"])
+    absent = sorted(int(c) for c in set(df["comid"].astype("int64")) - in_tiles)
+
     record = {
         "tile_schema_version": TILE_SCHEMA_VERSION,
         "region": code,
         "source": {
-            "path": str(db), "name": db.name, "sha256": source_sha, "sha256_origin": sha_origin,
+            "path": str(db), "name": db.name, "sha256": source_sha, "sha256_origin": sha_origin, **src_facts,
             "n_reaches": int(len(df)),
             "synthetic": bool((vf.read_provenance(db) or {}).get("synthetic", False)),
         },
@@ -221,13 +249,18 @@ def build_merit_river_tiles(
         "build_options": options,
         "reaches_per_layer": band_counts,
         "reaches_without_uparea_placed_in_finest_band": n_no_uparea,
+        "reaches_absent_at_max_zoom": len(absent),
+        "reaches_absent_at_max_zoom_comids": absent[:100],  # capped list; the count is exact
         "tooling": _versions(),
         "licence": LICENCE,
+        "licence_note": LICENCE_NOTE,
         "citation": CITATION,
         "citation_detail": CITATION_DETAIL,
         "attribution": ATTRIBUTION,
         "build_seconds": round(time.perf_counter() - t0, 1),
         "built_at": datetime.now(timezone.utc).isoformat(),
     }
-    sidecar.write_text(json.dumps(record, indent=2), encoding="utf-8")
+    tmp_side = sidecar.with_name(sidecar.name + ".tmp")
+    tmp_side.write_text(json.dumps(record, indent=2), encoding="utf-8")
+    tmp_side.replace(sidecar)  # atomic: a reader never sees a half-written sidecar
     return {**record, "status": "built"}

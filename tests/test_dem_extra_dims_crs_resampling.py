@@ -103,3 +103,18 @@ def test_relief_and_twi_use_the_bilinear_helper(monkeypatch):
     out = G._compute_relief_metrics(box(10.0, 50.0, 10.08, 50.08), 50.0, 10.0)
     assert out.get("flag") is None
     assert calls and calls[0].startswith("EPSG:326")
+
+
+@pytest.mark.parametrize("shape,dims", [((1, 24), ("y", "x")), ((20, 1), ("y", "x"))])
+def test_one_pixel_spatial_dim_is_not_squeezed(shape, dims):
+    lon = 10 + np.arange(shape[1]) / 3600
+    lat = (50 + np.arange(shape[0]) / 3600)[::-1]
+    da = xr.DataArray(np.ones(shape), dims=dims, coords={"y": lat, "x": lon}).rio.write_crs("EPSG:4326")
+    out = D._normalize_dem(da)
+    assert out.dims == ("y", "x") and out.shape == shape
+
+
+def test_band_axis_squeezed_but_one_pixel_row_kept():
+    da = _stack(1).isel(y=slice(0, 1))          # (band=1, y=1, x)
+    out = D._normalize_dem(da)
+    assert out.dims == ("y", "x") and out.shape == (1, da.sizes["x"])

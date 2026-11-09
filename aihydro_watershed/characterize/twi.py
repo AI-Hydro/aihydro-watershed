@@ -215,7 +215,7 @@ def compute_twi(
 
         # === Step 1: Download DEM (auto: 3DEP in CONUS, GLO-30 globally) ===
         _progress(1, 10, "Downloading DEM (USGS 3DEP for CONUS, Copernicus GLO-30 globally)...")
-        from aihydro_watershed.characterize._dem import fetch_dem, _geom_in_conus
+        from aihydro_watershed.characterize._dem import fetch_dem, _geom_in_conus, reproject_elevation
 
         _is_conus = _geom_in_conus(watershed_geom)
         dem, _dem_product, _dem_source = fetch_dem(watershed_geom, resolution=resolution, prefer="auto")
@@ -226,7 +226,7 @@ def compute_twi(
         # meaningful. EPSG:5070 (CONUS Albers) inside CONUS; UTM elsewhere.
         if _is_conus:
             try:
-                dem = dem.rio.reproject("EPSG:5070")
+                dem = reproject_elevation(dem, "EPSG:5070")
             except Exception as _proj_exc:
                 # Fail closed: flow accumulation, cell_size and slope all need metres.
                 from aihydro_watershed.characterize._dem import SlopeUnavailableError
@@ -243,7 +243,7 @@ def compute_twi(
                 lon0 = float(getattr(_centroid, "x", 0.0))
                 zone = int((lon0 + 180) // 6) % 60 + 1
                 epsg = 32600 + zone if lat0 >= 0 else 32700 + zone
-                dem = dem.rio.reproject(f"EPSG:{epsg}")
+                dem = reproject_elevation(dem, f"EPSG:{epsg}")
                 # Squeeze again in case reproject adds a band dim back
                 if dem.ndim == 3:
                     dem = dem.squeeze(drop=True)

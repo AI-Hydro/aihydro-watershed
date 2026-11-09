@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Fixed: DEM normalisation no longer slices silently or assumes WGS84; elevation is warped bilinear
+
+Consumer-side counterpart of the aihydro-data single-tile/hole findings (stac-mosaic-alternatives-2026-11-09).
+
+- **`_normalize_dem` (`characterize/_dem.py`) refuses a raster with more than one slice on a non-spatial dimension** (`DemInputError`, a `ValueError`; names the dimensions and sizes). It used to take slice 0 of the first non-singleton dimension and drop the rest. Length-1 non-spatial dimensions are still squeezed (the usual `(1, H, W)` band axis); only non-spatial dimensions are squeezed, never a one-pixel `y`/`x`. `fetch_dem` reports the reason inside its `RuntimeError`; `slope_from_dem` re-raises it as `SlopeUnavailableError`.
+- **A DEM with no CRS is refused instead of being given EPSG:4326** (`DemInputError`). A wrong guess produced wrong areas and slopes with no trace. A backend that returns a CRS-less raster now fails visibly; the fix belongs in that backend.
+- **Elevation is reprojected with bilinear resampling** (`reproject_elevation`, used for the EPSG:5070/UTM warp in `geomorphic._compute_relief_metrics` and `twi.compute_twi`). rioxarray's default is nearest, which copies cells (stair-steps, up to half a cell of positional error). `delineation/small_catchment.py:100` and `delineation/dem_fetch.py:123` still use the default; they feed delineation, not characterisation, and are not changed here.
+
+**Numbers that can change** (same DEM, different resampling; no published value was re-run, none is quoted here): from `extract_geomorphic_parameters`, `H_m`, `Rh`, `Rp`, `Ls_pct` (mean slope) and `Cs_m_per_m`, and the stream-network approximations and advanced indices computed from the relief metrics (`outlet_elev`, `z_max` also move slightly); from `compute_twi`, every `twi_*` statistic. Any stored result produced before this change should be re-run before comparison; the effect size was not measured.
+
 ## [0.4.3] - 2026-11-08
 
 ### Fixed: an outlet that cannot be snapped is no longer returned silently (finding `unsnapped-outlet-2026-11-07` P1, P2)

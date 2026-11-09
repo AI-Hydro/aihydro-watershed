@@ -465,10 +465,10 @@ def _compute_relief_metrics(
     """
     try:
         # Get DEM — auto-routes to 3DEP inside CONUS, GLO-30 globally
-        from aihydro_watershed.characterize._dem import fetch_dem, _geom_in_conus
+        from aihydro_watershed.characterize._dem import fetch_dem, _geom_in_conus, reproject_elevation
         dem, _dem_product, _dem_source = fetch_dem(geom, resolution=resolution, prefer="auto")
         if _geom_in_conus(geom):
-            dem_proj = dem.rio.reproject("EPSG:5070")
+            dem_proj = reproject_elevation(dem, "EPSG:5070")
         else:
             # Project to UTM zone derived from the DEM centroid so the
             # outlet-pixel index math below uses metric coordinates.
@@ -479,7 +479,7 @@ def _compute_relief_metrics(
             zone = int((lon0 + 180) // 6) % 60 + 1
             epsg = 32600 + zone if lat0 >= 0 else 32700 + zone
             try:
-                dem_proj = dem.rio.reproject(f"EPSG:{epsg}")
+                dem_proj = reproject_elevation(dem, f"EPSG:{epsg}")
             except Exception as _proj_exc:
                 raise SlopeUnavailableError(
                     f"DEM reprojection to UTM (EPSG:{epsg}) failed ({_proj_exc}); "

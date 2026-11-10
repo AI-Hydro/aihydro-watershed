@@ -1,6 +1,6 @@
 # Changelog — aihydro-watershed
 
-## [Unreleased]
+## [0.4.4] - 2026-11-10
 
 ### Fixed: CN statistics over the basin, not the raster bounding box; chunked path reprojects; masked-path failure is flagged
 

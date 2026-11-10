@@ -1,8 +1,8 @@
 cff-version: 1.2.0
 message: "If you use this software, please cite it as below."
 title: "aihydro-watershed: Global Watershed Delineation and Characterization"
-version: "0.4.3"
-date-released: "2026-11-08"
+version: "0.4.4"
+date-released: "2026-11-10"
 license: Apache-2.0
 repository-code: "https://github.com/AI-Hydro/aihydro-watershed"
 abstract: >
@@ -29,7 +29,7 @@ preferred-citation:
       given-names: Mohammad
       affiliation: "Purdue University"
       email: mgalib@purdue.edu
-  version: "0.1.3"
-  date-released: "2026-06-24"
+  version: "0.4.4"
+  date-released: "2026-11-10"
   license: Apache-2.0
   repository-code: "https://github.com/AI-Hydro/aihydro-watershed"

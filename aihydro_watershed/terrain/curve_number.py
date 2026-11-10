@@ -141,8 +141,21 @@ def create_curve_number_grid(
                 'cn_p10': float,
                 'cn_p25': float,
                 'cn_p75': float,
-                'cn_p90': float
+                'cn_p90': float,
+                'stats_basis': 'raster_extent'      # over the whole fetched raster
             },
+
+            'basin_statistics': {                    # only cells inside the basin polygon
+                'cn_mean_basin': float | None,
+                'cn_median_basin': float | None,
+                'cn_min_basin': float | None,
+                'cn_max_basin': float | None,
+                'cn_cells_basin': int,
+                'stats_basis': 'basin_polygon'
+            },
+
+            'quality_flags': [str],                  # e.g. 'cn_overlay_masked_path_failed'
+            'warnings': [str],                       # human-readable, one per flag
             
             'cn_zones': {
                 'percent_low_cn': float,              # CN < 70
@@ -193,7 +206,8 @@ def create_curve_number_grid(
         }
         
         Access examples:
-        - CN mean: result['statistics']['cn_mean']
+        - CN mean over the basin: result['basin_statistics']['cn_mean_basin']
+        - CN mean over the raster extent: result['statistics']['cn_mean']
         - Medium CN zone: result['cn_zones']['percent_medium_cn']
         - Land cover classes: result['lulc_stats']['classes']
         - Gauge name: result['watershed_info']['gauge_name']
@@ -278,7 +292,8 @@ def create_curve_number_grid(
         'percentages': (100 * class_counts / class_counts.sum()).tolist()
     }
     lulc_stats.update(_lulc_fraction_stats(
-        *_basin_lulc_counts(lulc_data[cover_var], watershed_geom, watershed_gdf.crs)
+        *_basin_lulc_counts(lulc_data[cover_var], watershed_geom, watershed_gdf.crs,
+                           return_excluded=True)
     ))
     print(f"  Unique land-cover classes: {len(unique_classes)}")
     print()
@@ -299,6 +314,7 @@ def create_curve_number_grid(
         lulc_data, soil_data, year, resolution,
         watershed_geom=watershed_geom,
         dual_hsg=dual_hsg,
+        geom_crs=watershed_gdf.crs,
     )
     print()
 
@@ -315,8 +331,14 @@ def create_curve_number_grid(
         'cn_p10': float(np.percentile(valid_cn, 10)),
         'cn_p25': float(np.percentile(valid_cn, 25)),
         'cn_p75': float(np.percentile(valid_cn, 75)),
-        'cn_p90': float(np.percentile(valid_cn, 90))
+        'cn_p90': float(np.percentile(valid_cn, 90)),
+        # These cover every valid cell of the fetched raster (its bounding box),
+        # not only the basin; see basin_statistics for the basin-masked values.
+        'stats_basis': 'raster_extent',
     }
+    basin_statistics, quality_flags, quality_warnings = _basin_statistics_and_flags(
+        cn_grid, watershed_geom, watershed_gdf.crs, soil_stats,
+    )
 
     # Classify CN zones
     cn_zones = _classify_cn_zones(cn_grid.values)
@@ -369,6 +391,7 @@ def create_curve_number_grid(
             'gauge_name': watershed_data['gauge_name'],
             'area_km2': watershed_data['area_km2'],
             'cn_statistics': statistics,
+            'cn_basin_statistics': basin_statistics,
             'cn_zones': cn_zones,
             'lulc_year': year,
             'resolution_m': resolution
@@ -419,6 +442,9 @@ def create_curve_number_grid(
     return {
         'cn_grid': cn_grid,
         'statistics': statistics,
+        'basin_statistics': basin_statistics,
+        'quality_flags': quality_flags,
+        'warnings': quality_warnings,
         'cn_zones': cn_zones,
         'watershed_info': {
             'gauge_id': watershed_data['gauge_id'],
@@ -441,6 +467,7 @@ def create_curve_number_grid(
             'soil_provenance': _soil_provenance(soil_data, soil_stats),
             'lulc_class_fractions': lulc_stats.get('class_fractions'),
             'lulc_fraction_basis': lulc_stats.get('fraction_basis'),
+            'cn_stats_basis': basin_statistics['stats_basis'],
             'lulc_year': year,
             'region': lulc_data.attrs.get('_adata_region'),
         },
@@ -521,8 +548,21 @@ def create_curve_number_grid_from_geometry(
                 'cn_p10': float,
                 'cn_p25': float,
                 'cn_p75': float,
-                'cn_p90': float
+                'cn_p90': float,
+                'stats_basis': 'raster_extent'      # over the whole fetched raster
             },
+
+            'basin_statistics': {                    # only cells inside the basin polygon
+                'cn_mean_basin': float | None,
+                'cn_median_basin': float | None,
+                'cn_min_basin': float | None,
+                'cn_max_basin': float | None,
+                'cn_cells_basin': int,
+                'stats_basis': 'basin_polygon'
+            },
+
+            'quality_flags': [str],                  # e.g. 'cn_overlay_masked_path_failed'
+            'warnings': [str],                       # human-readable, one per flag
             
             'cn_zones': {
                 'percent_low_cn': float,              # CN < 70
@@ -572,7 +612,8 @@ def create_curve_number_grid_from_geometry(
         }
         
         Access examples:
-        - CN mean: result['statistics']['cn_mean']
+        - CN mean over the basin: result['basin_statistics']['cn_mean_basin']
+        - CN mean over the raster extent: result['statistics']['cn_mean']
         - Medium CN zone: result['cn_zones']['percent_medium_cn']
         - Land cover classes: result['lulc_stats']['classes']
         - Watershed area: result['watershed_info']['area_km2']
@@ -666,7 +707,8 @@ def create_curve_number_grid_from_geometry(
         'percentages': (100 * class_counts / class_counts.sum()).tolist()
     }
     lulc_stats.update(_lulc_fraction_stats(
-        *_basin_lulc_counts(lulc_data[cover_var], watershed_geom, watershed_gdf.crs)
+        *_basin_lulc_counts(lulc_data[cover_var], watershed_geom, watershed_gdf.crs,
+                           return_excluded=True)
     ))
     print(f"  Unique land-cover classes: {len(unique_classes)}")
     print()
@@ -687,6 +729,7 @@ def create_curve_number_grid_from_geometry(
         lulc_data, soil_data, year, resolution,
         watershed_geom=watershed_geom,
         dual_hsg=dual_hsg,
+        geom_crs=watershed_gdf.crs,
     )
     print()
 
@@ -703,8 +746,14 @@ def create_curve_number_grid_from_geometry(
         'cn_p10': float(np.percentile(valid_cn, 10)),
         'cn_p25': float(np.percentile(valid_cn, 25)),
         'cn_p75': float(np.percentile(valid_cn, 75)),
-        'cn_p90': float(np.percentile(valid_cn, 90))
+        'cn_p90': float(np.percentile(valid_cn, 90)),
+        # These cover every valid cell of the fetched raster (its bounding box),
+        # not only the basin; see basin_statistics for the basin-masked values.
+        'stats_basis': 'raster_extent',
     }
+    basin_statistics, quality_flags, quality_warnings = _basin_statistics_and_flags(
+        cn_grid, watershed_geom, watershed_gdf.crs, soil_stats,
+    )
 
     # Classify CN zones
     cn_zones = _classify_cn_zones(cn_grid.values)
@@ -755,6 +804,7 @@ def create_curve_number_grid_from_geometry(
             'source': 'custom_geometry',
             'area_km2': area_km2,
             'cn_statistics': statistics,
+            'cn_basin_statistics': basin_statistics,
             'cn_zones': cn_zones,
             'lulc_year': year,
             'resolution_m': resolution
@@ -805,6 +855,9 @@ def create_curve_number_grid_from_geometry(
     return {
         'cn_grid': cn_grid,
         'statistics': statistics,
+        'basin_statistics': basin_statistics,
+        'quality_flags': quality_flags,
+        'warnings': quality_warnings,
         'cn_zones': cn_zones,
         'watershed_info': {
             'source': 'custom_geometry',
@@ -826,6 +879,7 @@ def create_curve_number_grid_from_geometry(
             'soil_provenance': _soil_provenance(soil_data, soil_stats),
             'lulc_class_fractions': lulc_stats.get('class_fractions'),
             'lulc_fraction_basis': lulc_stats.get('fraction_basis'),
+            'cn_stats_basis': basin_statistics['stats_basis'],
             'lulc_year': year,
             'region': lulc_data.attrs.get('_adata_region'),
         },
@@ -930,6 +984,7 @@ def _create_cn_grid_from_data(
     resolution: int,
     watershed_geom=None,
     dual_hsg: str = "drained",
+    geom_crs=None,
 ) -> Tuple[xr.DataArray, np.ndarray, Dict]:
     """Create CN grid from LULC and soil data.
 
@@ -945,9 +1000,14 @@ def _create_cn_grid_from_data(
     Parameters
     ----------
     watershed_geom : shapely.geometry.BaseGeometry or None
-        Watershed polygon in the same CRS as the LULC raster.  Used only by
-        the chunked path for chip pruning; ignored when the raster is small
-        enough for single-pass execution.
+        Watershed polygon.  Used only by the chunked path, which masks the CN
+        grid to it; ignored when the raster is small enough for single-pass
+        execution.  The polygon is reprojected from ``geom_crs`` to the LULC
+        raster's CRS when they differ (the raster may be projected, e.g.
+        EPSG:5070, while the polygon is lon/lat).
+    geom_crs : CRS-like or None
+        CRS of ``watershed_geom``; ``None`` means EPSG:4326, as in
+        :func:`_basin_lulc_counts`.
     dual_hsg : {"drained", "undrained"}
         With SSURGO soil (``hsg_drained`` / ``hsg_undrained`` variables), which
         condition of a dual hydrologic group to map. The CN mean for the
@@ -968,7 +1028,7 @@ def _create_cn_grid_from_data(
             lulc, soil_groups, soil_stats, year, resolution, watershed_geom,
             source=f"NLCD land cover + {soil_data.attrs.get('_adata_product', 'SSURGO')} "
                    "recorded hydrologic soil group",
-            alt_groups=alt_groups,
+            alt_groups=alt_groups, geom_crs=geom_crs,
         )
 
     # Map to correct variable names (Polaris naming can vary)
@@ -1029,6 +1089,7 @@ def _create_cn_grid_from_data(
         lulc, soil_groups, soil_stats, year, resolution, watershed_geom,
         source=f"NLCD land cover + {soil_data.attrs.get('_adata_product', 'POLARIS')} "
                "texture (hydrologic group inferred)",
+        geom_crs=geom_crs,
     )
 
 
@@ -1105,9 +1166,26 @@ def _finish_cn_grid(
     *,
     source: str,
     alt_groups: Optional[np.ndarray] = None,
+    geom_crs=None,
 ) -> Tuple[xr.DataArray, np.ndarray, Dict]:
-    """Apply the CN lookup to co-registered LULC + soil-group arrays."""
+    """Apply the CN lookup to co-registered LULC + soil-group arrays.
+
+    Above ``_CN_CHUNK_TRIGGER`` cells (and with a ``watershed_geom``) the
+    overlay is streamed through ``chunked_raster_apply`` and the returned grid
+    is NaN outside the polygon.  The polygon is reprojected from ``geom_crs``
+    (EPSG:4326 when None) to the raster CRS first: the chunked sampler does no
+    reprojection of its own, so a lon/lat polygon over a projected raster would
+    otherwise mask every cell.
+
+    If that masked path fails, or yields no valid cell, the unmasked lookup is
+    used and the failure is recorded in ``soil_stats['quality_flags']``
+    (``cn_overlay_masked_path_failed`` / ``cn_overlay_masked_path_empty``) and
+    ``soil_stats['warnings']``, and raised as a ``RuntimeWarning``; the grid is
+    then raster-extent, not basin-masked.
+    """
     lulc_values = lulc.values
+    quality_flags: List[str] = soil_stats.setdefault('quality_flags', [])
+    warn_msgs: List[str] = soil_stats.setdefault('warnings', [])
 
     # Create CN lookup table + flat lookup array
     cn_table = _create_cn_lookup_table()
@@ -1157,19 +1235,38 @@ def _finish_cn_grid(
                 result = np.where(keys > 0, result, np.nan)
                 return result.astype(np.float32)
 
+            # The sampler does no reprojection: hand it the polygon in the
+            # raster's CRS (no-op when they already match).
+            poly_raster_crs = _geom_in_raster_crs(watershed_geom, geom_crs, lulc.rio.crs)
             cn_da = chunked_raster_apply(
-                joint_da, watershed_geom, _cn_fn,
+                joint_da, poly_raster_crs, _cn_fn,
                 kernel_pad=0,
                 auto_trigger_size=0,   # always chunked
                 fill_value=np.nan,
             )
             cn_grid_values = cn_da.values
+            if not np.isfinite(cn_grid_values).any() and np.isfinite(
+                _vectorised_cn_lookup(lulc_values, soil_groups, lookup)
+            ).any():
+                # E.g. polygon and raster do not overlap (wrong CRS/geometry).
+                raise _EmptyMaskedCN(
+                    "basin-masked CN grid has no valid cell although the raster does"
+                )
 
         except Exception as _ce:
-            log.warning(
-                "Chunked CN overlay failed (%s); falling back to vectorised single-pass",
-                _ce,
+            flag = ('cn_overlay_masked_path_empty' if isinstance(_ce, _EmptyMaskedCN)
+                    else 'cn_overlay_masked_path_failed')
+            msg = (
+                f"Chunked basin-masked CN overlay failed ({type(_ce).__name__}: {_ce}); "
+                "fell back to the unmasked whole-raster lookup, so the CN grid and "
+                "its raster-extent statistics include cells outside the basin "
+                "polygon. Use the basin-masked statistics (stats_basis="
+                "'basin_polygon')."
             )
+            log.warning(msg)
+            warnings.warn(msg, RuntimeWarning, stacklevel=2)
+            quality_flags.append(flag)
+            warn_msgs.append(msg)
             cn_grid_values = _vectorised_cn_lookup(lulc_values, soil_groups, lookup)
 
     else:
@@ -1267,35 +1364,132 @@ HSG_TEXTURE_THRESHOLDS: Dict[str, Any] = {
 }
 
 
+class _EmptyMaskedCN(RuntimeError):
+    """The basin-masked CN overlay produced no valid cell."""
+
+
+def _geom_in_raster_crs(geom, geom_crs, raster_crs):
+    """``geom`` (in ``geom_crs``, WGS84 when None) reprojected to ``raster_crs``.
+
+    Returned unchanged when the CRSs already match or the raster has no CRS
+    (then it is taken to be the geometry's CRS).
+    """
+    if raster_crs is None:
+        return geom
+    from pyproj import CRS
+    src = CRS.from_user_input(geom_crs or "EPSG:4326")
+    if src == CRS.from_user_input(raster_crs):
+        return geom
+    return gpd.GeoSeries([geom], crs=src).to_crs(raster_crs).iloc[0]
+
+
+def _basin_mask(raster: xr.DataArray, watershed_geom, geom_crs=None) -> np.ndarray:
+    """2-D boolean mask, True where the cell centre is inside the basin polygon.
+
+    The polygon is reprojected from ``geom_crs`` (WGS84 when None) to the
+    raster CRS (e.g. EPSG:5070) and rasterised on the raster's own transform
+    (``rasterio.features.geometry_mask``), as ``aihydro_data.sampling.catchment``
+    does.
+    """
+    from rasterio.features import geometry_mask
+
+    if raster.rio.crs is None:
+        raster = raster.rio.write_crs("EPSG:4326")
+    poly = _geom_in_raster_crs(watershed_geom, geom_crs, raster.rio.crs)
+    return geometry_mask(
+        [poly], out_shape=raster.shape[-2:], transform=raster.rio.transform(),
+        invert=True, all_touched=False,
+    )
+
+
+def _basin_cn_statistics(cn_grid: xr.DataArray, watershed_geom, geom_crs=None) -> Dict[str, Any]:
+    """CN mean/median/min/max and cell count over cells inside the basin polygon.
+
+    The CN grid covers the polygon's bounding box (and, if the masked overlay
+    fell back, unmasked land too), so ``np.nanmean`` over it is a raster-extent
+    mean. These are computed only over valid cells whose centre lies inside the
+    polygon (``stats_basis = "basin_polygon"``). Values are None when no valid
+    cell is inside.
+    """
+    values = np.asarray(cn_grid.values).reshape(cn_grid.shape[-2:])
+    inside = _basin_mask(cn_grid, watershed_geom, geom_crs)
+    cn = values[inside & np.isfinite(values)]
+    out: Dict[str, Any] = {'stats_basis': 'basin_polygon', 'cn_cells_basin': int(cn.size)}
+    if cn.size:
+        out.update(cn_mean_basin=float(cn.mean()), cn_median_basin=float(np.median(cn)),
+                   cn_min_basin=float(cn.min()), cn_max_basin=float(cn.max()))
+    else:
+        out.update(cn_mean_basin=None, cn_median_basin=None,
+                   cn_min_basin=None, cn_max_basin=None)
+    return out
+
+
+def _basin_statistics_and_flags(
+    cn_grid: xr.DataArray, watershed_geom, geom_crs, soil_stats: Dict,
+) -> Tuple[Dict[str, Any], List[str], List[str]]:
+    """Basin-masked CN statistics plus the quality flags/warnings for the result.
+
+    Never raises: a failure is recorded as ``basin_cn_stats_failed``, not hidden.
+    """
+    flags = list(soil_stats.get('quality_flags', []))
+    msgs = list(soil_stats.get('warnings', []))
+    try:
+        stats = _basin_cn_statistics(cn_grid, watershed_geom, geom_crs)
+    except Exception as exc:
+        stats = {'stats_basis': 'basin_polygon', 'cn_cells_basin': 0, 'cn_mean_basin': None,
+                 'cn_median_basin': None, 'cn_min_basin': None, 'cn_max_basin': None}
+        flags.append('basin_cn_stats_failed')
+        msgs.append(f"Basin-masked CN statistics failed ({type(exc).__name__}: {exc}); "
+                    "only raster-extent statistics are available.")
+        warnings.warn(msgs[-1], RuntimeWarning, stacklevel=2)
+    else:
+        if stats['cn_cells_basin'] == 0:
+            flags.append('basin_cn_stats_empty')
+            msgs.append("No valid CN cell lies inside the basin polygon.")
+    return stats, flags, msgs
+
+
+# NLCD ``cover`` is delivered as uint8 with nodata 127 (pygeohydro), which
+# ``np.isnan`` does not catch; 127 is never a land-cover class in any product
+# served here (global products are remapped onto NLCD codes).
+_LULC_NODATA_FALLBACK = 127
+
+
+def _lulc_nodata_value(lulc: xr.DataArray) -> float:
+    """The raster's nodata value (``rio.nodata``), else 127 for NLCD uint8 cover."""
+    nd = lulc.rio.nodata
+    if nd is None or not np.isfinite(nd):
+        return float(_LULC_NODATA_FALLBACK)
+    return float(nd)
+
+
 def _basin_lulc_counts(
-    lulc: xr.DataArray, watershed_geom, geom_crs=None,
-) -> Tuple[np.ndarray, np.ndarray]:
+    lulc: xr.DataArray, watershed_geom, geom_crs=None, *, return_excluded: bool = False,
+):
     """Class codes and cell counts over the cells whose centre is inside the basin polygon.
 
     The raster covers the polygon's bounding box, so unmasked counts include land
     cover outside the basin. The polygon is reprojected from ``geom_crs`` (WGS84
     when None) to the raster CRS (e.g. EPSG:5070) and rasterised on the raster's
-    own transform, as ``aihydro_data.sampling.catchment`` does. Valid cells only
-    (NaN excluded).
+    own transform, as ``aihydro_data.sampling.catchment`` does. Valid cells only:
+    NaN and the raster's nodata value (``rio.nodata``, else 127 as pygeohydro
+    uses for NLCD uint8 cover) are excluded. With ``return_excluded=True`` a
+    third value, the number of in-basin nodata cells excluded, is returned.
     """
-    import geopandas as gpd
-    from rasterio.features import geometry_mask
-
-    raster_crs = lulc.rio.crs
-    if raster_crs is None:
-        lulc = lulc.rio.write_crs("EPSG:4326")
-        raster_crs = lulc.rio.crs
-    poly = gpd.GeoSeries([watershed_geom], crs=geom_crs or "EPSG:4326").to_crs(raster_crs).iloc[0]
-    inside = geometry_mask(
-        [poly], out_shape=lulc.shape[-2:], transform=lulc.rio.transform(),
-        invert=True, all_touched=False,
-    )
+    inside = _basin_mask(lulc, watershed_geom, geom_crs)
     values = np.asarray(lulc.values).reshape(lulc.shape[-2:])
-    valid = inside & np.isfinite(values)
-    return np.unique(values[valid], return_counts=True)
+    finite = inside & np.isfinite(values)
+    is_nodata = values == _lulc_nodata_value(lulc)
+    valid = finite & ~is_nodata
+    classes, counts = np.unique(values[valid], return_counts=True)
+    if return_excluded:
+        return classes, counts, int((finite & is_nodata).sum())
+    return classes, counts
 
 
-def _lulc_fraction_stats(classes: np.ndarray, counts: np.ndarray) -> Dict[str, Any]:
+def _lulc_fraction_stats(
+    classes: np.ndarray, counts: np.ndarray, nodata_cells_excluded: int = 0,
+) -> Dict[str, Any]:
     """Class shares over the counted (basin-masked) cells, as fractions summing to 1.
 
     ``class_fractions`` maps the class code (as a string, so the result is
@@ -1303,13 +1497,16 @@ def _lulc_fraction_stats(classes: np.ndarray, counts: np.ndarray) -> Dict[str, A
     means open water for every land-cover product served here: the non-CONUS
     products (ESA WorldCover, Dynamic World) are remapped onto NLCD codes by the
     data layer. ``fraction_basis`` records that the counts are inside the basin
-    polygon. Additive to the existing classes/counts/percentages, which are over
-    the whole raster.
+    polygon; ``nodata_cells_excluded`` is how many in-basin nodata cells were left
+    out, so the fractions sum to 1 over valid cells only. Additive to the existing
+    classes/counts/percentages, which are over the whole raster and can include
+    a nodata class.
     """
     total = float(np.sum(counts))
     if total <= 0:
         return {'class_fractions': {}, 'open_water_fraction': None,
-                'fraction_basis': 'basin_polygon'}
+                'fraction_basis': 'basin_polygon',
+                'nodata_cells_excluded': int(nodata_cells_excluded)}
     fractions = {
         str(int(c)): float(n) / total for c, n in zip(classes, counts)
     }
@@ -1317,6 +1514,7 @@ def _lulc_fraction_stats(classes: np.ndarray, counts: np.ndarray) -> Dict[str, A
         'class_fractions': fractions,
         'open_water_fraction': fractions.get('11', 0.0),
         'fraction_basis': 'basin_polygon',
+        'nodata_cells_excluded': int(nodata_cells_excluded),
     }
 
 

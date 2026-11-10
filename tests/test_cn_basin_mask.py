@@ -164,3 +164,25 @@ def test_no_flags_and_no_warning_on_the_single_pass_path():
         _, _, stats = cn._finish_cn_grid(lulc, groups, {}, 2021, 30, _lonlat_poly(5, 15),
                                          source="t", geom_crs="EPSG:4326")
     assert stats["quality_flags"] == [] and stats["warnings"] == []
+
+
+def test_nodata_cells_inside_the_polygon_are_excluded_from_fractions():
+    # NLCD-style uint8 cover: nodata 127 (not NaN) inside and outside the basin.
+    vals = np.full((N, N), 81, dtype=np.uint8)
+    vals[0, 5:15] = 127            # 10 nodata cells inside columns 5-14
+    vals[:, :5] = 127              # outside the polygon
+    lulc = _raster(vals).rio.write_nodata(127)
+    poly = _lonlat_poly(5, 15)
+
+    classes, counts, excluded = cn._basin_lulc_counts(lulc, poly, "EPSG:4326", return_excluded=True)
+    assert excluded == 10 and 127.0 not in classes
+    out = cn._lulc_fraction_stats(classes, counts, excluded)
+    assert out["class_fractions"] == {"81": pytest.approx(1.0)}
+    assert out["nodata_cells_excluded"] == 10
+    assert abs(sum(out["class_fractions"].values()) - 1.0) < 1e-9
+
+    # Fallback to 127 when the raster carries no nodata attribute.
+    bare = _raster(vals)
+    assert cn._lulc_nodata_value(bare) == 127.0
+    _, _, ex2 = cn._basin_lulc_counts(bare, poly, "EPSG:4326", return_excluded=True)
+    assert ex2 == 10

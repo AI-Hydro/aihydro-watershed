@@ -292,7 +292,8 @@ def create_curve_number_grid(
         'percentages': (100 * class_counts / class_counts.sum()).tolist()
     }
     lulc_stats.update(_lulc_fraction_stats(
-        *_basin_lulc_counts(lulc_data[cover_var], watershed_geom, watershed_gdf.crs)
+        *_basin_lulc_counts(lulc_data[cover_var], watershed_geom, watershed_gdf.crs,
+                           return_excluded=True)
     ))
     print(f"  Unique land-cover classes: {len(unique_classes)}")
     print()
@@ -706,7 +707,8 @@ def create_curve_number_grid_from_geometry(
         'percentages': (100 * class_counts / class_counts.sum()).tolist()
     }
     lulc_stats.update(_lulc_fraction_stats(
-        *_basin_lulc_counts(lulc_data[cover_var], watershed_geom, watershed_gdf.crs)
+        *_basin_lulc_counts(lulc_data[cover_var], watershed_geom, watershed_gdf.crs,
+                           return_excluded=True)
     ))
     print(f"  Unique land-cover classes: {len(unique_classes)}")
     print()
@@ -1447,24 +1449,47 @@ def _basin_statistics_and_flags(
     return stats, flags, msgs
 
 
+# NLCD ``cover`` is delivered as uint8 with nodata 127 (pygeohydro), which
+# ``np.isnan`` does not catch; 127 is never a land-cover class in any product
+# served here (global products are remapped onto NLCD codes).
+_LULC_NODATA_FALLBACK = 127
+
+
+def _lulc_nodata_value(lulc: xr.DataArray) -> float:
+    """The raster's nodata value (``rio.nodata``), else 127 for NLCD uint8 cover."""
+    nd = lulc.rio.nodata
+    if nd is None or not np.isfinite(nd):
+        return float(_LULC_NODATA_FALLBACK)
+    return float(nd)
+
+
 def _basin_lulc_counts(
-    lulc: xr.DataArray, watershed_geom, geom_crs=None,
-) -> Tuple[np.ndarray, np.ndarray]:
+    lulc: xr.DataArray, watershed_geom, geom_crs=None, *, return_excluded: bool = False,
+):
     """Class codes and cell counts over the cells whose centre is inside the basin polygon.
 
     The raster covers the polygon's bounding box, so unmasked counts include land
     cover outside the basin. The polygon is reprojected from ``geom_crs`` (WGS84
     when None) to the raster CRS (e.g. EPSG:5070) and rasterised on the raster's
-    own transform, as ``aihydro_data.sampling.catchment`` does. Valid cells only
-    (NaN excluded).
+    own transform, as ``aihydro_data.sampling.catchment`` does. Valid cells only:
+    NaN and the raster's nodata value (``rio.nodata``, else 127 as pygeohydro
+    uses for NLCD uint8 cover) are excluded. With ``return_excluded=True`` a
+    third value, the number of in-basin nodata cells excluded, is returned.
     """
     inside = _basin_mask(lulc, watershed_geom, geom_crs)
     values = np.asarray(lulc.values).reshape(lulc.shape[-2:])
-    valid = inside & np.isfinite(values)
-    return np.unique(values[valid], return_counts=True)
+    finite = inside & np.isfinite(values)
+    is_nodata = values == _lulc_nodata_value(lulc)
+    valid = finite & ~is_nodata
+    classes, counts = np.unique(values[valid], return_counts=True)
+    if return_excluded:
+        return classes, counts, int((finite & is_nodata).sum())
+    return classes, counts
 
 
-def _lulc_fraction_stats(classes: np.ndarray, counts: np.ndarray) -> Dict[str, Any]:
+def _lulc_fraction_stats(
+    classes: np.ndarray, counts: np.ndarray, nodata_cells_excluded: int = 0,
+) -> Dict[str, Any]:
     """Class shares over the counted (basin-masked) cells, as fractions summing to 1.
 
     ``class_fractions`` maps the class code (as a string, so the result is
@@ -1472,13 +1497,16 @@ def _lulc_fraction_stats(classes: np.ndarray, counts: np.ndarray) -> Dict[str, A
     means open water for every land-cover product served here: the non-CONUS
     products (ESA WorldCover, Dynamic World) are remapped onto NLCD codes by the
     data layer. ``fraction_basis`` records that the counts are inside the basin
-    polygon. Additive to the existing classes/counts/percentages, which are over
-    the whole raster.
+    polygon; ``nodata_cells_excluded`` is how many in-basin nodata cells were left
+    out, so the fractions sum to 1 over valid cells only. Additive to the existing
+    classes/counts/percentages, which are over the whole raster and can include
+    a nodata class.
     """
     total = float(np.sum(counts))
     if total <= 0:
         return {'class_fractions': {}, 'open_water_fraction': None,
-                'fraction_basis': 'basin_polygon'}
+                'fraction_basis': 'basin_polygon',
+                'nodata_cells_excluded': int(nodata_cells_excluded)}
     fractions = {
         str(int(c)): float(n) / total for c, n in zip(classes, counts)
     }
@@ -1486,6 +1514,7 @@ def _lulc_fraction_stats(classes: np.ndarray, counts: np.ndarray) -> Dict[str, A
         'class_fractions': fractions,
         'open_water_fraction': fractions.get('11', 0.0),
         'fraction_basis': 'basin_polygon',
+        'nodata_cells_excluded': int(nodata_cells_excluded),
     }
 
 

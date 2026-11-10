@@ -277,6 +277,7 @@ def create_curve_number_grid(
         'counts': class_counts.tolist(),
         'percentages': (100 * class_counts / class_counts.sum()).tolist()
     }
+    lulc_stats.update(_lulc_fraction_stats(unique_classes, class_counts))
     print(f"  Unique land-cover classes: {len(unique_classes)}")
     print()
 
@@ -435,6 +436,8 @@ def create_curve_number_grid(
             'soil_source': soil_data.attrs.get('_adata_source'),
             'soil_fallback_reason': soil_data.attrs.get('_soil_fallback_reason'),
             'hsg_method': soil_stats.get('hsg_method'),
+            'soil_provenance': _soil_provenance(soil_data, soil_stats),
+            'lulc_class_fractions': lulc_stats.get('class_fractions'),
             'lulc_year': year,
             'region': lulc_data.attrs.get('_adata_region'),
         },
@@ -659,6 +662,7 @@ def create_curve_number_grid_from_geometry(
         'counts': class_counts.tolist(),
         'percentages': (100 * class_counts / class_counts.sum()).tolist()
     }
+    lulc_stats.update(_lulc_fraction_stats(unique_classes, class_counts))
     print(f"  Unique land-cover classes: {len(unique_classes)}")
     print()
 
@@ -814,6 +818,8 @@ def create_curve_number_grid_from_geometry(
             'soil_source': soil_data.attrs.get('_adata_source'),
             'soil_fallback_reason': soil_data.attrs.get('_soil_fallback_reason'),
             'hsg_method': soil_stats.get('hsg_method'),
+            'soil_provenance': _soil_provenance(soil_data, soil_stats),
+            'lulc_class_fractions': lulc_stats.get('class_fractions'),
             'lulc_year': year,
             'region': lulc_data.attrs.get('_adata_region'),
         },
@@ -1011,6 +1017,7 @@ def _create_cn_grid_from_data(
     print("  Classifying soil hydrologic groups...")
     soil_groups, soil_stats = _classify_soil_hydrologic_group(sand, silt, clay, ksat)
     soil_stats['hsg_method'] = 'texture_thresholds'
+    soil_stats['hsg_ksat_used'] = ksat is not None
 
     return _finish_cn_grid(
         lulc, soil_groups, soil_stats, year, resolution, watershed_geom,
@@ -1233,6 +1240,71 @@ def _vectorised_cn_lookup(
     # Pixels where lulc was NaN or key == 0 stay NaN.
     cn_values = np.where(keys > 0, cn_values, np.nan)
     return cn_values.astype(np.float32)
+
+
+# Thresholds _classify_soil_hydrologic_group applies when the hydrologic soil
+# group is inferred from texture (sand/silt/clay in %, ksat in cm/hr). Kept
+# beside the classifier and checked against it by a test, so the recorded
+# thresholds cannot drift from the rule actually applied.
+HSG_TEXTURE_THRESHOLDS: Dict[str, Any] = {
+    'default_group': 'D',
+    'A': 'sand > 70 and clay < 10',
+    'B': '(50 <= sand <= 70 and clay < 20) or (silt > 50 and clay < 27)',
+    'C': '20 <= clay < 40, where not A or B',
+    'D': 'otherwise (default)',
+    'ksat_refinement_cm_per_hr': {
+        'A': 'ksat > 15',
+        'B': '5 < ksat <= 15, only lowers D/C to B',
+        'C': '1.5 < ksat <= 5, only lowers D to C',
+        'D': 'ksat <= 1.5 (unchanged)',
+    },
+}
+
+
+def _lulc_fraction_stats(classes: np.ndarray, counts: np.ndarray) -> Dict[str, Any]:
+    """Class shares over the valid cells (fractions, summing to 1).
+
+    ``class_fractions`` maps the class code (as a string, so the result is
+    JSON-stable) to its share of the valid cells; ``open_water_fraction`` is
+    class 11. Additive to the existing classes/counts/percentages.
+    """
+    total = float(np.sum(counts))
+    if total <= 0:
+        return {'class_fractions': {}, 'open_water_fraction': None}
+    fractions = {
+        str(int(c)): float(n) / total for c, n in zip(classes, counts)
+    }
+    return {
+        'class_fractions': fractions,
+        'open_water_fraction': fractions.get('11', 0.0),
+    }
+
+
+def _soil_provenance(soil_data: xr.Dataset, soil_stats: Dict) -> Dict[str, Any]:
+    """Which soil source served the grid, and how the hydrologic group was obtained.
+
+    ``hsg_inferred`` is True when the group was inferred from texture
+    thresholds rather than looked up (SSURGO recorded); the thresholds applied
+    are then listed. ``fallback_reason`` is set when the auto-routed SSURGO
+    request failed and POLARIS served instead.
+    """
+    method = soil_stats.get('hsg_method')
+    inferred = method == 'texture_thresholds'
+    reason = soil_data.attrs.get('_soil_fallback_reason')
+    out: Dict[str, Any] = {
+        'soil_product_used': soil_data.attrs.get('_adata_product'),
+        'soil_source': soil_data.attrs.get('_adata_source'),
+        'hsg_method': method,
+        'hsg_inferred': inferred,
+        'fallback_used': bool(reason),
+        'fallback_reason': reason,
+        'hsg_thresholds': None,
+    }
+    if inferred:
+        thresholds = dict(HSG_TEXTURE_THRESHOLDS)
+        thresholds['ksat_used'] = bool(soil_stats.get('hsg_ksat_used'))
+        out['hsg_thresholds'] = thresholds
+    return out
 
 
 def _classify_soil_hydrologic_group(

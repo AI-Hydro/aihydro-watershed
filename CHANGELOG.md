@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Added: `create_cn_grid` records the soil source used, how the hydrologic group was obtained, and land-cover class fractions
+
+Found by the DEMO-1 rehearsal (finding 3). When the gNATSGO route is unreachable (blob host blocked or unavailable), `fetch_soil_data` falls back to POLARIS and the hydrologic soil group (HSG) is inferred from texture thresholds. The result carried only an `hsg_method` string. Additive: no change to any CN value.
+
+- `data_provenance['soil_provenance']` (both `create_curve_number_grid` and `create_curve_number_grid_from_geometry`): `soil_product_used`, `soil_source`, `hsg_method`, `hsg_inferred` (True when inferred from texture, False when looked up from recorded SSURGO groups), `fallback_used`, `fallback_reason`, and, when inferred, `hsg_thresholds` (the rule applied for A/B/C/D, the ksat refinement, and `ksat_used`). `HSG_TEXTURE_THRESHOLDS` sits beside the classifier and a test checks it against the classifier's edge cases.
+- `lulc_stats['class_fractions']` (class code as string -> share, sums to 1), `lulc_stats['open_water_fraction']` (NLCD class 11; other land-cover products are remapped to NLCD codes) and `lulc_stats['fraction_basis'] = "basin_polygon"`, also under `data_provenance['lulc_class_fractions']` / `['lulc_fraction_basis']`. The fractions count only cells inside the basin polygon (polygon reprojected to the raster CRS and rasterised with `rasterio.features.geometry_mask` on the raster transform, as `aihydro_data.sampling.catchment` does); the raster covers the bounding box, so unmasked shares would include land cover outside the basin. The existing `classes`, `counts`, `percentages` are unchanged and remain raster-wide.
+- `soil_provenance.hsg_missing_fraction` (share of valid cells with no recorded group on the SSURGO route); `ksat_used` is false when the ksat layer is all NaN.
+- Tests: `tests/test_cn_provenance.py` (gNATSGO-unavailable fallback recorded; fractions sum to 1 within 1e-9).
+- Follow-up outside this package: the aihydro-tools `create_cn_grid` wrapper flattens only some fields into `data`; the new fields reach `meta.data_provenance` without a tools change, but a flat `data` field needs a tools PR.
+
 ### Added: local river PMTiles from staged MERIT-Basins (basemap slice B2, tile-building half)
 
 - `aihydro_watershed.tiles.build_merit_river_tiles(region, out_dir=None, *, source_db=None, max_zoom=12, force=False, verify_source=True)` and `python -m aihydro_watershed.tiles <region>...` write `<AIHYDRO_HOME>/merit/tiles/rivers##.pmtiles` and a `.provenance.json` sidecar (source db sha256 from the staging sidecar, GDAL/pyogrio versions, build options, output sha256 and size, licence with a `licence_note` (non-commercial, share-alike, variant unresolved; also in the `.pmtiles` metadata), `source_pinned`/`verified_at`, the count of reaches GDAL drops at the finest zoom, citation Lin et al. 2019). Offline, idempotent. Declares `pyogrio>=0.8.0` (imported directly; its wheels bundle GDAL 3.8.5, where the PMTiles driver was added); the build raises a clear error if the driver is missing.

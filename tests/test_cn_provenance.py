@@ -122,7 +122,7 @@ def test_open_water_fraction_zero_when_absent_and_none_when_empty():
     assert abs(sum(out["class_fractions"].values()) - 1.0) < 1e-9
     empty = cn._lulc_fraction_stats(np.array([]), np.array([]))
     assert empty == {"class_fractions": {}, "open_water_fraction": None,
-                     "fraction_basis": "basin_polygon"}
+                     "fraction_basis": "basin_polygon", "nodata_cells_excluded": 0}
 
 
 def _wgs84_polygon_over_columns(x0, x1):

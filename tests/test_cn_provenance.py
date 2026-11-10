@@ -113,6 +113,7 @@ def test_class_fractions_sum_to_one_and_report_open_water():
     assert fr["11"] == pytest.approx(1 / 7)
     assert fr["81"] == pytest.approx(3 / 7) and fr["82"] == pytest.approx(3 / 7)
     assert out["open_water_fraction"] == pytest.approx(1 / 7)
+    assert out["fraction_basis"] == "basin_polygon"
 
 
 def test_open_water_fraction_zero_when_absent_and_none_when_empty():
@@ -120,4 +121,53 @@ def test_open_water_fraction_zero_when_absent_and_none_when_empty():
     assert out["open_water_fraction"] == 0.0
     assert abs(sum(out["class_fractions"].values()) - 1.0) < 1e-9
     empty = cn._lulc_fraction_stats(np.array([]), np.array([]))
-    assert empty == {"class_fractions": {}, "open_water_fraction": None}
+    assert empty == {"class_fractions": {}, "open_water_fraction": None,
+                     "fraction_basis": "basin_polygon"}
+
+
+def _wgs84_polygon_over_columns(x0, x1):
+    """A polygon given in WGS84 that, in EPSG:5070, spans x0..x1 and both rows of the test grid."""
+    import geopandas as gpd
+    from shapely.geometry import box
+
+    return gpd.GeoSeries([box(x0, 1e6 - 15, x1, 1e6 + 45)], crs="EPSG:5070").to_crs("EPSG:4326").iloc[0]
+
+
+def test_fractions_exclude_open_water_outside_the_basin_polygon():
+    # Column 0 holds the only open-water cell; the polygon covers columns 1-3 only.
+    lulc = _grid(LULC)
+    poly = _wgs84_polygon_over_columns(5e5 + 10, 5e5 + 100)
+    classes, counts = cn._basin_lulc_counts(lulc, poly, "EPSG:4326")
+    out = cn._lulc_fraction_stats(classes, counts)
+    assert out["open_water_fraction"] == 0.0
+    assert "11" not in out["class_fractions"]
+    assert out["class_fractions"]["81"] == pytest.approx(3 / 5)
+    assert out["class_fractions"]["82"] == pytest.approx(2 / 5)    # NaN cell not counted
+    assert abs(sum(out["class_fractions"].values()) - 1.0) < 1e-9
+    assert out["fraction_basis"] == "basin_polygon"
+    # The raster-wide counts the old statistics use are unchanged and do include it.
+    all_classes, all_counts = np.unique(lulc.values[np.isfinite(lulc.values)], return_counts=True)
+    assert 11.0 in all_classes
+
+
+def test_fractions_include_open_water_inside_the_basin_polygon():
+    lulc = _grid(LULC)
+    poly = _wgs84_polygon_over_columns(5e5 - 10, 5e5 + 100)         # columns 0-3
+    classes, counts = cn._basin_lulc_counts(lulc, poly, "EPSG:4326")
+    out = cn._lulc_fraction_stats(classes, counts)
+    assert out["open_water_fraction"] == pytest.approx(1 / 7)
+
+
+def test_hsg_missing_fraction_and_ksat_all_nan():
+    soil = xr.Dataset()
+    soil.attrs.update(_adata_product="SSURGO")
+    prov = cn._soil_provenance(soil, {"hsg_method": "ssurgo_recorded", "hsg_coverage": 11 / 12})
+    assert prov["hsg_missing_fraction"] == pytest.approx(1 / 12)
+
+    ds = _polaris_ds()
+    ds["ksat_5"] = _grid([[np.nan] * 4] * 2)
+    _, _, stats = cn._create_cn_grid_from_data(_lulc_ds(), ds, 2021, 30)
+    assert stats["hsg_ksat_used"] is False
+    ds["ksat_5"] = _grid([[20.0] * 4] * 2)
+    _, _, stats = cn._create_cn_grid_from_data(_lulc_ds(), ds, 2021, 30)
+    assert stats["hsg_ksat_used"] is True

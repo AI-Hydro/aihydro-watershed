@@ -277,7 +277,9 @@ def create_curve_number_grid(
         'counts': class_counts.tolist(),
         'percentages': (100 * class_counts / class_counts.sum()).tolist()
     }
-    lulc_stats.update(_lulc_fraction_stats(unique_classes, class_counts))
+    lulc_stats.update(_lulc_fraction_stats(
+        *_basin_lulc_counts(lulc_data[cover_var], watershed_geom, watershed_gdf.crs)
+    ))
     print(f"  Unique land-cover classes: {len(unique_classes)}")
     print()
 
@@ -438,6 +440,7 @@ def create_curve_number_grid(
             'hsg_method': soil_stats.get('hsg_method'),
             'soil_provenance': _soil_provenance(soil_data, soil_stats),
             'lulc_class_fractions': lulc_stats.get('class_fractions'),
+            'lulc_fraction_basis': lulc_stats.get('fraction_basis'),
             'lulc_year': year,
             'region': lulc_data.attrs.get('_adata_region'),
         },
@@ -662,7 +665,9 @@ def create_curve_number_grid_from_geometry(
         'counts': class_counts.tolist(),
         'percentages': (100 * class_counts / class_counts.sum()).tolist()
     }
-    lulc_stats.update(_lulc_fraction_stats(unique_classes, class_counts))
+    lulc_stats.update(_lulc_fraction_stats(
+        *_basin_lulc_counts(lulc_data[cover_var], watershed_geom, watershed_gdf.crs)
+    ))
     print(f"  Unique land-cover classes: {len(unique_classes)}")
     print()
 
@@ -820,6 +825,7 @@ def create_curve_number_grid_from_geometry(
             'hsg_method': soil_stats.get('hsg_method'),
             'soil_provenance': _soil_provenance(soil_data, soil_stats),
             'lulc_class_fractions': lulc_stats.get('class_fractions'),
+            'lulc_fraction_basis': lulc_stats.get('fraction_basis'),
             'lulc_year': year,
             'region': lulc_data.attrs.get('_adata_region'),
         },
@@ -1017,7 +1023,7 @@ def _create_cn_grid_from_data(
     print("  Classifying soil hydrologic groups...")
     soil_groups, soil_stats = _classify_soil_hydrologic_group(sand, silt, clay, ksat)
     soil_stats['hsg_method'] = 'texture_thresholds'
-    soil_stats['hsg_ksat_used'] = ksat is not None
+    soil_stats['hsg_ksat_used'] = bool(ksat is not None and np.isfinite(ksat).any())
 
     return _finish_cn_grid(
         lulc, soil_groups, soil_stats, year, resolution, watershed_geom,
@@ -1261,22 +1267,56 @@ HSG_TEXTURE_THRESHOLDS: Dict[str, Any] = {
 }
 
 
+def _basin_lulc_counts(
+    lulc: xr.DataArray, watershed_geom, geom_crs=None,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Class codes and cell counts over the cells whose centre is inside the basin polygon.
+
+    The raster covers the polygon's bounding box, so unmasked counts include land
+    cover outside the basin. The polygon is reprojected from ``geom_crs`` (WGS84
+    when None) to the raster CRS (e.g. EPSG:5070) and rasterised on the raster's
+    own transform, as ``aihydro_data.sampling.catchment`` does. Valid cells only
+    (NaN excluded).
+    """
+    import geopandas as gpd
+    from rasterio.features import geometry_mask
+
+    raster_crs = lulc.rio.crs
+    if raster_crs is None:
+        lulc = lulc.rio.write_crs("EPSG:4326")
+        raster_crs = lulc.rio.crs
+    poly = gpd.GeoSeries([watershed_geom], crs=geom_crs or "EPSG:4326").to_crs(raster_crs).iloc[0]
+    inside = geometry_mask(
+        [poly], out_shape=lulc.shape[-2:], transform=lulc.rio.transform(),
+        invert=True, all_touched=False,
+    )
+    values = np.asarray(lulc.values).reshape(lulc.shape[-2:])
+    valid = inside & np.isfinite(values)
+    return np.unique(values[valid], return_counts=True)
+
+
 def _lulc_fraction_stats(classes: np.ndarray, counts: np.ndarray) -> Dict[str, Any]:
-    """Class shares over the valid cells (fractions, summing to 1).
+    """Class shares over the counted (basin-masked) cells, as fractions summing to 1.
 
     ``class_fractions`` maps the class code (as a string, so the result is
-    JSON-stable) to its share of the valid cells; ``open_water_fraction`` is
-    class 11. Additive to the existing classes/counts/percentages.
+    JSON-stable) to its share; ``open_water_fraction`` is class 11. NLCD code 11
+    means open water for every land-cover product served here: the non-CONUS
+    products (ESA WorldCover, Dynamic World) are remapped onto NLCD codes by the
+    data layer. ``fraction_basis`` records that the counts are inside the basin
+    polygon. Additive to the existing classes/counts/percentages, which are over
+    the whole raster.
     """
     total = float(np.sum(counts))
     if total <= 0:
-        return {'class_fractions': {}, 'open_water_fraction': None}
+        return {'class_fractions': {}, 'open_water_fraction': None,
+                'fraction_basis': 'basin_polygon'}
     fractions = {
         str(int(c)): float(n) / total for c, n in zip(classes, counts)
     }
     return {
         'class_fractions': fractions,
         'open_water_fraction': fractions.get('11', 0.0),
+        'fraction_basis': 'basin_polygon',
     }
 
 
@@ -1299,6 +1339,10 @@ def _soil_provenance(soil_data: xr.Dataset, soil_stats: Dict) -> Dict[str, Any]:
         'fallback_used': bool(reason),
         'fallback_reason': reason,
         'hsg_thresholds': None,
+        # Share of valid land-cover cells with no recorded group (recorded route only).
+        'hsg_missing_fraction': (
+            1.0 - soil_stats['hsg_coverage'] if soil_stats.get('hsg_coverage') is not None else None
+        ),
     }
     if inferred:
         thresholds = dict(HSG_TEXTURE_THRESHOLDS)

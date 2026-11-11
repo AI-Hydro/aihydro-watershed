@@ -41,8 +41,6 @@ from __future__ import annotations
 
 import json
 import logging
-import shutil
-import subprocess
 import time
 from typing import Any, Callable, Iterable, Optional
 
@@ -172,12 +170,19 @@ def summarize_components(rows: Iterable[dict]) -> dict[int, dict]:
 
 # ── Network: Soil Data Access ─────────────────────────────────────────────────
 
+SDA_TRANSPORT = "requests"
+
+
 def sda_query(sql: str, *, timeout: float = 120.0, retries: int = 4) -> list[dict]:
     """Run one SQL query against USDA Soil Data Access and return row dicts.
 
-    Python's resolver has been seen to fail intermittently on the USDA host
-    while the system resolver works, so after ``retries`` failed attempts with
-    ``requests`` the query is sent once more through ``curl`` if it is on PATH.
+    Uses ``requests`` only, with ``retries`` bounded attempts, so the call
+    honours the process proxy settings and the network policy and is visible
+    to provenance. There is deliberately no ``curl`` subprocess fallback: it
+    bypassed the Python-level proxy/policy (silently succeeding where the
+    policy refused). On final failure a ``RuntimeError`` is raised;
+    :func:`aihydro_watershed.terrain._soil.fetch_soil_data` then falls back to
+    POLARIS and records the reason in ``attrs['_soil_fallback_reason']``.
     """
     import requests
 
@@ -192,16 +197,8 @@ def sda_query(sql: str, *, timeout: float = 120.0, retries: int = 4) -> list[dic
             return parse_sda_table(resp.json()) if resp.text.strip() else []
         except Exception as exc:  # network, HTTP, or JSON error
             last_exc = exc
-            time.sleep(2 * (attempt + 1))
-    curl = shutil.which("curl")
-    if curl:
-        proc = subprocess.run(
-            [curl, "-s", "-m", str(int(timeout)), "-H", "Content-Type: application/json",
-             "-d", body, SDA_URL],
-            capture_output=True, text=True,
-        )
-        if proc.returncode == 0:
-            return parse_sda_table(json.loads(proc.stdout)) if proc.stdout.strip() else []
+            if attempt < retries - 1:
+                time.sleep(2 * (attempt + 1))
     raise RuntimeError(f"USDA Soil Data Access query failed after {retries} attempts: {last_exc}")
 
 
@@ -359,7 +356,9 @@ def fetch_soil_data_ssurgo(
     if keys.size == 0:
         raise RuntimeError("gNATSGO returned no mapped soil units for this geometry.")
     props = fetch_mukey_properties(keys, query_fn=query_fn)
-    return mukey_grid_to_dataset(mukey, props)
+    ds = mukey_grid_to_dataset(mukey, props)
+    ds.attrs["_adata_sda_transport"] = SDA_TRANSPORT if query_fn is sda_query else "injected"
+    return ds
 
 
 def summarize_ssurgo(ds, geometry=None) -> dict:

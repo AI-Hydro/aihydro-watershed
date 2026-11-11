@@ -1,5 +1,27 @@
 # Changelog — aihydro-watershed
 
+## [Unreleased]
+
+### Fixed: SSURGO Soil Data Access no longer shells out to `curl`
+
+Found by the DEMO-1 review. `sda_query` fell back to `subprocess.run([curl, ...])` after four failed `requests` attempts. The subprocess ignores the Python-level proxy and network policy, so provenance could not see it and it could succeed where the policy refused. The fallback was added in 9412c06 because Python's resolver was seen failing intermittently on the USDA host while the system resolver worked; that is a local DNS fault, not a reason to bypass policy.
+
+- **Removed** the curl fallback (and the `subprocess`/`shutil` imports). `sda_query` uses `requests` only, with `retries` bounded attempts (no trailing sleep after the last one) and raises `RuntimeError` on final failure.
+- `fetch_soil_data` already catches that failure, runs the POLARIS route and records `attrs['_soil_fallback_reason']`; the CN `soil_provenance` reports it as `fallback_used`/`fallback_reason`. A test now exercises that path with `requests` failing and `subprocess` forbidden.
+- **Added** the transport to provenance: `_adata_sda_transport` on the SSURGO Dataset (`"requests"`, or `"injected"` when a test/caller supplies `query_fn`), and `data_provenance['soil_sda_transport']` in the CN result.
+- Tests: `tests/test_ssurgo_sda_transport.py`.
+
+### Fixed: TWI computed on one grid for every DEM product; sources cite the DEM actually used
+
+Found by the DEMO-1 review (basin 01013500, GLO30 via Earth Engine). The tools wrapper logged "Full TWI computation failed (Data shape (3056, 2620) must match shape of object (3268, 3225)); statistics computed via fallback. No map files generated."
+
+- **Root cause.** Inside CONUS `compute_twi` always fetched 3DEP's published Slope-Degrees layer, even when the DEM was GLO-30 (reprojected to EPSG:5070). That layer comes from a different request, so it has a different extent and shape than the DEM and the pysheds flow accumulation. The code then hid the mismatch by resizing the slope with `scipy.ndimage.zoom`, or, if that raised, trimming slope and accumulation to the common minimum shape, which misregistered slope against accumulation. The TWI array then no longer matched the DEM, so the DEM-grid raster write (`dem.copy(data=twi)`) raised. The polygon mask also used `from_bounds` of the DEM with the trimmed array shape.
+- **The "fallback" statistics.** The tools wrapper's fallback re-runs `compute_twi_result` with `save_outputs=False`, which skipped the write that failed. Those numbers came from the same misregistered, shape-trimmed arrays: statistics over finite cells inside the watershed polygon (rasterised with the DEM bounds on the trimmed shape), not a different method. They should not be trusted.
+- **Fix.** 3DEP slope is used only with a 3DEP DEM, and is then resampled onto the DEM grid with `reproject_match`; any other DEM gets slope from its own elevations (`slope_from_dem`). A slope/accumulation/DEM shape mismatch now raises ("grid mismatch") instead of being resized or trimmed. The polygon mask uses the DEM's own affine transform.
+- **Flagging.** Results carry `twi_method` (`"full"`), `twi_method_reason` (`None`), `twi_mask_basis` and `n_valid_cells`. This package has no second TWI method any more; the stats-only fallback lives in aihydro-tools `compute_twi`, which should set `twi_method: "fallback"` plus the reason when it is used (follow-up there).
+- **Citation.** `meta.sources` is built from the `dem_product` that was used (aihydro-data registry name, homepage, BibTeX). It was hard-coded to 3DEP. An unregistered product is named without a citation rather than mislabelled.
+- Tests: `tests/test_twi_grid_consistency.py` (GLO30-like geographic DEM whose shape differs from its 5070 reprojection, 3DEP slope on an offset grid, mismatch raises, sources match product).
+
 ## [0.4.4] - 2026-11-10
 
 ### Fixed: CN statistics over the basin, not the raster bounding box; chunked path reprojects; masked-path failure is flagged

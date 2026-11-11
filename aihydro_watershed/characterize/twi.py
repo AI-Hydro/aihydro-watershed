@@ -85,6 +85,43 @@ except ImportError:
     VIZ_AVAILABLE = False
 
 
+def _is_3dep_product(product) -> bool:
+    return str(product or "").upper().startswith(("DEM3DEP", "3DEP"))
+
+
+def _match_to_dem_grid(layer, dem):
+    """Return ``layer`` on exactly the DEM grid (bilinear), squeezed to 2-D."""
+    from rasterio.enums import Resampling
+
+    if layer.ndim == 3:
+        layer = layer.squeeze(drop=True)
+    same = (
+        layer.shape == dem.shape
+        and layer.rio.crs == dem.rio.crs
+        and layer.rio.transform().almost_equals(dem.rio.transform())
+    )
+    if same:
+        return layer
+    return layer.rio.reproject_match(dem, resampling=Resampling.bilinear)
+
+
+def _dem_sources(dem_product):
+    """DataSource list built from the DEM product that was actually used."""
+    from aihydro_core import DataSource
+
+    name, url, cite = str(dem_product or "unknown DEM"), None, None
+    try:
+        from aihydro_data import get_product
+
+        spec = get_product(str(dem_product))
+        name = f"{spec.id} ({spec.source_dataset_id}, via {spec.source})"
+        url = getattr(spec, "homepage", None) or None
+        cite = getattr(spec, "bibtex", None) or getattr(spec, "citation", None) or None
+    except Exception as exc:  # unregistered product or aihydro-data unavailable
+        log.debug("No registry entry for DEM product %r (%s)", dem_product, exc)
+    return [DataSource(name=name, url=url, citation=cite)]
+
+
 def compute_twi(
     watershed_geom,
     resolution: int = 30,
@@ -171,7 +208,8 @@ def compute_twi(
     
     Notes
     -----
-    - Uses USGS 3DEP DEM for elevation data
+    - Uses the DEM chosen by aihydro-data (3DEP, Copernicus GLO-30, ...); the
+      product is reported in ``dem_product`` and drives the citation
     - Uses py3dep for slope calculation
     - Flow direction computed using D8 algorithm via pysheds
     - TWI formula: ln(a / tan(slope)) where a is specific catchment area
@@ -288,10 +326,12 @@ def compute_twi(
         print(f"   ✓ Max accumulation: {acc.max():.0f} cells")
         
         # === Step 6: Compute Slope ===
-        # Inside CONUS, prefer 3DEP's published Slope-Degrees layer (matches
-        # the DEM and is already QC'd). Outside CONUS, derive slope from the
-        # DEM directly via numpy gradient — works anywhere on Earth.
-        if _is_conus:
+        # Slope must live on the *same grid* as the DEM and the flow
+        # accumulation. Only a 3DEP DEM is paired with 3DEP's published
+        # Slope-Degrees layer (and that layer is resampled onto the DEM grid
+        # when its extent/shape differ). Any other DEM (GLO-30, MERIT, ...)
+        # gets its slope from its own elevations, so no second grid exists.
+        if _is_conus and _is_3dep_product(_dem_product):
             try:
                 _progress(6, 10, "Downloading slope data from USGS 3DEP...")
                 slope_deg = py3dep.get_map(
@@ -301,12 +341,13 @@ def compute_twi(
                     geo_crs=4326,
                     crs=5070,
                 )
+                slope_deg = _match_to_dem_grid(slope_deg, dem)
             except Exception as _slope_exc:
                 log.warning("3DEP slope fetch failed (%s); computing from DEM", _slope_exc)
                 from aihydro_watershed.characterize._dem import slope_from_dem
                 slope_deg = slope_from_dem(dem)
         else:
-            _progress(6, 10, "Computing slope from DEM (global path)...")
+            _progress(6, 10, "Computing slope from DEM (%s)..." % _dem_product)
             from aihydro_watershed.characterize._dem import slope_from_dem
             slope_deg = slope_from_dem(dem)
         print(f"   ✓ Slope range: {float(slope_deg.min()):.2f} - {float(slope_deg.max()):.2f}°")
@@ -318,23 +359,15 @@ def compute_twi(
         slope_arr = np.squeeze(slope_deg.values)
         slope_rad = np.radians(slope_arr)
 
-        # pysheds acc may have a different 2-D shape than slope when the
-        # raster was clipped to the watershed mask.  Resize slope to match.
+        # Every layer must share the DEM grid. A mismatch used to be papered
+        # over by resizing/trimming, which misregisters slope against
+        # accumulation and later breaks the DEM-grid raster write; refuse.
         acc_arr = np.array(acc)
-        if slope_rad.shape != acc_arr.shape:
-            try:
-                from scipy.ndimage import zoom as _zoom
-                zy = acc_arr.shape[0] / slope_rad.shape[0]
-                zx = acc_arr.shape[1] / slope_rad.shape[1]
-                slope_rad = _zoom(slope_rad, (zy, zx), order=1)
-                log.debug("Slope resampled from %s to %s to match acc shape",
-                          slope_arr.shape, acc_arr.shape)
-            except Exception:
-                # Last resort: trim/pad to matching shape
-                h = min(slope_rad.shape[0], acc_arr.shape[0])
-                w = min(slope_rad.shape[1], acc_arr.shape[1])
-                slope_rad = slope_rad[:h, :w]
-                acc_arr = acc_arr[:h, :w]
+        if slope_rad.shape != acc_arr.shape or acc_arr.shape != tuple(dem.shape):
+            raise ValueError(
+                f"grid mismatch: slope {slope_rad.shape}, flow accumulation "
+                f"{acc_arr.shape}, DEM {tuple(dem.shape)}; refusing to resample by shape"
+            )
 
         # Set minimum slope to avoid division by zero
         min_slope_rad = np.radians(min_slope_deg)
@@ -358,7 +391,6 @@ def compute_twi(
         # watershed boundary so the raster and statistics are watershed-only.
         try:
             from rasterio.features import geometry_mask
-            from rasterio.transform import from_bounds
             from shapely.ops import transform as shp_transform
             import pyproj
 
@@ -379,11 +411,7 @@ def compute_twi(
 
             # Build an affine transform matching the DEM raster
             rows, cols = twi_masked.shape
-            bounds_dem = dem.rio.bounds()  # (left, bottom, right, top)
-            affine = from_bounds(
-                bounds_dem[0], bounds_dem[1], bounds_dem[2], bounds_dem[3],
-                cols, rows,
-            )
+            affine = dem.rio.transform()
 
             # geometry_mask returns True *outside* the polygon — invert for inside
             from shapely.geometry import mapping
@@ -437,6 +465,12 @@ def compute_twi(
         # DEM provenance — which backend / product served the elevation data
         twi_stats['dem_product'] = _dem_product
         twi_stats['dem_source'] = _dem_source
+        # Statistics are always the full D8 computation on the DEM grid,
+        # masked to the watershed polygon (grid mismatches raise instead).
+        twi_stats['twi_method'] = 'full'
+        twi_stats['twi_method_reason'] = None
+        twi_stats['twi_mask_basis'] = 'watershed polygon rasterised on the DEM grid'
+        twi_stats['n_valid_cells'] = int(valid_twi.size)
         
         # Print summary
         print("\n" + "=" * 60)
@@ -889,21 +923,9 @@ def compute_twi_result(
         resolution_m, bounds, crs
     """
     from shapely.geometry import shape
-    from aihydro_core import DataSource, HydroMeta, HydroResult, ToolError
+    from aihydro_core import HydroMeta, HydroResult, ToolError
 
     _TOOL_PATH = "aihydro_watershed.characterize.twi.compute_twi_result"
-    _SOURCES = [
-        DataSource(
-            name="3DEP (USGS 3D Elevation Program)",
-            url="https://www.usgs.gov/3d-elevation-program",
-            citation=(
-                "@misc{usgs_3dep_2022, title={3D Elevation Program}, "
-                "author={{U.S. Geological Survey}}, year={2022}, "
-                "url={https://www.usgs.gov/3d-elevation-program}}"
-            ),
-        ),
-    ]
-
     try:
         from aihydro_watershed import __version__
 
@@ -950,6 +972,8 @@ def compute_twi_result(
         # DEM provenance
         clean["dem_product"] = raw.get("dem_product")
         clean["dem_source"] = raw.get("dem_source")
+        for k in ("twi_method", "twi_method_reason", "twi_mask_basis", "n_valid_cells"):
+            clean[k] = raw.get(k)
 
         return HydroResult(
             data=clean,
@@ -957,7 +981,7 @@ def compute_twi_result(
                 tool=_TOOL_PATH,
                 version=__version__,
                 gauge_id=None,
-                sources=_SOURCES,
+                sources=_dem_sources(raw.get("dem_product")),
                 params={"resolution": resolution, "min_slope_deg": min_slope_deg},
             ),
         )

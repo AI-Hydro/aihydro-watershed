@@ -210,7 +210,8 @@ def compute_twi(
     -----
     - Uses the DEM chosen by aihydro-data (3DEP, Copernicus GLO-30, ...); the
       product is reported in ``dem_product`` and drives the citation
-    - Uses py3dep for slope calculation
+    - Slope comes from 3DEP's published Slope-Degrees layer (resampled onto the DEM grid)
+      when the DEM is a 3DEP product, and from the DEM's own elevations otherwise
     - Flow direction computed using D8 algorithm via pysheds
     - TWI formula: ln(a / tan(slope)) where a is specific catchment area
     - Processing time increases with finer resolution and larger watersheds

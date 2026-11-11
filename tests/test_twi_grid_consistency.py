@@ -56,15 +56,50 @@ def test_glo30_dem_computes_full_twi_without_3dep_slope(monkeypatch, tmp_path):
 
 
 def test_3dep_slope_on_a_different_grid_is_matched_not_trimmed(monkeypatch, tmp_path):
+    """A slope feature at a known place on an offset grid must land in that DEM-grid cell.
+
+    The slope layer is flat (3 deg) except a 9x9-cell steep block (30 deg) centred on
+    the geographic location of DEM-grid cell (R0, C0). The layer is supplied on a grid
+    whose origin is shifted, so only true georeferenced matching puts the block back at
+    (R0, C0); trimming to a common shape or zooming by the shape ratio shifts it. TWI is
+    ln(a/tan(slope)), so the steep block lowers TWI relative to a flat-slope run.
+    """
     dem = _glo30_like()
+    reproj = reproject_elevation(dem, "EPSG:5070")
+    ny, nx = reproj.shape
+    R0, C0 = ny // 2 + 7, nx // 2 - 11
+    half = 4
+    xc, yc = float(reproj.x[C0]), float(reproj.y[R0])
 
-    def _offset_slope(*a, **k):
-        s = reproject_elevation(dem, "EPSG:5070").isel(y=slice(10, -30), x=slice(5, -20))
-        return s * 0 + 3.0
+    offset = reproj.isel(y=slice(10, -30), x=slice(5, -20))
+    assert offset.shape != reproj.shape  # genuinely a different grid
 
-    monkeypatch.setattr(py3dep, "get_map", _offset_slope)
-    _, out = _run(monkeypatch, tmp_path, "DEM3DEP_10M", "py3dep")
-    assert out["twi_array"].shape == reproject_elevation(dem, "EPSG:5070").shape
+    def _slope(spike):
+        def _get(*a, **k):
+            arr = np.full(offset.shape, 3.0, dtype="float32")
+            if spike:
+                r = int(np.abs(offset.y.values - yc).argmin())
+                c = int(np.abs(offset.x.values - xc).argmin())
+                arr[r - half:r + half + 1, c - half:c + half + 1] = 30.0
+            return offset.copy(data=arr)
+        return _get
+
+    monkeypatch.setattr(py3dep, "get_map", _slope(False))
+    _, base = _run(monkeypatch, tmp_path / "flat", "DEM3DEP_10M", "py3dep", save=False)
+    monkeypatch.setattr(py3dep, "get_map", _slope(True))
+    _, out = _run(monkeypatch, tmp_path / "spike", "DEM3DEP_10M", "py3dep", save=False)
+
+    assert out["twi_array"].shape == reproj.shape
+    # Cells where the steep block lowered TWI (30 deg vs 3 deg is about -2.3 in ln units).
+    with np.errstate(invalid="ignore"):
+        lowered = (out["twi_array"] - base["twi_array"]) < -1.0
+    rows, cols = np.nonzero(lowered)
+    assert rows.size >= (2 * half + 1) ** 2 * 0.5, "steep block not found in TWI (slope not matched?)"
+    assert abs(rows.mean() - R0) <= 1.0 and abs(cols.mean() - C0) <= 1.0, (
+        f"feature centred at ({rows.mean():.1f}, {cols.mean():.1f}), expected ({R0}, {C0})"
+    )
+    assert rows.min() >= R0 - half - 1 and rows.max() <= R0 + half + 1
+    assert cols.min() >= C0 - half - 1 and cols.max() <= C0 + half + 1
     assert out["twi_method"] == "full" and np.isfinite(out["twi_mean"])
 
 

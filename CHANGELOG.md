@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.4.5] - 2026-11-11
+
 ### Fixed: SSURGO Soil Data Access no longer shells out to `curl`
 
 Found by the DEMO-1 review. `sda_query` fell back to `subprocess.run([curl, ...])` after four failed `requests` attempts. The subprocess ignores the Python-level proxy and network policy, so provenance could not see it and it could succeed where the policy refused. The fallback was added in 9412c06 because Python's resolver was seen failing intermittently on the USDA host while the system resolver worked; that is a local DNS fault, not a reason to bypass policy.

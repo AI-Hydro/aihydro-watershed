@@ -1408,6 +1408,7 @@ def _cn_statistics_block(cn_grid: xr.DataArray, watershed_geom, geom_crs, soil_s
     basin_statistics, flags, msgs = _basin_statistics_and_flags(
         cn_grid, watershed_geom, geom_crs, soil_stats)
     cn, basis = _valid_cn_in_basin(cn_grid.values, cn_grid, watershed_geom, geom_crs)
+    basin_statistics['stats_basis'] = basis      # alias of the canonical basis, even when empty
     if basis != 'basin_polygon' and 'basin_cn_stats_failed' not in flags \
             and 'basin_cn_stats_empty' not in flags:
         flags.append('basin_cn_stats_unavailable')

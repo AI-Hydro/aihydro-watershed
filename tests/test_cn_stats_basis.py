@@ -124,6 +124,8 @@ def test_unavailable_mask_is_labelled_raster_extent_and_flagged(monkeypatch):
     assert out["statistics"]["stats_basis"] == "raster_extent"
     assert out["statistics"]["cn_mean"] == pytest.approx((inside_cn + outside_cn) / 2)
     assert out["data_provenance"]["cn_stats_basis"] == "raster_extent"
+    assert out["basin_statistics"]["stats_basis"] == "raster_extent"
+    assert out["basin_statistics"]["cn_mean_basin"] is None
     assert "basin_cn_stats_empty" in out["quality_flags"]
 
 

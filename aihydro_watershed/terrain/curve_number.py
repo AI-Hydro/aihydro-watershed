@@ -142,10 +142,12 @@ def create_curve_number_grid(
                 'cn_p25': float,
                 'cn_p75': float,
                 'cn_p90': float,
-                'stats_basis': 'raster_extent'      # over the whole fetched raster
+                'stats_basis': 'basin_polygon'      # canonical statement of the basis;
+                                                     # 'raster_extent' only if the polygon
+                                                     # mask failed (see quality_flags)
             },
 
-            'basin_statistics': {                    # only cells inside the basin polygon
+            'basin_statistics': {                    # same cells; *_basin aliases of the above
                 'cn_mean_basin': float | None,
                 'cn_median_basin': float | None,
                 'cn_min_basin': float | None,
@@ -206,8 +208,8 @@ def create_curve_number_grid(
         }
         
         Access examples:
-        - CN mean over the basin: result['basin_statistics']['cn_mean_basin']
-        - CN mean over the raster extent: result['statistics']['cn_mean']
+        - CN mean over the basin: result['statistics']['cn_mean'] (alias: result['basin_statistics']['cn_mean_basin'])
+        - Same value, unsuffixed key: result['statistics']['cn_mean']
         - Medium CN zone: result['cn_zones']['percent_medium_cn']
         - Land cover classes: result['lulc_stats']['classes']
         - Gauge name: result['watershed_info']['gauge_name']
@@ -321,27 +323,9 @@ def create_curve_number_grid(
     # Step 5: Calculate statistics
     print("Step 5: Calculate statistics and zones")
     print("-" * 50)
-    valid_cn = cn_grid.values[~np.isnan(cn_grid.values)]
-    statistics = {
-        'cn_mean': float(valid_cn.mean()),
-        'cn_median': float(np.median(valid_cn)),
-        'cn_min': float(valid_cn.min()),
-        'cn_max': float(valid_cn.max()),
-        'cn_std': float(valid_cn.std()),
-        'cn_p10': float(np.percentile(valid_cn, 10)),
-        'cn_p25': float(np.percentile(valid_cn, 25)),
-        'cn_p75': float(np.percentile(valid_cn, 75)),
-        'cn_p90': float(np.percentile(valid_cn, 90)),
-        # These cover every valid cell of the fetched raster (its bounding box),
-        # not only the basin; see basin_statistics for the basin-masked values.
-        'stats_basis': 'raster_extent',
-    }
-    basin_statistics, quality_flags, quality_warnings = _basin_statistics_and_flags(
-        cn_grid, watershed_geom, watershed_gdf.crs, soil_stats,
+    statistics, basin_statistics, quality_flags, quality_warnings, cn_zones = (
+        _cn_statistics_block(cn_grid, watershed_geom, watershed_gdf.crs, soil_stats)
     )
-
-    # Classify CN zones
-    cn_zones = _classify_cn_zones(cn_grid.values)
 
     print(f"  CN Statistics:")
     print(f"    Mean: {statistics['cn_mean']:.1f}")
@@ -468,7 +452,7 @@ def create_curve_number_grid(
             'soil_provenance': _soil_provenance(soil_data, soil_stats),
             'lulc_class_fractions': lulc_stats.get('class_fractions'),
             'lulc_fraction_basis': lulc_stats.get('fraction_basis'),
-            'cn_stats_basis': basin_statistics['stats_basis'],
+            'cn_stats_basis': statistics['stats_basis'],
             'lulc_year': year,
             'region': lulc_data.attrs.get('_adata_region'),
         },
@@ -550,10 +534,12 @@ def create_curve_number_grid_from_geometry(
                 'cn_p25': float,
                 'cn_p75': float,
                 'cn_p90': float,
-                'stats_basis': 'raster_extent'      # over the whole fetched raster
+                'stats_basis': 'basin_polygon'      # canonical statement of the basis;
+                                                     # 'raster_extent' only if the polygon
+                                                     # mask failed (see quality_flags)
             },
 
-            'basin_statistics': {                    # only cells inside the basin polygon
+            'basin_statistics': {                    # same cells; *_basin aliases of the above
                 'cn_mean_basin': float | None,
                 'cn_median_basin': float | None,
                 'cn_min_basin': float | None,
@@ -613,8 +599,8 @@ def create_curve_number_grid_from_geometry(
         }
         
         Access examples:
-        - CN mean over the basin: result['basin_statistics']['cn_mean_basin']
-        - CN mean over the raster extent: result['statistics']['cn_mean']
+        - CN mean over the basin: result['statistics']['cn_mean'] (alias: result['basin_statistics']['cn_mean_basin'])
+        - Same value, unsuffixed key: result['statistics']['cn_mean']
         - Medium CN zone: result['cn_zones']['percent_medium_cn']
         - Land cover classes: result['lulc_stats']['classes']
         - Watershed area: result['watershed_info']['area_km2']
@@ -737,27 +723,9 @@ def create_curve_number_grid_from_geometry(
     # Step 5: Calculate statistics
     print("Step 5: Calculate statistics and zones")
     print("-" * 50)
-    valid_cn = cn_grid.values[~np.isnan(cn_grid.values)]
-    statistics = {
-        'cn_mean': float(valid_cn.mean()),
-        'cn_median': float(np.median(valid_cn)),
-        'cn_min': float(valid_cn.min()),
-        'cn_max': float(valid_cn.max()),
-        'cn_std': float(valid_cn.std()),
-        'cn_p10': float(np.percentile(valid_cn, 10)),
-        'cn_p25': float(np.percentile(valid_cn, 25)),
-        'cn_p75': float(np.percentile(valid_cn, 75)),
-        'cn_p90': float(np.percentile(valid_cn, 90)),
-        # These cover every valid cell of the fetched raster (its bounding box),
-        # not only the basin; see basin_statistics for the basin-masked values.
-        'stats_basis': 'raster_extent',
-    }
-    basin_statistics, quality_flags, quality_warnings = _basin_statistics_and_flags(
-        cn_grid, watershed_geom, watershed_gdf.crs, soil_stats,
+    statistics, basin_statistics, quality_flags, quality_warnings, cn_zones = (
+        _cn_statistics_block(cn_grid, watershed_geom, watershed_gdf.crs, soil_stats)
     )
-
-    # Classify CN zones
-    cn_zones = _classify_cn_zones(cn_grid.values)
 
     print(f"  CN Statistics:")
     print(f"    Mean: {statistics['cn_mean']:.1f}")
@@ -881,7 +849,7 @@ def create_curve_number_grid_from_geometry(
             'soil_provenance': _soil_provenance(soil_data, soil_stats),
             'lulc_class_fractions': lulc_stats.get('class_fractions'),
             'lulc_fraction_basis': lulc_stats.get('fraction_basis'),
-            'cn_stats_basis': basin_statistics['stats_basis'],
+            'cn_stats_basis': statistics['stats_basis'],
             'lulc_year': year,
             'region': lulc_data.attrs.get('_adata_region'),
         },
@@ -1184,6 +1152,9 @@ def _finish_cn_grid(
     (``cn_overlay_masked_path_failed`` / ``cn_overlay_masked_path_empty``) and
     ``soil_stats['warnings']``, and raised as a ``RuntimeWarning``; the grid is
     then raster-extent, not basin-masked.
+
+    The ``cn_mean_drained``/``cn_mean_undrained`` figures are taken over the
+    cells inside the polygon (``cn_mean_basis``), whichever path was used.
     """
     lulc_values = lulc.values
     quality_flags: List[str] = soil_stats.setdefault('quality_flags', [])
@@ -1260,10 +1231,9 @@ def _finish_cn_grid(
                     else 'cn_overlay_masked_path_failed')
             msg = (
                 f"Chunked basin-masked CN overlay failed ({type(_ce).__name__}: {_ce}); "
-                "fell back to the unmasked whole-raster lookup, so the CN grid and "
-                "its raster-extent statistics include cells outside the basin "
-                "polygon. Use the basin-masked statistics (stats_basis="
-                "'basin_polygon')."
+                "fell back to the unmasked whole-raster lookup, so the CN grid "
+                "includes cells outside the basin polygon; the statistics are still "
+                "taken over the polygon (stats_basis='basin_polygon')."
             )
             log.warning(msg)
             warnings.warn(msg, RuntimeWarning, stacklevel=2)
@@ -1298,7 +1268,8 @@ def _finish_cn_grid(
     # recorded erodibility, so neither needs a second fetch.
     if alt_groups is not None:
         alt_cn = _vectorised_cn_lookup(lulc_values, alt_groups, lookup)
-        alt_valid = alt_cn[np.isfinite(alt_cn)]
+        alt_valid, alt_basis = _valid_cn_in_basin(alt_cn, lulc, watershed_geom, geom_crs)
+        soil_stats['cn_mean_basis'] = alt_basis
         other = 'undrained' if soil_stats.get('dual_hsg_condition') == 'drained' else 'drained'
         soil_stats[f'cn_mean_{other}'] = float(alt_valid.mean()) if alt_valid.size else None
 
@@ -1404,12 +1375,65 @@ def _basin_mask(raster: xr.DataArray, watershed_geom, geom_crs=None) -> np.ndarr
     )
 
 
+def _valid_cn_in_basin(values, template: xr.DataArray, watershed_geom, geom_crs=None):
+    """Finite CN values whose cell centre is inside the polygon, and the basis used.
+
+    ``values`` is a CN array on ``template``'s grid. Returns ``(values, "basin_polygon")``,
+    or ``(all finite values, "raster_extent")`` when there is no polygon or it
+    cannot be rasterised or covers no valid cell, so the caller never reports a
+    polygon basis it did not apply.
+    """
+    arr = np.asarray(values, dtype=float).reshape(template.shape[-2:])
+    if watershed_geom is not None:
+        try:
+            inside = _basin_mask(template, watershed_geom, geom_crs)
+            picked = arr[inside & np.isfinite(arr)]
+            if picked.size:
+                return picked, 'basin_polygon'
+        except Exception:
+            pass
+    return arr[np.isfinite(arr)], 'raster_extent'
+
+
+def _cn_statistics_block(cn_grid: xr.DataArray, watershed_geom, geom_crs, soil_stats: Dict):
+    """Headline CN statistics, basin statistics, flags, warnings and zones, on one basis.
+
+    ``statistics`` is computed over the cells inside the basin polygon and says so
+    in ``stats_basis``, the one canonical statement of the basis. ``basin_statistics``
+    (``*_basin`` keys) and ``data_provenance['cn_stats_basis']`` are aliases that
+    always agree with it. If the polygon mask cannot be applied, ``statistics``
+    falls back to the raster extent, ``stats_basis`` says ``"raster_extent"`` and
+    the failure is flagged by ``_basin_statistics_and_flags``.
+    """
+    basin_statistics, flags, msgs = _basin_statistics_and_flags(
+        cn_grid, watershed_geom, geom_crs, soil_stats)
+    cn, basis = _valid_cn_in_basin(cn_grid.values, cn_grid, watershed_geom, geom_crs)
+    basin_statistics['stats_basis'] = basis      # alias of the canonical basis, even when empty
+    if basis != 'basin_polygon' and 'basin_cn_stats_failed' not in flags \
+            and 'basin_cn_stats_empty' not in flags:
+        flags.append('basin_cn_stats_unavailable')
+        msgs.append("No basin polygon was applied; CN statistics are over the raster extent.")
+    statistics = {
+        'cn_mean': float(cn.mean()),
+        'cn_median': float(np.median(cn)),
+        'cn_min': float(cn.min()),
+        'cn_max': float(cn.max()),
+        'cn_std': float(cn.std()),
+        'cn_p10': float(np.percentile(cn, 10)),
+        'cn_p25': float(np.percentile(cn, 25)),
+        'cn_p75': float(np.percentile(cn, 75)),
+        'cn_p90': float(np.percentile(cn, 90)),
+        'stats_basis': basis,
+    }
+    return statistics, basin_statistics, flags, msgs, _classify_cn_zones(cn)
+
+
 def _basin_cn_statistics(cn_grid: xr.DataArray, watershed_geom, geom_crs=None) -> Dict[str, Any]:
     """CN mean/median/min/max and cell count over cells inside the basin polygon.
 
-    The CN grid covers the polygon's bounding box (and, if the masked overlay
-    fell back, unmasked land too), so ``np.nanmean`` over it is a raster-extent
-    mean. These are computed only over valid cells whose centre lies inside the
+    The CN grid covers the polygon's bounding box (and, below the chunking
+    threshold or if the masked overlay fell back, unmasked land too), so
+    ``np.nanmean`` over it is a raster-extent mean. These are computed only over valid cells whose centre lies inside the
     polygon (``stats_basis = "basin_polygon"``). Values are None when no valid
     cell is inside.
     """
@@ -1442,7 +1466,7 @@ def _basin_statistics_and_flags(
                  'cn_median_basin': None, 'cn_min_basin': None, 'cn_max_basin': None}
         flags.append('basin_cn_stats_failed')
         msgs.append(f"Basin-masked CN statistics failed ({type(exc).__name__}: {exc}); "
-                    "only raster-extent statistics are available.")
+                    "the headline statistics fall back to the raster extent.")
         warnings.warn(msgs[-1], RuntimeWarning, stacklevel=2)
     else:
         if stats['cn_cells_basin'] == 0:

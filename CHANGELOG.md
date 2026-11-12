@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Fixed: CN headline statistics are over the basin polygon, and the basis is stated once (F11)
+
+Found by the DEMO-1 rehearsal. `create_cn_grid` reported `data.stats_basis: "raster_extent"` while `meta.data_provenance.cn_stats_basis` said `"basin_polygon"`. 0.4.5 still had it.
+
+- **Which was true.** Neither, uniformly. `statistics` (`cn_mean`, `cn_median`, `cn_min`, `cn_max`, `cn_std`, `cn_p10..p90`) was computed over every finite cell of the CN grid and labelled `"raster_extent"`. That grid is NaN outside the polygon only on the chunked path (raster above `_CN_CHUNK_TRIGGER` cells); on the single-pass path, or after a masked-path fallback, it holds the whole bounding box. So the numbers were polygon-based for large basins and bbox-based for small ones, while `basin_statistics` / `cn_stats_basis` always said `basin_polygon`, taken from a separate masked calculation.
+- **Fix.** `statistics`, `cn_zones` and `soil_stats['cn_mean_drained'/'cn_mean_undrained']` are now computed over the cells whose centre is inside the polygon (shared `_basin_mask`, polygon reprojected to the raster CRS by `_geom_in_raster_crs`), on every path. `statistics['stats_basis']` is the one canonical statement of the basis. `basin_statistics['stats_basis']` and `data_provenance['cn_stats_basis']` are aliases that always agree with it, and `basin_statistics` `*_basin` keys carry the same numbers as the unsuffixed ones (kept for compatibility). If the mask cannot be applied (no overlap, rasterisation error) the statistics fall back to the raster extent, `stats_basis` says `"raster_extent"`, and `quality_flags` carries `basin_cn_stats_empty` / `basin_cn_stats_failed` / `basin_cn_stats_unavailable`.
+- **Numbers change.** For rasters below the chunking threshold (and any masked-path fallback), `cn_mean`, `cn_median`, `cn_min`, `cn_max`, `cn_std`, percentiles, `cn_zones` percentages and `cn_mean_drained`/`cn_mean_undrained` move from the bounding-box value to the in-polygon value, by up to the contrast between basin and surrounding land. For large rasters (chunked path) they were already in-polygon cells and are expected to be unchanged, apart from the cell-centre rule being applied a second time to the same cells. Re-run before comparing against earlier output. The CN GeoTIFF/NetCDF grid itself is unchanged.
+- **Other `*_basis` fields checked.** `fraction_basis` (LULC class fractions), `twi_mask_basis`, `area_basis` and `water_year_rule.basis` are accurate. Not changed, still raster-wide and unlabelled: `lulc_stats['classes'/'counts'/'percentages']` (the basin-masked share is `class_fractions`).
+- Tests: `tests/test_cn_stats_basis.py`.
+
 ## [0.4.5] - 2026-11-11
 
 ### Fixed: SSURGO Soil Data Access no longer shells out to `curl`

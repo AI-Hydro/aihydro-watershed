@@ -39,11 +39,16 @@ def test_usgs_lookup_converts_square_miles_and_uses_the_documented_request():
     seen = {}
 
     def get(url, params=None, timeout=None, headers=None):
-        seen.update(url=url, params=params, timeout=timeout)
+        seen.update(url=url, params=params, timeout=timeout, headers=headers)
         return _resp(200, _recorded_body())
 
     got = av.usgs_reported_area("01013500", http_get=get)
     assert got.area_km2 == pytest.approx(870.0 * SQMI) and got.reason is None
+    assert seen["headers"]["User-Agent"].startswith("aihydro-watershed/")
+    assert "contributing_drainage_area" in seen["params"]["properties"]
+    assert got.contributing_km2 == pytest.approx(870.0 * SQMI)
+    c = av.build_area_check(870.0 * SQMI, got)
+    assert c["contributing_area_km2"] == pytest.approx(870.0 * SQMI, abs=1e-3) and c["status"] == "verified_by_area"
     assert seen["url"].startswith("https://api.waterdata.usgs.gov/ogcapi/v1/collections/monitoring-locations")
     assert seen["params"]["id"] == "USGS-01013500" and seen["timeout"] == av.USGS_LOOKUP_TIMEOUT_S
 
@@ -55,7 +60,11 @@ def test_usgs_lookup_converts_square_miles_and_uses_the_documented_request():
         (lambda *a, **k: _resp(503, {}), "HTTP 503"),
         (lambda *a, **k: _resp(200, {"features": []}), "not a monitoring location"),
         (lambda *a, **k: _resp(200, {"features": [{"properties": {"drainage_area": None}}]}), "no drainage_area"),
-        (lambda *a, **k: _resp(200, {"features": [{"properties": {"drainage_area": 0}}]}), "not positive"),
+        (lambda *a, **k: _resp(200, {"features": [{"properties": {"drainage_area": 0}}]}), "not a positive finite"),
+        (lambda *a, **k: _resp(200, {"features": [{"properties": {"drainage_area": float("inf")}}]}), "not a positive finite"),
+        (lambda *a, **k: _resp(200, {"features": [{"properties": {"drainage_area": float("nan")}}]}), "not a positive finite"),
+        (lambda *a, **k: _resp(200, [1, 2]), "not a JSON object"),
+        (lambda *a, **k: _resp(200, None), "not a JSON object"),
         (lambda *a, **k: _resp(200, {"features": [{"properties": {"drainage_area": "x"}}]}), "lookup failed"),
     ],
 )
@@ -64,11 +73,12 @@ def test_usgs_lookup_failures_are_values_not_exceptions(get, why):
     assert got.area_km2 is None and why in got.reason
 
 
-def test_non_usgs_identifier_makes_no_request():
+@pytest.mark.parametrize("gid", ["GRDC-4115200", "NWIS-01013500", "usgs-01013500", "USGS-0101", "USGS-01013500x", ""])
+def test_non_usgs_identifier_makes_no_request(gid):
     def get(*a, **k):
         raise AssertionError("no request expected")
 
-    got = av.usgs_reported_area("GRDC-4115200", http_get=get)
+    got = av.usgs_reported_area(gid, http_get=get)
     assert got.area_km2 is None and "not a USGS site number" in got.reason
 
 
@@ -133,7 +143,8 @@ def test_reliability_state_three_way():
     m = {"status": av.STATUS_MISMATCH}
     u = {"status": av.STATUS_UNVERIFIED}
     assert av.reliability_state(v, False) == "verified"
-    assert av.reliability_state(v, True) == "verified"      # a passed check resolves the ambiguity
+    assert av.reliability_state(v, True) == "ambiguous"     # a passed check never clears an ambiguous outlet
+    assert av.reliability_state(u, False, legacy_unreliable=True) == "ambiguous"
     assert av.reliability_state(m, False) == "ambiguous"
     assert av.reliability_state(u, True) == "ambiguous"
     assert av.reliability_state(u, False) == "unverified" and av.reliability_state(None, False) == "unverified"
@@ -215,14 +226,32 @@ def test_ambiguous_outlet_without_area_is_ambiguous(tiers):
     assert d["ambiguous_outlet"]["candidates"][1]["id"] == "mainstem_alternative"
 
 
-def test_ambiguity_resolved_when_area_passes(tiers, monkeypatch):
-    amb = {"code": "AMBIGUOUS_OUTLET", "candidates": []}
+def test_passing_area_does_not_clear_an_ambiguous_outlet(tiers, monkeypatch):
+    amb = {"code": "AMBIGUOUS_OUTLET", "candidates": [{"id": "local_polygon"}]}
     _serve(tiers, reliability="unreliable", reliability_reason="AMBIGUOUS_OUTLET: x", ambiguous_outlet=amb,
            quality_flags=["HYBRID_ROUTING_USED", "AMBIGUOUS_OUTLET"])
     monkeypatch.setattr(av, "usgs_reported_area", lambda g, **k: av.ReportedArea(480.0, "stub"))
     d = delineate_from_point(LAT, LON, method="merit_basins", gauge_id="01013500", lookup_reported_area=True).data
-    assert d["reliability_state"] == "verified" and d["reliability"] is None
-    assert d["ambiguous_outlet"]["resolved_by_area"] is True and "AMBIGUOUS_OUTLET" not in d["quality_flags"]
+    assert d["area_check"]["status"] == "verified_by_area"
+    assert d["reliability_state"] == "ambiguous" and d["reliability"] == "unreliable"
+    assert "AMBIGUOUS_OUTLET" in d["quality_flags"] and d["ambiguous_outlet"]["candidates"]
+    assert d["ambiguous_outlet"]["area_check_status"] == "verified_by_area"
+    assert d["reliability_state_basis"] == "independent_lookup"
+
+
+def test_state_basis_does_not_overclaim_a_caller_area(tiers):
+    _serve(tiers)
+    d = delineate_from_point(LAT, LON, method="merit_basins", expected_area_km2=470.0).data
+    assert d["reliability_state"] == "verified" and d["reliability_state_basis"] == "caller_area_also_steered_snap"
+    assert "also steered the snap" in d["area_check"]["reason"] and "area-consistency" in d["area_check"]["reason"]
+    none = delineate_from_point(LAT, LON, method="merit_basins").data
+    assert none["reliability_state_basis"] == "none"
+
+
+def test_unreliable_without_area_evidence_is_not_reported_unverified(tiers):
+    _serve(tiers, reliability="unreliable", reliability_reason="outlet could not be snapped (offline_unsnapped)")
+    d = delineate_from_point(LAT, LON, method="merit_basins").data
+    assert d["reliability"] == "unreliable" and d["reliability_state"] == "ambiguous"
 
 
 # --------------------------------------------------------------------------------- hybrid: ambiguous outlet
@@ -256,3 +285,17 @@ def test_on_reach_outlet_is_not_ambiguous(ee_region, monkeypatch):
     _snap_ref(monkeypatch, upa=INFLOW + HALF_C3)
     res = pipe.merit_basins_hybrid_delineate(*fx.OUTLET_REQUEST)
     assert res.ambiguous_outlet is None and res.reliability is None
+
+
+def test_mainstem_candidate_outlet_is_the_downstream_end_of_the_reach(ee_region, monkeypatch):
+    # river lines are digitised downstream -> upstream (basins_store.river_line): the outlet is coords[0]
+    from shapely.geometry import LineString
+
+    from aihydro_watershed.merit.basins_store import BasinsStore
+
+    monkeypatch.setattr(BasinsStore, "river_line", lambda self, comid: LineString([(0.0123, 40.0456), (0.05, 40.03), (0.09, 40.01)]))
+    _snap_ref(monkeypatch, upa=HALF_C3)
+    main = pipe.merit_basins_hybrid_delineate(*fx.OUTLET_REQUEST).ambiguous_outlet["candidates"][1]
+    assert (main["outlet_lon"], main["outlet_lat"]) == (0.0123, 40.0456)
+    assert "first vertex" in main["note"]
+

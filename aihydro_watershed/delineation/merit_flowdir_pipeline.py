@@ -1793,7 +1793,9 @@ def merit_basins_hybrid_delineate(
         try:
             line = store.river_line(terminal_id)
             if line is not None:
-                main_xy = [round(float(line.coords[-1][0]), 6), round(float(line.coords[-1][1]), 6)]
+                # river lines are digitised downstream to upstream: coords[0] is the reach's downstream end
+                # (checked on rivers73.db: a reach's first vertex equals its next-downstream reach's last)
+                main_xy = [round(float(line.coords[0][0]), 6), round(float(line.coords[0][1]), 6)]
         except Exception:  # the main-stem outlet is informative only
             main_xy = None
         alt = outlet_assembly["mainstem_alternative"]
@@ -1814,12 +1816,14 @@ def merit_basins_hybrid_delineate(
                     "outlet_lat": main_xy[1] if main_xy else None,
                     "outlet_lon": main_xy[0] if main_xy else None,
                     "source": alt["source"],
-                    "note": "basin at the terminal reach's downstream end (last vertex of its MERIT-Basins river "
-                    "line); re-run with expected_area_km2 or a moved outlet to choose it",
+                    "note": "basin at the terminal reach's downstream end (first vertex of its MERIT-Basins river "
+                    "line, which is digitised downstream to upstream); re-run with expected_area_km2 or a moved "
+                    "outlet to choose it",
                 },
             ],
         }
         _flag("AMBIGUOUS_OUTLET")
+        prior_fd = fd_reliability
         fd_reliability = {
             "reliability": "unreliable",
             "reliability_reason": (
@@ -1827,10 +1831,12 @@ def merit_basins_hybrid_delineate(
                 f"{polygon_area:.4g} km2 but is off the terminal reach, whose main-stem basin is "
                 f"{alt['area_km2']:.4g} km2; with no expected area the local polygon is returned and the "
                 "choice is the caller's"
+                + (f"; also: {prior_fd['reliability_reason']}" if prior_fd.get("reliability_reason") else "")
             ),
             "remedy": [
-                "Pass expected_area_km2 (or a gauge_id with lookup_reported_area=True) so the area selects the "
-                "candidate, or move the outlet onto the intended reach."
+                "Pass expected_area_km2 (or a gauge_id with lookup_reported_area=True) so the area can be "
+                "compared with each candidate, or move the outlet onto the intended reach.",
+                *(prior_fd.get("remedy") or []),
             ],
         }
 

@@ -504,6 +504,12 @@ def _with_trail(result: HydroResult, history: list[dict[str, Any]], method: str,
     return result
 
 
+def _state_basis(area_check: dict[str, Any]) -> str:
+    from aihydro_watershed.delineation import area_verification as av
+
+    return av.reliability_state_basis(area_check)
+
+
 def _verify_area(
     area: float,
     *,
@@ -518,9 +524,9 @@ def _verify_area(
 ) -> tuple[dict[str, Any], str | None, str | None, str, list[str] | None, dict[str, Any] | None]:
     """Apply the area check and fold it into the reliability fields (``quality_flags`` is updated in place).
 
-    A mismatch makes the result ``unreliable`` (``AREA_MISMATCH``). A passed check resolves an
-    ``AMBIGUOUS_OUTLET`` of the hybrid tier (the reported area selects the polygon): the legacy ``unreliable``
-    mark and the flag are removed and the ambiguity is kept as ``resolved_by_area``. The polygon is untouched.
+    A mismatch makes the result ``unreliable`` (``AREA_MISMATCH``). A passed check is area-consistency only: it
+    does not clear an ``AMBIGUOUS_OUTLET`` (kept, with its candidates; ``area_check_status`` is added to it) because
+    a wrong channel of similar area passes the same check. The polygon is untouched.
     """
     from aihydro_watershed.delineation import area_verification as av
 
@@ -528,13 +534,8 @@ def _verify_area(
         expected_area_km2=expected_area_km2, gauge_id=gauge_id, lookup=lookup
     )
     check = av.build_area_check(area, reported)
-    if check["status"] == av.STATUS_VERIFIED and ambiguous_outlet is not None:
-        ambiguous_outlet = {**ambiguous_outlet, "resolved_by_area": True}
-        if "AMBIGUOUS_OUTLET" in quality_flags:
-            quality_flags.remove("AMBIGUOUS_OUTLET")
-        if reliability_reason and reliability_reason.startswith(av.CODE_AMBIGUOUS_OUTLET):
-            reliability, reliability_reason, remedy = None, None, None
-    unresolved = ambiguous_outlet is not None and not ambiguous_outlet.get("resolved_by_area")
+    if ambiguous_outlet is not None:
+        ambiguous_outlet = {**ambiguous_outlet, "area_check_status": check["status"]}
     if check["status"] == av.STATUS_MISMATCH:
         prior = reliability_reason
         reliability = "unreliable"
@@ -548,7 +549,8 @@ def _verify_area(
         ]
         if av.CODE_AREA_MISMATCH not in quality_flags:
             quality_flags.append(av.CODE_AREA_MISMATCH)
-    return check, reliability, reliability_reason, av.reliability_state(check, unresolved), remedy, ambiguous_outlet
+    state = av.reliability_state(check, ambiguous_outlet is not None, legacy_unreliable=reliability == "unreliable")
+    return check, reliability, reliability_reason, state, remedy, ambiguous_outlet
 
 
 def delineate_from_point(
@@ -1729,6 +1731,7 @@ def _delineate_from_point(
             "reliability": reliability,
             "reliability_reason": reliability_reason,
             "reliability_state": reliability_state,
+            "reliability_state_basis": _state_basis(area_check),
             "area_check": area_check,
             "ambiguous_outlet": ambiguous_outlet,
             "remedy": remedy,

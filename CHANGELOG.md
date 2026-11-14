@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Added: area verification and a non-vacuous reliability state (audit 2026-11-14, P1 and P3)
+
+- **`area_check`.** `delineate_from_point(..., expected_area_km2=..., gauge_id=..., lookup_reported_area=False)` compares the returned polygon area with a reported drainage area and returns `data["area_check"]` (`reported_area_km2`, `source`, `rel_err`, `status`, `reason`). `verified_by_area` at |rel_err| <= `TOL_VERIFY` (0.10), `area_mismatch` above `TOL_FLAG` (0.35), `area_unverified` otherwise or with no area. A mismatch sets `reliability: "unreliable"` with reason `AREA_MISMATCH` and flag `AREA_MISMATCH`. The polygon and the existing area-gated snap are unchanged; the check only adds the block. The tolerances are the audit's held-out starting points (optimistic: NWIS and GAGES-II share lineage; blind to a wrong channel of similar area).
+- **Reported-area lookup** (`delineation/area_verification.py`): caller's `expected_area_km2` first, then, only when `lookup_reported_area=True`, the USGS Water Data API monitoring-locations `drainage_area` (square miles, 10 s timeout). Any failure gives `area_unverified` with a reason; nothing raises. Default off, so no new network call unless asked.
+- **`AMBIGUOUS_OUTLET`.** In the hybrid tier, an off-reach snap (UPA < 0.9 x inflow) with no expected area still returns the local polygon but is now `reliability: "unreliable"`, flag `AMBIGUOUS_OUTLET`, and `data["ambiguous_outlet"]` lists both candidates (local polygon; main-stem alternative) with areas and outlet coordinates.
+- **`reliability_state`** (`verified` | `ambiguous` | `unverified`) is set on every result. It replaces the effect of the unconditional `provisional` on flow-direction snaps as the summary to read.
+- **Compatibility.** The legacy `reliability` / `reliability_reason` / `remedy` fields keep their values, so aihydro-tools is unaffected. Behaviour changes: (1) an off-reach hybrid result with no expected area, formerly unmarked (`reliability: None`), is now `unreliable` (same polygon); (2) a result whose polygon differs from a supplied `expected_area_km2` by more than 35% is now `unreliable` on every tier (same polygon); (3) new result keys `area_check`, `reliability_state`, `ambiguous_outlet` and new kwargs `gauge_id`, `lookup_reported_area`. Callers that treat any `unreliable` as failure will see more of them.
+- Tests: `tests/test_area_verification.py` (recorded USGS body, injected `http_get`; no live calls).
+
 ### Fixed: CN headline statistics are over the basin polygon, and the basis is stated once (F11)
 
 Found by the DEMO-1 rehearsal. `create_cn_grid` reported `data.stats_basis: "raster_extent"` while `meta.data_provenance.cn_stats_basis` said `"basin_polygon"`. 0.4.5 still had it.

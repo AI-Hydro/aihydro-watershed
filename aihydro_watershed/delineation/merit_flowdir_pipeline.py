@@ -168,6 +168,9 @@ class MeritFlowdirResult:
     remedy: list[str] | None = None
     estimated_area_km2_on_reach: float | None = None
     reliability_checks: dict[str, Any] | None = None
+    # Set (with ``reliability`` ``unreliable``) when the snapped outlet is off the terminal reach and no expected
+    # area could choose between the local polygon returned and the main-stem basin: both candidates.
+    ambiguous_outlet: dict[str, Any] | None = None
 
 
 def _peak_memory_mb() -> float:
@@ -1782,6 +1785,55 @@ def merit_basins_hybrid_delineate(
         }
         _flag("OFFLINE_FLOWDIR_SNAP_UNVALIDATED")
 
+    # Off the terminal reach with no expected area: the local polygon is returned (as before) but nothing says
+    # whether the gauge sits on this tributary or on the main stem (audit 2026-11-14, F3/P3). Record both.
+    ambiguous_outlet: dict[str, Any] | None = None
+    if off_reach and not keep_upstream and not (expected_area_km2 and expected_area_km2 > 0):
+        main_xy = None
+        try:
+            line = store.river_line(terminal_id)
+            if line is not None:
+                main_xy = [round(float(line.coords[-1][0]), 6), round(float(line.coords[-1][1]), 6)]
+        except Exception:  # the main-stem outlet is informative only
+            main_xy = None
+        alt = outlet_assembly["mainstem_alternative"]
+        ambiguous_outlet = {
+            "code": "AMBIGUOUS_OUTLET",
+            "returned": "local_polygon",
+            "candidates": [
+                {
+                    "id": "local_polygon",
+                    "area_km2": round(polygon_area, 3),
+                    "outlet_lat": snap.lat,
+                    "outlet_lon": snap.lon,
+                    "note": "basin of the snapped outlet on the tributary inside the terminal unit catchment",
+                },
+                {
+                    "id": "mainstem_alternative",
+                    "area_km2": alt["area_km2"],
+                    "outlet_lat": main_xy[1] if main_xy else None,
+                    "outlet_lon": main_xy[0] if main_xy else None,
+                    "source": alt["source"],
+                    "note": "basin at the terminal reach's downstream end (last vertex of its MERIT-Basins river "
+                    "line); re-run with expected_area_km2 or a moved outlet to choose it",
+                },
+            ],
+        }
+        _flag("AMBIGUOUS_OUTLET")
+        fd_reliability = {
+            "reliability": "unreliable",
+            "reliability_reason": (
+                "AMBIGUOUS_OUTLET: the snapped outlet drains "
+                f"{polygon_area:.4g} km2 but is off the terminal reach, whose main-stem basin is "
+                f"{alt['area_km2']:.4g} km2; with no expected area the local polygon is returned and the "
+                "choice is the caller's"
+            ),
+            "remedy": [
+                "Pass expected_area_km2 (or a gauge_id with lookup_reported_area=True) so the area selects the "
+                "candidate, or move the outlet onto the intended reach."
+            ],
+        }
+
     # -- reliability of an outlet that could not be snapped ---------------------------------------------------
     reliability: dict[str, Any] | None = None
     reliability_remedy: list[str] | None = None
@@ -1970,6 +2022,7 @@ def merit_basins_hybrid_delineate(
         remedy=reliability_remedy or fd_reliability.get("remedy"),
         estimated_area_km2_on_reach=reliability["estimated_area_km2_on_reach"] if reliability else None,
         reliability_checks=reliability["checks"] if reliability else None,
+        ambiguous_outlet=ambiguous_outlet,
     )
 
 

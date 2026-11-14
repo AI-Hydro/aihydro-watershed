@@ -51,6 +51,10 @@ print(result.data["area_km2"])
 # Expected drainage area known? Pass it to improve COMID selection
 result = delineate_from_point(39.27, -77.54, expected_area_km2=25_000)
 
+# Verify the polygon against a reported drainage area. The check never changes the polygon.
+result = delineate_from_point(39.27, -77.54, gauge_id="01638500", lookup_reported_area=True)  # opt-in USGS lookup
+print(result.data["area_check"], result.data["reliability_state"])  # verified | ambiguous | unverified
+
 # Road culvert, catchment ~1 km2 (CONUS): USGS 3DEP 10 m + embankment notch
 result = delineate_from_point(40.2497, -86.3877, method="small_catchment")
 print(result.data["area_km2"], result.data["quality_flags"])

@@ -168,6 +168,9 @@ class MeritFlowdirResult:
     remedy: list[str] | None = None
     estimated_area_km2_on_reach: float | None = None
     reliability_checks: dict[str, Any] | None = None
+    # Set (with ``reliability`` ``unreliable``) when the snapped outlet is off the terminal reach and no expected
+    # area could choose between the local polygon returned and the main-stem basin: both candidates.
+    ambiguous_outlet: dict[str, Any] | None = None
 
 
 def _peak_memory_mb() -> float:
@@ -1782,6 +1785,95 @@ def merit_basins_hybrid_delineate(
         }
         _flag("OFFLINE_FLOWDIR_SNAP_UNVALIDATED")
 
+    # Off the terminal reach with no expected area: the local polygon is returned (as before) but nothing says
+    # whether the gauge sits on this tributary or on the main stem (audit 2026-11-14, F3/P3). Record both.
+    ambiguous_outlet: dict[str, Any] | None = None
+    if off_reach and not keep_upstream and not (expected_area_km2 and expected_area_km2 > 0):
+        main_xy = None
+        try:
+            line = store.river_line(terminal_id)
+            if line is not None:
+                # river lines are digitised downstream to upstream: coords[0] is the reach's downstream end
+                # (checked on rivers73.db: a reach's first vertex equals its next-downstream reach's last)
+                main_xy = [round(float(line.coords[0][0]), 6), round(float(line.coords[0][1]), 6)]
+        except Exception:  # the main-stem outlet is informative only
+            main_xy = None
+        alt = outlet_assembly["mainstem_alternative"]
+        ambiguous_outlet = {
+            "code": "AMBIGUOUS_OUTLET",
+            "returned": "local_polygon",
+            "candidates": [
+                {
+                    "id": "local_polygon",
+                    "area_km2": round(polygon_area, 3),
+                    "outlet_lat": snap.lat,
+                    "outlet_lon": snap.lon,
+                    "note": "basin of the snapped outlet on the tributary inside the terminal unit catchment",
+                },
+                {
+                    "id": "mainstem_alternative",
+                    "area_km2": alt["area_km2"],
+                    "outlet_lat": main_xy[1] if main_xy else None,
+                    "outlet_lon": main_xy[0] if main_xy else None,
+                    "source": alt["source"],
+                    "note": "basin at the terminal reach's downstream end (first vertex of its MERIT-Basins river "
+                    "line, which is digitised downstream to upstream); re-run with expected_area_km2 or a moved "
+                    "outlet to choose it",
+                },
+            ],
+        }
+        _flag("AMBIGUOUS_OUTLET")
+        # Held-out test delineation-holdout-2 (offline arms, agent-adjudicated): inside the conterminous US only
+        # 3 of 32 flags were wrong basins (weighted precision 0.078, gate 0.5), so there the flag is informational
+        # and must not set `unreliable`; outside the US 15 of 15 were (the preregistered minimum of 15 flags).
+        from aihydro_watershed.delineation import us_location as usl
+
+        where = usl.classify_outlet(snap.lat, snap.lon)
+        informational = where == usl.CONUS
+        ambiguous_outlet["location_class"] = where
+        ambiguous_outlet["affects_reliability"] = not informational
+        if informational:
+            ambiguous_outlet["basis"] = (
+                "informational inside the conterminous US: in the held-out test delineation-holdout-2 only 3 of "
+                "32 AMBIGUOUS_OUTLET flags there were wrong basins (weighted precision 0.078, gate 0.5; "
+                "agent-adjudicated, offline arms). The result is not marked unreliable by this flag."
+            )
+            ambiguous_outlet["remedy"] = (
+                "Pass expected_area_km2 (or a gauge_id with lookup_reported_area=True) to check the returned "
+                "area against a reported drainage area; a mismatch makes the result unreliable (AREA_MISMATCH)."
+            )
+        else:
+            ambiguous_outlet["basis"] = {
+                usl.CONUS_BORDER_ZONE: "within 0.25 deg of Canada or Mexico, where a basin may cross the border; "
+                "the CONUS relaxation was not tested there, so the conservative behaviour (unreliable) applies",
+                usl.NON_CONUS: "outside the conterminous US: in the held-out test delineation-holdout-2 15 of 15 "
+                "flags were wrong basins (the preregistered minimum of 15; agent-adjudicated, offline arms), but all 15 were "
+                "also area-mismatch flags, so the held-out data show no added value over the area check, and "
+                "precision rests on references sharing lineage with the area check (exact 95% lower bound 0.78); "
+                "kept conservative (unreliable), not shown precise",
+            }.get(
+                where,
+                "the outlet location could not be determined offline, so the conservative behaviour "
+                "(unreliable) applies",
+            )
+        if not informational:  # informational: the prior fd_reliability (provisional snap or none) is kept
+            prior_fd = fd_reliability
+            fd_reliability = {
+                "reliability": "unreliable",
+                "reliability_reason": (
+                    "AMBIGUOUS_OUTLET: the snapped outlet drains "
+                    f"{polygon_area:.4g} km2 but is off the terminal reach, whose main-stem basin is "
+                    f"{alt['area_km2']:.4g} km2; with no expected area the local polygon is returned and the "
+                    "choice is the caller's"
+                    + (f"; also: {prior_fd['reliability_reason']}" if prior_fd.get("reliability_reason") else "")
+                ),
+                "remedy": [
+                    "Pass expected_area_km2 (or a gauge_id with lookup_reported_area=True) so the area can be "
+                    "compared with each candidate, or move the outlet onto the intended reach.",
+                    *(prior_fd.get("remedy") or []),
+                ],
+            }
+
     # -- reliability of an outlet that could not be snapped ---------------------------------------------------
     reliability: dict[str, Any] | None = None
     reliability_remedy: list[str] | None = None
@@ -1970,6 +2062,7 @@ def merit_basins_hybrid_delineate(
         remedy=reliability_remedy or fd_reliability.get("remedy"),
         estimated_area_km2_on_reach=reliability["estimated_area_km2_on_reach"] if reliability else None,
         reliability_checks=reliability["checks"] if reliability else None,
+        ambiguous_outlet=ambiguous_outlet,
     )
 
 

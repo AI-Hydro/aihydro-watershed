@@ -504,6 +504,58 @@ def _with_trail(result: HydroResult, history: list[dict[str, Any]], method: str,
     return result
 
 
+def _state_basis(area_check: dict[str, Any]) -> str:
+    from aihydro_watershed.delineation import area_verification as av
+
+    return av.reliability_state_basis(area_check)
+
+
+def _verify_area(
+    area: float,
+    *,
+    expected_area_km2: float | None,
+    gauge_id: str | None,
+    lookup: bool,
+    reliability: str | None,
+    reliability_reason: str | None,
+    remedy: list[str] | None,
+    ambiguous_outlet: dict[str, Any] | None,
+    quality_flags: list[str],
+) -> tuple[dict[str, Any], str | None, str | None, str, list[str] | None, dict[str, Any] | None]:
+    """Apply the area check and fold it into the reliability fields (``quality_flags`` is updated in place).
+
+    A mismatch makes the result ``unreliable`` (``AREA_MISMATCH``). A passed check is area-consistency only: it
+    does not clear an ``AMBIGUOUS_OUTLET`` (kept, with its candidates; ``area_check_status`` is added to it) because
+    a wrong channel of similar area passes the same check. An ``AMBIGUOUS_OUTLET`` with ``affects_reliability:
+    false`` (outlet inside the conterminous US; held-out test delineation-holdout-2) is informational: it does not
+    make the state ``ambiguous`` by itself. ``AREA_MISMATCH`` still does. The polygon is untouched.
+    """
+    from aihydro_watershed.delineation import area_verification as av
+
+    reported = av.resolve_reported_area(
+        expected_area_km2=expected_area_km2, gauge_id=gauge_id, lookup=lookup
+    )
+    check = av.build_area_check(area, reported)
+    if ambiguous_outlet is not None:
+        ambiguous_outlet = {**ambiguous_outlet, "area_check_status": check["status"]}
+    if check["status"] == av.STATUS_MISMATCH:
+        prior = reliability_reason
+        reliability = "unreliable"
+        reliability_reason = f"{av.CODE_AREA_MISMATCH}: {check['reason']} (source: {check['source']})" + (
+            f"; also: {prior}" if prior else ""
+        )
+        remedy = [
+            *(remedy or []),
+            "Check the outlet coordinates and the reported area; move the outlet onto the intended reach or "
+            "pass a corrected expected_area_km2.",
+        ]
+        if av.CODE_AREA_MISMATCH not in quality_flags:
+            quality_flags.append(av.CODE_AREA_MISMATCH)
+    ambiguous_counts = ambiguous_outlet is not None and ambiguous_outlet.get("affects_reliability", True)
+    state = av.reliability_state(check, ambiguous_counts, legacy_unreliable=reliability == "unreliable")
+    return check, reliability, reliability_reason, state, remedy, ambiguous_outlet
+
+
 def delineate_from_point(
     lat: float,
     lon: float,
@@ -513,6 +565,8 @@ def delineate_from_point(
     verbose: bool = False,
     name: str | None = None,
     allow_downstream_expansion: bool = False,
+    gauge_id: str | None = None,
+    lookup_reported_area: bool = False,
 ) -> HydroResult:
     """
     Delineate a watershed from a pour point (WGS84 decimal degrees).
@@ -547,6 +601,17 @@ def delineate_from_point(
         nearest reach's basin is returned with ``outlet_ambiguity`` (candidate
         downstream COMIDs and areas) and the ``NLDI_OUTLET_AMBIGUOUS`` flag. True
         moves the outlet downstream to the largest nearby basin (explicit consent).
+    gauge_id : str, optional
+        USGS site number, used only with ``lookup_reported_area``.
+    lookup_reported_area : bool
+        Opt in to one timed lookup of the gauge's reported drainage area (USGS Water Data API) when
+        ``expected_area_km2`` is not given. The returned ``area_check`` compares the polygon with it; the
+        polygon is never changed by the check. Any lookup failure gives ``area_unverified`` with a reason.
+
+    The result's ``area_check``, ``reliability_state`` (``verified`` | ``ambiguous`` | ``unverified``) and, for an
+    off-reach outlet with no expected area, ``ambiguous_outlet`` (both candidates; ``affects_reliability`` is false
+    inside the conterminous US) are described in
+    :mod:`aihydro_watershed.delineation.area_verification`.
     """
     trail: list[dict[str, Any]] = []
     try:
@@ -554,6 +619,7 @@ def delineate_from_point(
             lat, lon, expected_area_km2=expected_area_km2, method=method,
             verbose=verbose, name=name, _trail=trail,
             allow_downstream_expansion=allow_downstream_expansion,
+            gauge_id=gauge_id, lookup_reported_area=lookup_reported_area,
         )
     except ToolError as exc:
         # A failed delineation keeps the tiers it tried: the same ``fallback_history`` a success returns,
@@ -582,6 +648,8 @@ def _delineate_from_point(
     name: str | None,
     _trail: list[dict[str, Any]],
     allow_downstream_expansion: bool = False,
+    gauge_id: str | None = None,
+    lookup_reported_area: bool = False,
 ) -> HydroResult:
     """Implementation of :func:`delineate_from_point`; ``_trail`` is the caller-owned ``fallback_history``."""
     if not (-90 <= lat <= 90 and -180 <= lon <= 180):
@@ -652,6 +720,7 @@ def _delineate_from_point(
     remedy: list[str] | None = None
     estimated_area_km2_on_reach: float | None = None
     reliability_checks: dict[str, Any] | None = None
+    ambiguous_outlet: dict[str, Any] | None = None
     hybrid_tried = False
     # CONUS auto: set when the primary tier (NLDI) raised, so the served polygon comes from a fallback.
     nldi_failure: str | None = None      # "transient" | "not_usable" (NLDI raised without being throttled / down)
@@ -992,6 +1061,7 @@ def _delineate_from_point(
         nonlocal vector_dataset_version, raster_dataset_version
         nonlocal vector_data_source, raster_data_source, data_provenance
         nonlocal reliability, reliability_reason, remedy, estimated_area_km2_on_reach, reliability_checks
+        nonlocal ambiguous_outlet
 
         gdf = local.gdf
         area = local.area_km2
@@ -1040,6 +1110,7 @@ def _delineate_from_point(
         remedy = getattr(local, "remedy", None)
         estimated_area_km2_on_reach = getattr(local, "estimated_area_km2_on_reach", None)
         reliability_checks = getattr(local, "reliability_checks", None)
+        ambiguous_outlet = getattr(local, "ambiguous_outlet", None)
         method_used = used_method
 
     def _try_hybrid_result(reason: str) -> bool:
@@ -1564,6 +1635,19 @@ def _delineate_from_point(
         if f not in quality_flags:
             quality_flags.append(f)
 
+    # Area verification against a reported drainage area (audit 2026-11-14, P1). Never alters the polygon.
+    area_check, reliability, reliability_reason, reliability_state, remedy, ambiguous_outlet = _verify_area(
+        area,
+        expected_area_km2=expected_area_km2,
+        gauge_id=gauge_id,
+        lookup=lookup_reported_area,
+        reliability=reliability,
+        reliability_reason=reliability_reason,
+        remedy=remedy,
+        ambiguous_outlet=ambiguous_outlet,
+        quality_flags=quality_flags,
+    )
+
     geojson = _gdf_to_geojson(gdf)
     # Surface the headline delineation stats on the Feature itself so the map's
     # click popup (FeatureIdentifier reads feature.properties) shows area/method
@@ -1650,6 +1734,10 @@ def _delineate_from_point(
             "snap_validation": snap_validation,
             "reliability": reliability,
             "reliability_reason": reliability_reason,
+            "reliability_state": reliability_state,
+            "reliability_state_basis": _state_basis(area_check),
+            "area_check": area_check,
+            "ambiguous_outlet": ambiguous_outlet,
             "remedy": remedy,
             "estimated_area_km2_on_reach": estimated_area_km2_on_reach,
             "reliability_checks": reliability_checks,

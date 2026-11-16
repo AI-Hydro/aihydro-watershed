@@ -5,22 +5,24 @@ held-out test ``delineation-holdout-2`` (offline arms, agent-adjudicated) found 
 wrong-basin detector inside CONUS (3 of 32 flags were wrong basins; weighted precision 0.078 against a 0.5
 gate) and supported outside the US (15 of 15, the preregistered minimum of 15 flags).
 
-Data: ``data/conus_border_context.geojson``, derived from Natural Earth 1:110m admin-0 countries (public
-domain): the conterminous-US polygon plus Canada and Mexico. No network access, no download.
+Data: ``data/conus_border_context.geojson`` (about 120 KB, not simplified: coordinates rounded to 0.001 deg,
+no simplification tolerance applied), derived from Natural Earth 1:50m (public domain, copied from a copy
+already on disk, no download): the 48 conterminous states plus DC from ``ne_50m_admin_1_states_provinces_lakes``
+dissolved (the Great Lakes are water, not US land); the Canadian provinces from the same file dissolved; and the
+US-Mexico border line from ``ne_50m_admin_0_boundary_lines_land`` (Mexico is not in the admin-1 file).
 
 Rule (``classify_outlet``):
 
-* ``"conus"``: the point is inside the conterminous-US polygon and more than ``BORDER_BUFFER_DEG`` (0.25 deg,
-  about 25 km) from Canadian or Mexican land.
+* ``"conus"``: the point is inside the conterminous-US polygon (or within ``COAST_TOLERANCE_DEG``, 0.02 deg, of it) and more than ``BORDER_BUFFER_DEG`` (0.25 deg,
+  about 25 km) from the Canadian provinces or the US-Mexico border line.
 * ``"conus_border_zone"``: inside the polygon but within that distance of Canada or Mexico. A basin there may
   cross the border, which the held-out test did not examine, so it is treated as not-CONUS (conservative).
 * ``"non_conus"``: outside the polygon (includes Alaska and Hawaii, which are not conterminous and were not
-  tested; and open water outside the 1:110m coastline).
+  tested; and open water outside the 1:50m coastline).
 * ``"undetermined"``: coordinates missing or non-finite, or the boundary file could not be read.
 
-Limits: the boundary is 1:110m, so the coastline and border are generalised to a few tens of km; the buffer is
-sized to absorb that near the land borders. Coastal points a little outside the generalised coastline are
-``non_conus`` (conservative). Only the conterminous polygon is used, never a bounding box.
+Limits: the boundary is 1:50m, so the coastline and border are still generalised (a few km); coastal points
+more than 0.02 deg outside the generalised coastline are ``non_conus`` (conservative). Only the conterminous polygon is used, never a bounding box.
 """
 
 from __future__ import annotations
@@ -39,6 +41,10 @@ _DATA = Path(__file__).parent / "data" / "conus_border_context.geojson"
 #: Distance (degrees) from Canada/Mexico inside which an outlet is "border zone" (about 25 km).
 BORDER_BUFFER_DEG = 0.25
 
+#: Tolerance (degrees, about 2 km) for the generalised 1:50m coastline: a tidal or coastal outlet within it of the
+#: polygon counts as inside (lower Manhattan and the San Francisco waterfront fall about 1 km outside it).
+COAST_TOLERANCE_DEG = 0.02
+
 CONUS = "conus"
 CONUS_BORDER_ZONE = "conus_border_zone"
 NON_CONUS = "non_conus"
@@ -54,8 +60,8 @@ def _load() -> tuple[Any, Any] | None:
 
         with open(_DATA, encoding="utf-8") as fh:
             feats = {f["properties"]["id"]: shape(f["geometry"]) for f in json.load(fh)["features"]}
-        zone = unary_union([feats["canada"], feats["mexico"]]).buffer(BORDER_BUFFER_DEG)
-        return feats["conus"], zone
+        zone = unary_union([feats["canada"], feats["mexico"]]).buffer(BORDER_BUFFER_DEG)  # polygon + border line
+        return feats["conus"].buffer(COAST_TOLERANCE_DEG), zone
     except Exception as exc:  # undeterminable -> the caller keeps the conservative behaviour
         log.warning("conterminous-US boundary unavailable (%s: %s)", type(exc).__name__, exc)
         return None

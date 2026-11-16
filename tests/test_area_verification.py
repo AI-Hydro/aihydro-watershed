@@ -364,8 +364,10 @@ def test_router_conus_informational_with_area_mismatch_is_still_unreliable(tiers
 
 @pytest.mark.parametrize("lat,lon,cls", [
     (39.0, -98.0, "conus"), (41.88, -87.63, "conus"), (45.5, -69.0, "conus"),   # Kansas, Chicago, Maine
-    (48.9, -95.0, "conus_border_zone"), (42.3, -83.0, "conus_border_zone"),     # Canada border
-    (25.9, -97.5, "conus_border_zone"),                                         # Mexico border
+    (48.9, -95.0, "conus_border_zone"), (42.33, -83.05, "conus_border_zone"),     # Canada border
+    (25.95, -97.45, "conus_border_zone"),                                         # Mexico border
+    (40.7, -74.0, "conus"), (37.8, -122.4, "conus"), (29.3, -94.8, "conus"), (25.8, -80.2, "conus"),  # coastal
+    (42.36, -71.06, "conus"), (47.6, -122.3, "conus"),                          # NYC, SF, Galveston, Miami...
     (51.0, -114.0, "non_conus"), (64.0, -150.0, "non_conus"), (21.0, -157.8, "non_conus"),
     (None, -98.0, "undetermined"), (float("nan"), -98.0, "undetermined"),
 ])

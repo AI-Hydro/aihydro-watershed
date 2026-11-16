@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.4.6] - 2026-11-16
+
 ### Changed: `AMBIGUOUS_OUTLET` is informational inside the conterminous US (held-out test delineation-holdout-2)
 
 The preregistered held-out test `delineation-holdout-2` (offline arms, agent-adjudicated) killed the flag as a wrong-basin detector inside CONUS: only 3 of 32 flags were wrong basins (weighted precision 0.078, gate 0.5); all 28 ambiguity-only CONUS flags were correct basins, and the 3 wrong ones were also caught by `AREA_MISMATCH` (35%). Outside the US it was supported, 15 of 15 flags, which is the preregistered minimum of 15. Owner decision (owner, chat, 2026-11-16): "go ahead with the ambiguous-outlet fix for US".

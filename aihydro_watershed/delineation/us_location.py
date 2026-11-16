@@ -3,18 +3,23 @@
 Used only to decide whether ``AMBIGUOUS_OUTLET`` may set ``reliability: "unreliable"``. The preregistered
 held-out test ``delineation-holdout-2`` (offline arms, agent-adjudicated) found the flag unreliable as a
 wrong-basin detector inside CONUS (3 of 32 flags were wrong basins; weighted precision 0.078 against a 0.5
-gate) and supported outside the US (15 of 15, the preregistered minimum of 15 flags).
+gate) and, outside the US, 15 of 15 flags were wrong basins (the preregistered minimum of 15). All 15 were also
+area-mismatch flags (no added value over the area check in those data) and the references share lineage with the
+area check (exact 95% lower bound 0.78), so the flag is kept conservative there, not shown precise.
 
 Data: ``data/conus_border_context.geojson`` (about 120 KB, not simplified: coordinates rounded to 0.001 deg,
 no simplification tolerance applied), derived from Natural Earth 1:50m (public domain, copied from a copy
 already on disk, no download): the 48 conterminous states plus DC from ``ne_50m_admin_1_states_provinces_lakes``
 dissolved (the Great Lakes are water, not US land); the Canadian provinces from the same file dissolved; and the
 US-Mexico border line from ``ne_50m_admin_0_boundary_lines_land`` (Mexico is not in the admin-1 file).
+Rebuilt byte-identically by ``scripts/build_conus_border_context.py``; sha256
+``7e52c9a4dd0c25879e58fbec0213e0b6bff700048429f66c658d3463f52bafe0``. The Natural Earth version is not readable
+from the cartopy-cache files.
 
 Rule (``classify_outlet``):
 
 * ``"conus"``: the point is inside the conterminous-US polygon (or within ``COAST_TOLERANCE_DEG``, 0.02 deg, of it) and more than ``BORDER_BUFFER_DEG`` (0.25 deg,
-  about 25 km) from the Canadian provinces or the US-Mexico border line.
+  about 18-28 km) from the Canadian provinces or the US-Mexico border line.
 * ``"conus_border_zone"``: inside the polygon but within that distance of Canada or Mexico. A basin there may
   cross the border, which the held-out test did not examine, so it is treated as not-CONUS (conservative).
 * ``"non_conus"``: outside the polygon (includes Alaska and Hawaii, which are not conterminous and were not
@@ -38,7 +43,7 @@ log = logging.getLogger(__name__)
 
 _DATA = Path(__file__).parent / "data" / "conus_border_context.geojson"
 
-#: Distance (degrees) from Canada/Mexico inside which an outlet is "border zone" (about 25 km).
+#: Distance (degrees) from Canada/Mexico inside which an outlet is "border zone" (about 18-28 km).
 BORDER_BUFFER_DEG = 0.25
 
 #: Tolerance (degrees, about 2 km) for the generalised 1:50m coastline: a tidal or coastal outlet within it of the
@@ -51,6 +56,8 @@ NON_CONUS = "non_conus"
 UNDETERMINED = "undetermined"
 
 
+# lru_cache also keeps a failed load (None) for the life of the process: conservative by design (every outlet is
+# then ``undetermined`` and keeps the unreliable behaviour until restart).
 @lru_cache(maxsize=1)
 def _load() -> tuple[Any, Any] | None:
     """(conus polygon, canada+mexico border-zone polygon) or None if the file cannot be read."""

@@ -1847,7 +1847,10 @@ def merit_basins_hybrid_delineate(
                 usl.CONUS_BORDER_ZONE: "within 0.25 deg of Canada or Mexico, where a basin may cross the border; "
                 "the CONUS relaxation was not tested there, so the conservative behaviour (unreliable) applies",
                 usl.NON_CONUS: "outside the conterminous US: in the held-out test delineation-holdout-2 15 of 15 "
-                "flags were wrong basins (the preregistered minimum of 15; agent-adjudicated, offline arms)",
+                "flags were wrong basins (the preregistered minimum of 15; agent-adjudicated, offline arms), but all 15 were "
+                "also area-mismatch flags, so the held-out data show no added value over the area check, and "
+                "precision rests on references sharing lineage with the area check (exact 95% lower bound 0.78); "
+                "kept conservative (unreliable), not shown precise",
             }.get(
                 where,
                 "the outlet location could not be determined offline, so the conservative behaviour "

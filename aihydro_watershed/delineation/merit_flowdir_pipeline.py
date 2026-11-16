@@ -1823,22 +1823,53 @@ def merit_basins_hybrid_delineate(
             ],
         }
         _flag("AMBIGUOUS_OUTLET")
-        prior_fd = fd_reliability
-        fd_reliability = {
-            "reliability": "unreliable",
-            "reliability_reason": (
-                "AMBIGUOUS_OUTLET: the snapped outlet drains "
-                f"{polygon_area:.4g} km2 but is off the terminal reach, whose main-stem basin is "
-                f"{alt['area_km2']:.4g} km2; with no expected area the local polygon is returned and the "
-                "choice is the caller's"
-                + (f"; also: {prior_fd['reliability_reason']}" if prior_fd.get("reliability_reason") else "")
-            ),
-            "remedy": [
-                "Pass expected_area_km2 (or a gauge_id with lookup_reported_area=True) so the area can be "
-                "compared with each candidate, or move the outlet onto the intended reach.",
-                *(prior_fd.get("remedy") or []),
-            ],
-        }
+        # Held-out test delineation-holdout-2 (offline arms, agent-adjudicated): inside the conterminous US only
+        # 3 of 32 flags were wrong basins (weighted precision 0.078, gate 0.5), so there the flag is informational
+        # and must not set `unreliable`; outside the US 15 of 15 were (the preregistered minimum of 15 flags).
+        from aihydro_watershed.delineation import us_location as usl
+
+        where = usl.classify_outlet(snap.lat, snap.lon)
+        informational = where == usl.CONUS
+        ambiguous_outlet["location_class"] = where
+        ambiguous_outlet["affects_reliability"] = not informational
+        if informational:
+            ambiguous_outlet["basis"] = (
+                "informational inside the conterminous US: in the held-out test delineation-holdout-2 only 3 of "
+                "32 AMBIGUOUS_OUTLET flags there were wrong basins (weighted precision 0.078, gate 0.5; "
+                "agent-adjudicated, offline arms). The result is not marked unreliable by this flag."
+            )
+            ambiguous_outlet["remedy"] = (
+                "Pass expected_area_km2 (or a gauge_id with lookup_reported_area=True) to check the returned "
+                "area against a reported drainage area; a mismatch makes the result unreliable (AREA_MISMATCH)."
+            )
+        else:
+            ambiguous_outlet["basis"] = {
+                usl.CONUS_BORDER_ZONE: "within 0.25 deg of Canada or Mexico, where a basin may cross the border; "
+                "the CONUS relaxation was not tested there, so the conservative behaviour (unreliable) applies",
+                usl.NON_CONUS: "outside the conterminous US: in the held-out test delineation-holdout-2 15 of 15 "
+                "flags were wrong basins (the preregistered minimum of 15; agent-adjudicated, offline arms)",
+            }.get(
+                where,
+                "the outlet location could not be determined offline, so the conservative behaviour "
+                "(unreliable) applies",
+            )
+        if not informational:  # informational: the prior fd_reliability (provisional snap or none) is kept
+            prior_fd = fd_reliability
+            fd_reliability = {
+                "reliability": "unreliable",
+                "reliability_reason": (
+                    "AMBIGUOUS_OUTLET: the snapped outlet drains "
+                    f"{polygon_area:.4g} km2 but is off the terminal reach, whose main-stem basin is "
+                    f"{alt['area_km2']:.4g} km2; with no expected area the local polygon is returned and the "
+                    "choice is the caller's"
+                    + (f"; also: {prior_fd['reliability_reason']}" if prior_fd.get("reliability_reason") else "")
+                ),
+                "remedy": [
+                    "Pass expected_area_km2 (or a gauge_id with lookup_reported_area=True) so the area can be "
+                    "compared with each candidate, or move the outlet onto the intended reach.",
+                    *(prior_fd.get("remedy") or []),
+                ],
+            }
 
     # -- reliability of an outlet that could not be snapped ---------------------------------------------------
     reliability: dict[str, Any] | None = None

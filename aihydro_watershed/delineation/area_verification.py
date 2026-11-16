@@ -224,7 +224,13 @@ def reliability_state(
 ) -> str:
     """Three-way summary, never vacuous: ``verified`` | ``ambiguous`` | ``unverified``.
 
-    ``ambiguous``: ``AREA_MISMATCH``, an ``AMBIGUOUS_OUTLET`` (a passing area check does NOT clear it: the check
+    ``ambiguous_outlet`` is True only for an ``AMBIGUOUS_OUTLET`` that affects reliability (``affects_reliability``
+    true: outside the conterminous US, in its border zone, or location undetermined). Inside the conterminous US
+    the flag is informational (held-out test delineation-holdout-2: 3 of 32 flags were wrong basins, weighted
+    precision 0.078 against a 0.5 gate; agent-adjudicated, offline arms), so the caller passes False and the
+    state follows the area check; the outside-US support rests on 15 flags, the preregistered minimum.
+
+    ``ambiguous``: ``AREA_MISMATCH``, an effective ``AMBIGUOUS_OUTLET`` (a passing area check does NOT clear it: the check
     is area-consistency, not outlet identity, and similar-area wrong channels exist; audit 2026-11-14 found 9 of
     32 in-sample wrong basins within the area tolerance), or any other ``unreliable`` mark without area evidence,
     so the state never contradicts ``reliability``. ``verified``: the polygon area is consistent with the reported

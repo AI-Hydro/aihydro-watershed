@@ -135,6 +135,7 @@ include = ["aihydro_watershed*"]
 
 [tool.setuptools.package-data]
 "aihydro_watershed.merit" = ["*.yaml", "*.json"]
+"aihydro_watershed.delineation" = ["data/*.geojson"]
 
 # ── Pytest ─────────────────────────────────────────────────────────────────
 [tool.pytest.ini_options]

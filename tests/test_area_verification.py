@@ -299,3 +299,80 @@ def test_mainstem_candidate_outlet_is_the_downstream_end_of_the_reach(ee_region,
     assert (main["outlet_lon"], main["outlet_lat"]) == (0.0123, 40.0456)
     assert "first vertex" in main["note"]
 
+
+
+# --------------------------------------------------------------------------------- AMBIGUOUS_OUTLET inside the US
+# delineation-holdout-2: inside the conterminous US 3 of 32 flags were wrong basins (precision 0.078, gate 0.5),
+# so there the flag is informational; outside the US 15 of 15 (preregistered minimum) were.
+
+from aihydro_watershed.delineation import us_location as usl  # noqa: E402
+
+
+def _off_reach(monkeypatch, where):
+    monkeypatch.setattr(usl, "classify_outlet", lambda lat, lon: where)
+    _snap_ref(monkeypatch, upa=HALF_C3)
+    return pipe.merit_basins_hybrid_delineate(*fx.OUTLET_REQUEST)
+
+
+def test_conus_ambiguous_outlet_is_informational(ee_region, monkeypatch):
+    res = _off_reach(monkeypatch, usl.CONUS)
+    assert "AMBIGUOUS_OUTLET" in res.quality_flags
+    assert res.reliability != "unreliable"                       # prior fd_reliability kept (provisional or None)
+    amb = res.ambiguous_outlet
+    assert [c["id"] for c in amb["candidates"]] == ["local_polygon", "mainstem_alternative"]
+    assert amb["affects_reliability"] is False and amb["location_class"] == "conus"
+    assert "3 of 32" in amb["basis"] and "expected_area_km2" in amb["remedy"]
+    assert res.area_km2 == pytest.approx(HALF_C3, rel=0.02)      # polygon unchanged
+
+
+def test_conus_informational_reason_carries_no_ambiguous_text(ee_region, monkeypatch):
+    res_us = _off_reach(monkeypatch, usl.CONUS)
+    res_non = _off_reach(monkeypatch, usl.NON_CONUS)
+    assert res_non.reliability == "unreliable"
+    assert "also:" not in (res_us.reliability_reason or "") and "AMBIGUOUS_OUTLET" not in (res_us.reliability_reason or "")
+
+
+@pytest.mark.parametrize("where", [usl.NON_CONUS, usl.CONUS_BORDER_ZONE, usl.UNDETERMINED])
+def test_non_conus_or_undetermined_stays_unreliable(ee_region, monkeypatch, where):
+    res = _off_reach(monkeypatch, where)
+    assert res.reliability == "unreliable" and res.reliability_reason.startswith("AMBIGUOUS_OUTLET")
+    assert res.ambiguous_outlet["affects_reliability"] is True and res.ambiguous_outlet["basis"]
+    assert res.ambiguous_outlet["location_class"] == where
+
+
+def test_router_conus_informational_state_follows_the_area_check(tiers):
+    amb = {"code": "AMBIGUOUS_OUTLET", "affects_reliability": False, "candidates": [{"id": "local_polygon"}]}
+    _serve(tiers, ambiguous_outlet=amb, quality_flags=["HYBRID_ROUTING_USED", "AMBIGUOUS_OUTLET"])
+    d = delineate_from_point(LAT, LON, method="merit_basins").data
+    assert d["reliability"] is None and d["reliability_state"] == "unverified"
+    assert "AMBIGUOUS_OUTLET" in d["quality_flags"] and d["ambiguous_outlet"]["candidates"]
+    ok = delineate_from_point(LAT, LON, method="merit_basins", expected_area_km2=470.0).data
+    assert ok["reliability_state"] == "verified" and ok["ambiguous_outlet"]["area_check_status"] == "verified_by_area"
+
+
+def test_router_conus_informational_with_area_mismatch_is_still_unreliable(tiers):
+    amb = {"code": "AMBIGUOUS_OUTLET", "affects_reliability": False, "candidates": [{"id": "local_polygon"}]}
+    _serve(tiers, ambiguous_outlet=amb, quality_flags=["HYBRID_ROUTING_USED", "AMBIGUOUS_OUTLET"])
+    d = delineate_from_point(LAT, LON, method="merit_basins", expected_area_km2=1000.0).data
+    assert d["reliability"] == "unreliable" and d["reliability_state"] == "ambiguous"
+    assert "AREA_MISMATCH" in d["quality_flags"] and "AMBIGUOUS_OUTLET" in d["quality_flags"]
+    assert d["area_km2"] == 485.0
+
+
+# --------------------------------------------------------------------------------- us_location
+
+
+@pytest.mark.parametrize("lat,lon,cls", [
+    (39.0, -98.0, "conus"), (41.88, -87.63, "conus"), (45.5, -69.0, "conus"),   # Kansas, Chicago, Maine
+    (48.9, -95.0, "conus_border_zone"), (42.3, -83.0, "conus_border_zone"),     # Canada border
+    (25.9, -97.5, "conus_border_zone"),                                         # Mexico border
+    (51.0, -114.0, "non_conus"), (64.0, -150.0, "non_conus"), (21.0, -157.8, "non_conus"),
+    (None, -98.0, "undetermined"), (float("nan"), -98.0, "undetermined"),
+])
+def test_us_location_rule(lat, lon, cls):
+    assert usl.classify_outlet(lat, lon) == cls
+
+
+def test_us_location_unreadable_boundary_is_undetermined(monkeypatch):
+    monkeypatch.setattr(usl, "_load", lambda: None)
+    assert usl.classify_outlet(39.0, -98.0) == "undetermined"

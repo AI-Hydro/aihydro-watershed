@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Fixed: area check skipped on NLDI-served results (0.4.6)
+
+In 0.4.6 `area_check`, `reliability_state` and `reliability_state_basis` were set only in the common tail of `delineate_from_point`, which the two NLDI early returns (CONUS `auto` and `method="nldi"`, with or without `expected_area_km2`) bypassed. A result served by NLDI, the default CONUS path, therefore carried none of them: `area_check`, `reliability_state` and `reliability` were all absent (null), even with `gauge_id` and `lookup_reported_area=True`, and an `AREA_MISMATCH` could not be raised. Observed live on gauge 01013500 (`method="nldi"`): polygon 2258.5 km2, all three null.
+
+- **Behaviour change.** Every NLDI-served result now carries `area_check`, `reliability_state` and `reliability_state_basis`, resolved exactly as on the other tiers (caller `expected_area_km2` first; the USGS lookup only when `lookup_reported_area=True`; a failed lookup is `area_unverified` with a reason). An `AREA_MISMATCH` now sets `reliability: "unreliable"`, the flag and the remedy. With no area and no lookup the result gains `area_check.status = "area_unverified"` and `reliability_state = "unverified"` (the same value the other tiers return); `reliability` stays `None`. The polygon is untouched.
+- **Return paths.** `delineate_from_point` has three result-returning paths: the two NLDI returns (now verified through `_verify_served_result`, which calls `_verify_area`) and the common tail (already verified). Every other `return` is in a nested helper (`_note_nldi_failure`, `_try_small_catchment`, the hybrid and GEE helpers) and returns a status, not a result; `method="small_catchment"` and the fallback tiers reach the tail. Callers that treat any `unreliable` as failure will now see it on NLDI mismatches.
+- **Ambiguity.** Unchanged: the NLDI tier keeps its own `NLDI_OUTLET_AMBIGUOUS` flag and `outlet_ambiguity`; NLDI results do not gain `AMBIGUOUS_OUTLET` or an `ambiguous_outlet` record (that stays hybrid-only, informational inside CONUS as in 0.4.6), so the state follows the area check and `AREA_MISMATCH`.
+- Tests: `tests/test_area_verification.py` (NLDI-served: no lookup, caller area, lookup verified, mismatch, failed lookup, coexistence with `NLDI_OUTLET_AMBIGUOUS`).
+
 ## [0.4.6] - 2026-11-16
 
 ### Changed: `AMBIGUOUS_OUTLET` is informational inside the conterminous US (held-out test delineation-holdout-2)

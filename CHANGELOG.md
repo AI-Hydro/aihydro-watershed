@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.4.7] - 2026-11-18
+
 ### Fixed: area check skipped on NLDI-served results (0.4.6)
 
 In 0.4.6 `area_check`, `reliability_state` and `reliability_state_basis` were set only in the common tail of `delineate_from_point`, which the two NLDI early returns (CONUS `auto` and `method="nldi"`, with or without `expected_area_km2`) bypassed. A result served by NLDI, the default CONUS path, therefore carried none of them: `area_check`, `reliability_state` and `reliability` were all absent (null), even with `gauge_id` and `lookup_reported_area=True`, and an `AREA_MISMATCH` could not be raised. Found by a reviewer's live call of the aihydro-tools point-delineation tool at gauge 01013500 (`method="nldi"`), where all three were null; not recorded as an artifact in this repository.

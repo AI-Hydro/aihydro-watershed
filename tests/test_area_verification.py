@@ -378,3 +378,90 @@ def test_us_location_rule(lat, lon, cls):
 def test_us_location_unreadable_boundary_is_undetermined(monkeypatch):
     monkeypatch.setattr(usl, "_load", lambda: None)
     assert usl.classify_outlet(39.0, -98.0) == "undetermined"
+
+
+# --------------------------------------------------------------------------------- NLDI-served results (0.4.6 defect)
+# NLDI returns early from the router; the check must still run there (the default CONUS path).
+
+
+def _nldi_served(monkeypatch, area, extra=None):
+    from aihydro_core import HydroMeta, HydroResult
+
+    from aihydro_watershed.delineation import nldi_point
+
+    def fake(lat, lon, **kw):
+        data = {"area_km2": area, "method_used": "nldi_comid", "comid": 1, **(extra or {})}
+        return HydroResult(data=data, meta=HydroMeta(tool="test", version="0", params={}, sources=[]))
+
+    monkeypatch.setattr(nldi_point, "delineate_nldi_at_point", fake)
+
+
+def _usgs_stub(monkeypatch, area_km2, reason=None):
+    calls = []
+
+    def fake(gauge_id, **k):
+        calls.append(gauge_id)
+        return av.ReportedArea(area_km2, "usgs_waterdata_monitoring_locations", reason)
+
+    monkeypatch.setattr(av, "usgs_reported_area", fake)
+    return calls
+
+
+@pytest.mark.parametrize("method, expected", [("nldi", None), ("auto", None), ("nldi", 2200.0)])
+def test_nldi_served_without_lookup_is_unverified_not_missing(monkeypatch, method, expected):
+    _nldi_served(monkeypatch, 2258.5)
+    calls = _usgs_stub(monkeypatch, 2252.7)
+    d = delineate_from_point(LAT, LON, method=method, expected_area_km2=expected, gauge_id="01013500").data
+    assert d["method_used"] == "nldi_comid" and calls == []          # lookup stays opt-in
+    assert d["area_check"] is not None and d["reliability_state"] is not None
+    if expected is None:
+        assert d["area_check"]["status"] == "area_unverified" and d["area_check"]["reported_area_km2"] is None
+        assert d["reliability_state"] == "unverified" and d["reliability"] is None
+        assert d["reliability_state_basis"] == "none"
+    else:
+        assert d["area_check"]["source"] == "caller_supplied" and d["reliability_state"] == "verified"
+        assert d["area_check"]["independent_of_snap"] is False
+    assert d["area_km2"] == 2258.5                                    # polygon untouched
+
+
+def test_nldi_served_lookup_verified(monkeypatch):
+    _nldi_served(monkeypatch, 2258.5)
+    calls = _usgs_stub(monkeypatch, 2252.7)
+    d = delineate_from_point(LAT, LON, method="nldi", gauge_id="01013500", lookup_reported_area=True).data
+    assert calls == ["01013500"]
+    assert d["area_check"]["status"] == "verified_by_area" and d["area_check"]["independent_of_snap"] is True
+    assert d["reliability_state"] == "verified" and d["reliability_state_basis"] == "independent_lookup"
+    assert "AREA_MISMATCH" not in d["quality_flags"]
+
+
+def test_nldi_served_lookup_mismatch_is_unreliable(monkeypatch):
+    _nldi_served(monkeypatch, 2258.5)
+    _usgs_stub(monkeypatch, 5000.0)
+    d = delineate_from_point(LAT, LON, method="auto", gauge_id="01013500", lookup_reported_area=True).data
+    assert d["area_check"]["status"] == "area_mismatch"
+    assert d["reliability"] == "unreliable" and d["reliability_reason"].startswith("AREA_MISMATCH")
+    assert "AREA_MISMATCH" in d["quality_flags"] and d["reliability_state"] == "ambiguous"
+    assert d["remedy"] and d["area_km2"] == 2258.5
+
+
+def test_nldi_served_lookup_failure_is_unverified_with_reason(monkeypatch):
+    _nldi_served(monkeypatch, 2258.5)
+    _usgs_stub(monkeypatch, None, "lookup failed: TimeoutError")
+    d = delineate_from_point(LAT, LON, method="nldi", gauge_id="01013500", lookup_reported_area=True).data
+    assert d["area_check"]["status"] == "area_unverified" and "TimeoutError" in d["area_check"]["reason"]
+    assert d["reliability_state"] == "unverified"
+
+
+def test_nldi_outlet_ambiguous_flag_coexists_and_is_informational(monkeypatch):
+    amb = {"quality_flags": ["NLDI_OUTLET_AMBIGUOUS"], "outlet_ambiguity": {"candidates": [1, 2]}}
+    _nldi_served(monkeypatch, 40.0, amb)
+    _usgs_stub(monkeypatch, 41.0)
+    d = delineate_from_point(LAT, LON, method="nldi", gauge_id="01013500", lookup_reported_area=True).data
+    assert "NLDI_OUTLET_AMBIGUOUS" in d["quality_flags"] and d["outlet_ambiguity"] == {"candidates": [1, 2]}
+    assert d["ambiguous_outlet"] is None and "AMBIGUOUS_OUTLET" not in d["quality_flags"]   # hybrid-only record
+    assert d["area_check"]["status"] == "verified_by_area" and d["reliability_state"] == "verified"
+    # a mismatch still marks it, and keeps the NLDI flag
+    _usgs_stub(monkeypatch, 400.0)
+    m = delineate_from_point(LAT, LON, method="nldi", gauge_id="01013500", lookup_reported_area=True).data
+    assert "NLDI_OUTLET_AMBIGUOUS" in m["quality_flags"] and "AREA_MISMATCH" in m["quality_flags"]
+    assert m["reliability_state"] == "ambiguous"

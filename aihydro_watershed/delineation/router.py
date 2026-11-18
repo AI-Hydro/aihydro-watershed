@@ -556,6 +556,45 @@ def _verify_area(
     return check, reliability, reliability_reason, state, remedy, ambiguous_outlet
 
 
+def _verify_served_result(
+    result: HydroResult,
+    *,
+    expected_area_km2: float | None,
+    gauge_id: str | None,
+    lookup: bool,
+) -> HydroResult:
+    """Apply the area check to a result a tier returned early (NLDI), in place.
+
+    The NLDI tiers return before the common tail of ``_delineate_from_point``, so without this the check, its
+    ``AREA_MISMATCH`` mark and ``reliability_state`` were never set for the default CONUS path (0.4.6 defect).
+    It folds into the result exactly as the tail does. No ``ambiguous_outlet`` is passed: the NLDI tier has its own
+    ``NLDI_OUTLET_AMBIGUOUS`` flag and ``outlet_ambiguity`` (untouched, informational like the in-CONUS
+    ``AMBIGUOUS_OUTLET``), so the state follows the area check and any ``unreliable`` mark.
+    """
+    d = result.data
+    flags = list(d.get("quality_flags") or [])
+    check, reliability, reason, state, remedy, _ = _verify_area(
+        float(d.get("area_km2") or 0.0),
+        expected_area_km2=expected_area_km2,
+        gauge_id=gauge_id,
+        lookup=lookup,
+        reliability=d.get("reliability"),
+        reliability_reason=d.get("reliability_reason"),
+        remedy=d.get("remedy"),
+        ambiguous_outlet=None,
+        quality_flags=flags,
+    )
+    d["quality_flags"] = flags
+    d["area_check"] = check
+    d["reliability"] = reliability
+    d["reliability_reason"] = reason
+    d["reliability_state"] = state
+    d["reliability_state_basis"] = _state_basis(check)
+    d["remedy"] = remedy
+    d.setdefault("ambiguous_outlet", None)
+    return result
+
+
 def delineate_from_point(
     lat: float,
     lon: float,
@@ -897,6 +936,10 @@ def _delineate_from_point(
                 )
             if nldi_ok:
                 nldi_result = _with_trail(nldi_result, fallback_history, "nldi_comid", "served", "")
+                nldi_result = _verify_served_result(
+                    nldi_result, expected_area_km2=expected_area_km2, gauge_id=gauge_id,
+                    lookup=lookup_reported_area,
+                )
                 return _attach_workflow_steps(
                     nldi_result,
                     method_used="nldi_comid",
@@ -949,6 +992,10 @@ def _delineate_from_point(
             ) else ""
             if _NLDI_QUICK_MIN_KM2 <= nldi_area <= _NLDI_QUICK_MAX_KM2:
                 nldi_result = _with_trail(nldi_result, fallback_history, "nldi_comid", "served", nldi_flag)
+                nldi_result = _verify_served_result(
+                    nldi_result, expected_area_km2=expected_area_km2, gauge_id=gauge_id,
+                    lookup=lookup_reported_area,
+                )
                 return _attach_workflow_steps(
                     nldi_result,
                     method_used="nldi_comid",
